@@ -250,6 +250,30 @@ func (s *PostgresStore) UpdateService(ctx context.Context, id types.ServiceID, s
 	return service, nil
 }
 
+func (s *PostgresStore) UpdateServiceStatus(ctx context.Context, id types.ServiceID, status types.ServiceStatus, expectedUpdatedAt time.Time) (types.Service, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE services
+		SET status = $2,
+			updated_at = timezone('utc', now()),
+			version = version + 1
+		WHERE id = $1 AND updated_at = $3
+		RETURNING id, name, image, replicas, env, secret_refs, ports,
+			resource_requirements, healthcheck, restart_policy, placement_constraints,
+			status, deployment_version, created_at, updated_at`,
+		string(id),
+		string(status),
+		expectedUpdatedAt.UTC(),
+	)
+	service, err := scanService(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return types.Service{}, ErrConflict
+		}
+		return types.Service{}, mapPostgresError(err)
+	}
+	return service, nil
+}
+
 func (s *PostgresStore) CreateTask(ctx context.Context, task types.Task) (types.Task, error) {
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO tasks (
@@ -571,7 +595,7 @@ func insertService(ctx context.Context, tx pgx.Tx, spec types.ServiceSpec) (type
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, name, image, replicas, env, secret_refs, ports,
-			resource_requirements, healthcheck, restart_policy, placement_constraints,
+			resource_requirements, healthcheck, restart_policy, placement_constraints, status,
 			deployment_version, created_at, updated_at`,
 		spec.Name,
 		spec.Image,
@@ -614,7 +638,7 @@ func updateService(ctx context.Context, tx pgx.Tx, id types.ServiceID, spec type
 		WHERE id = $1 AND updated_at = $12
 		RETURNING id, name, image, replicas, env, secret_refs, ports,
 			resource_requirements, healthcheck, restart_policy, placement_constraints,
-			deployment_version, created_at, updated_at`,
+			status, deployment_version, created_at, updated_at`,
 		string(id),
 		spec.Name,
 		spec.Image,
@@ -656,7 +680,7 @@ func insertServiceVersion(ctx context.Context, tx pgx.Tx, serviceID types.Servic
 func serviceSelectSQL() string {
 	return `SELECT id, name, image, replicas, env, secret_refs, ports,
 		resource_requirements, healthcheck, restart_policy, placement_constraints,
-		deployment_version, created_at, updated_at FROM services`
+		status, deployment_version, created_at, updated_at FROM services`
 }
 
 func taskSelectSQL() string {
@@ -721,6 +745,7 @@ func scanService(row pgx.Row) (types.Service, error) {
 		&healthcheck,
 		&restartPolicy,
 		&constraints,
+		&service.Status,
 		&service.DeploymentVersion,
 		&service.CreatedAt,
 		&service.UpdatedAt,
@@ -729,6 +754,9 @@ func scanService(row pgx.Row) (types.Service, error) {
 		return types.Service{}, err
 	}
 	service.ID = types.ServiceID(id)
+	if service.Status == "" {
+		service.Status = types.ServiceActive
+	}
 	if err := decodeServiceJSON(&service.Spec, env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints); err != nil {
 		return types.Service{}, err
 	}

@@ -135,6 +135,9 @@ func (r *Runner) reconcileAssignedTasks(ctx context.Context, nodeID types.NodeID
 
 func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned api.AgentTask) error {
 	task := assigned.Task
+	if task.DesiredStatus == types.TaskStopped || task.DesiredStatus == types.TaskRemoved {
+		return r.removeAssignedTask(ctx, nodeID, task)
+	}
 	if task.DesiredStatus != types.TaskRunning {
 		return nil
 	}
@@ -192,6 +195,36 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 	assigned.Task.ContainerID = string(containerID)
 	assigned.Task.ActualStatus = types.TaskRunning
 	return r.checkTaskHealth(ctx, nodeID, assigned, orchdocker.ContainerStatus{ID: containerID, Running: true})
+}
+
+func (r *Runner) removeAssignedTask(ctx context.Context, nodeID types.NodeID, task types.Task) error {
+	containerID := orchdocker.ContainerID(task.ContainerID)
+	if containerID == "" {
+		containers, err := r.runtime.ListManagedContainers(ctx, map[string]string{
+			orchdocker.NodeIDLabel: string(nodeID),
+			orchdocker.TaskIDLabel: string(task.ID),
+		})
+		if err != nil {
+			return err
+		}
+		if len(containers) > 0 {
+			containerID = containers[0].ID
+		}
+	}
+	if containerID != "" {
+		if err := r.runtime.StopContainer(ctx, containerID, 10*time.Second); err != nil {
+			return err
+		}
+		if err := r.runtime.RemoveContainer(ctx, containerID, true); err != nil {
+			return err
+		}
+	}
+	_, err := r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{
+		NodeID:      nodeID,
+		Status:      types.TaskRemoved,
+		ContainerID: string(containerID),
+	})
+	return err
 }
 
 func (r *Runner) checkTaskHealth(ctx context.Context, nodeID types.NodeID, assigned api.AgentTask, container orchdocker.ContainerStatus) error {

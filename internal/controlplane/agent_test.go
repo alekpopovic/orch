@@ -177,6 +177,92 @@ func TestTaskAssignmentReconcilesWhenNodeRegistersAfterService(t *testing.T) {
 	}
 }
 
+func TestDeleteServiceWithRunningTasksMarksDeleting(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+	registered, created := createServiceWithAssignedTask(t, ctx, service)
+
+	if err := service.DeleteService(ctx, created.ID); err != nil {
+		t.Fatalf("delete service: %v", err)
+	}
+	deleting, err := service.GetService(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get service: %v", err)
+	}
+	if deleting.Status != types.ServiceDeleting {
+		t.Fatalf("expected deleting service, got %q", deleting.Status)
+	}
+	tasks, err := service.ListAssignedTasks(ctx, registered.Node.ID)
+	if err != nil {
+		t.Fatalf("list assigned tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Task.DesiredStatus != types.TaskStopped {
+		t.Fatalf("expected stopped task directive, got %#v", tasks)
+	}
+}
+
+func TestDeleteServiceIsIdempotent(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+	_, created := createServiceWithAssignedTask(t, ctx, service)
+
+	if err := service.DeleteService(ctx, created.ID); err != nil {
+		t.Fatalf("first delete service: %v", err)
+	}
+	if err := service.DeleteService(ctx, created.ID); err != nil {
+		t.Fatalf("second delete service: %v", err)
+	}
+	deleting, err := service.GetService(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get service: %v", err)
+	}
+	if deleting.Status != types.ServiceDeleting {
+		t.Fatalf("expected deleting service, got %q", deleting.Status)
+	}
+}
+
+func TestDeleteServiceWaitsWhenAgentOfflineAndFinalizesAfterReturn(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+	registered, created := createServiceWithAssignedTask(t, ctx, service)
+	tasks, err := service.ListAssignedTasks(ctx, registered.Node.ID)
+	if err != nil {
+		t.Fatalf("list assigned tasks: %v", err)
+	}
+	if _, err := service.HeartbeatNode(ctx, NodeHeartbeat{NodeID: registered.Node.ID, Shutdown: true}); err != nil {
+		t.Fatalf("shutdown heartbeat: %v", err)
+	}
+	if err := service.DeleteService(ctx, created.ID); err != nil {
+		t.Fatalf("delete service: %v", err)
+	}
+	deleting, err := service.GetService(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get deleting service: %v", err)
+	}
+	if deleting.Status != types.ServiceDeleting {
+		t.Fatalf("expected service to wait while agent is offline, got %q", deleting.Status)
+	}
+
+	if _, err := service.UncordonNode(ctx, registered.Node.ID); err != nil {
+		t.Fatalf("uncordon node: %v", err)
+	}
+	if _, err := service.ReportTaskStatus(ctx, TaskStatusReport{
+		TaskID:      tasks[0].Task.ID,
+		NodeID:      registered.Node.ID,
+		Status:      types.TaskRemoved,
+		ContainerID: "container-1",
+	}); err != nil {
+		t.Fatalf("report task removed: %v", err)
+	}
+	deleted, err := service.GetService(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get deleted service: %v", err)
+	}
+	if deleted.Status != types.ServiceDeleted {
+		t.Fatalf("expected deleted service after task removal, got %q", deleted.Status)
+	}
+}
+
 func TestRolloutStartsAsyncDeployment(t *testing.T) {
 	service := NewMemoryService()
 	ctx := context.Background()
@@ -290,4 +376,27 @@ func TestUnhealthyRestartableTaskIsMarkedFailed(t *testing.T) {
 	if task.FinishedAt.IsZero() {
 		t.Fatalf("expected failed task to have finished timestamp")
 	}
+}
+
+func createServiceWithAssignedTask(t *testing.T, ctx context.Context, service *MemoryService) (NodeCommand, types.Service) {
+	t.Helper()
+	registered, err := service.RegisterNode(ctx, NodeRegistration{
+		Name:             "node-a",
+		AdvertiseAddress: "10.0.0.10",
+		Capacity:         types.Resources{CPU: 4000, Memory: 1024},
+		Allocatable:      types.Resources{CPU: 3000, Memory: 512},
+	})
+	if err != nil {
+		t.Fatalf("register node: %v", err)
+	}
+	created, err := service.CreateService(ctx, types.ServiceSpec{
+		Name:                 "api",
+		Image:                "ghcr.io/example/api:1.0.0",
+		Replicas:             1,
+		ResourceRequirements: types.ResourceRequirements{},
+	})
+	if err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+	return registered, created
 }

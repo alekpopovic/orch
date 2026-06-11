@@ -78,6 +78,40 @@ func TestReconcileRemovesUnassignedManagedContainers(t *testing.T) {
 	}
 }
 
+func TestReconcileRemovesAssignedStoppedTask(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
+	client := &fakeAgentClient{
+		tasks: []api.AgentTask{{
+			Task: types.Task{
+				ID:            taskID,
+				ServiceID:     types.ServiceID("00000000-0000-4000-8000-000000000003"),
+				NodeID:        nodeID,
+				ContainerID:   "container-1",
+				DesiredStatus: types.TaskStopped,
+				ActualStatus:  types.TaskRunning,
+				Image:         "nginx:1.27",
+				Version:       1,
+			},
+		}},
+	}
+	runtime := &fakeRuntime{}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
+
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("reconcile assigned tasks: %v", err)
+	}
+
+	wantRuntimeCalls := []string{"stop:container-1", "remove:container-1", "list"}
+	if !equalStrings(runtime.calls, wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.calls)
+	}
+	wantStatuses := []types.TaskStatus{types.TaskRemoved}
+	if !equalStatuses(client.statuses, wantStatuses) {
+		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+}
+
 func TestReconcileAssignedTaskReportsHealthAfterThresholds(t *testing.T) {
 	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
 	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")

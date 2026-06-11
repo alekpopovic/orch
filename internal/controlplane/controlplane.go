@@ -227,7 +227,7 @@ func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.Node
 		if task.NodeID != nodeID {
 			continue
 		}
-		if task.DesiredStatus == types.TaskRemoved || task.DesiredStatus == types.TaskStopped {
+		if task.DesiredStatus == types.TaskRemoved || task.ActualStatus == types.TaskRemoved {
 			continue
 		}
 		service := s.services[task.ServiceID]
@@ -303,6 +303,9 @@ func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusR
 		task.FinishedAt = task.UpdatedAt
 	}
 	s.tasks[task.ID] = task
+	if status == types.TaskRemoved {
+		s.maybeFinalizeServiceDeletionLocked(task.ServiceID, task.UpdatedAt)
+	}
 	s.appendEventLocked(eventType, severity, "agent", message, "task", string(task.ID), task.UpdatedAt)
 	return task, nil
 }
@@ -373,6 +376,7 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 	service := types.Service{
 		ID:                types.ServiceID(newUUID()),
 		Spec:              spec,
+		Status:            types.ServiceActive,
 		DeploymentVersion: 1,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -428,16 +432,28 @@ func (s *MemoryService) DeleteService(ctx context.Context, id types.ServiceID) e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.services[id]; !ok {
+	service, ok := s.services[id]
+	if !ok {
 		return store.ErrNotFound
 	}
-	delete(s.services, id)
+	if service.Status == types.ServiceDeleted || service.Status == types.ServiceDeleting {
+		return nil
+	}
+	now := s.now()
+	service.Status = types.ServiceDeleting
+	service.UpdatedAt = now
+	s.services[id] = service
 	for taskID, task := range s.tasks {
 		if task.ServiceID == id {
-			delete(s.tasks, taskID)
+			if task.DesiredStatus != types.TaskRemoved && task.ActualStatus != types.TaskRemoved {
+				task.DesiredStatus = types.TaskStopped
+				task.UpdatedAt = now
+				s.tasks[taskID] = task
+			}
 		}
 	}
-	s.appendEventLocked(events.TypeServiceDeleted, types.EventInfo, "controlplane", "service deleted", "service", string(id), s.now())
+	s.appendEventLocked(events.TypeServiceDeletionStarted, types.EventInfo, "controlplane", "service deletion requested", "service", string(id), now)
+	s.maybeFinalizeServiceDeletionLocked(id, now)
 	return nil
 }
 
@@ -455,6 +471,9 @@ func (s *MemoryService) ScaleService(ctx context.Context, id types.ServiceID, re
 	service, ok := s.services[id]
 	if !ok {
 		return types.Service{}, store.ErrNotFound
+	}
+	if service.Status != "" && service.Status != types.ServiceActive {
+		return types.Service{}, fmt.Errorf("%w: service is %s", store.ErrInvalidState, service.Status)
 	}
 	service.Spec.Replicas = replicas
 	service.UpdatedAt = s.now()
@@ -488,6 +507,9 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 	service, ok := s.services[id]
 	if !ok {
 		return types.Deployment{}, store.ErrNotFound
+	}
+	if service.Status != "" && service.Status != types.ServiceActive {
+		return types.Deployment{}, fmt.Errorf("%w: service is %s", store.ErrInvalidState, service.Status)
 	}
 	now := s.now()
 	fromVersion := service.DeploymentVersion
@@ -564,6 +586,9 @@ func (s *MemoryService) RollbackService(ctx context.Context, id types.ServiceID)
 	service, ok := s.services[id]
 	if !ok {
 		return types.Deployment{}, store.ErrNotFound
+	}
+	if service.Status != "" && service.Status != types.ServiceActive {
+		return types.Deployment{}, fmt.Errorf("%w: service is %s", store.ErrInvalidState, service.Status)
 	}
 	if active := s.activeRollbackLocked(id); active.ID != "" {
 		return active, nil
@@ -692,6 +717,29 @@ func (s *MemoryService) StopTask(ctx context.Context, id types.TaskID, expectedU
 
 func (s *MemoryService) ListTasksByService(ctx context.Context, serviceID types.ServiceID) ([]types.Task, error) {
 	return s.ListTasks(ctx, TaskFilter{ServiceID: serviceID})
+}
+
+func (s *MemoryService) UpdateServiceStatus(ctx context.Context, id types.ServiceID, status types.ServiceStatus, expectedUpdatedAt time.Time) (types.Service, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Service{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	service, ok := s.services[id]
+	if !ok {
+		return types.Service{}, store.ErrNotFound
+	}
+	if !expectedUpdatedAt.IsZero() && !service.UpdatedAt.Equal(expectedUpdatedAt) {
+		return types.Service{}, store.ErrConflict
+	}
+	service.Status = status
+	service.UpdatedAt = s.now()
+	s.services[id] = service
+	if status == types.ServiceDeleted {
+		s.appendEventLocked(events.TypeServiceDeleted, types.EventInfo, "controlplane", "service deleted", "service", string(id), service.UpdatedAt)
+	}
+	return service, nil
 }
 
 func (s *MemoryService) ListDeploymentsByStatus(ctx context.Context, status types.DeploymentStatus) ([]types.Deployment, error) {
@@ -882,6 +930,9 @@ func (s *MemoryService) reconcileAllServicesLocked(timestamp time.Time) {
 }
 
 func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, timestamp time.Time) {
+	if service.Status != "" && service.Status != types.ServiceActive {
+		return
+	}
 	if s.hasActiveDeploymentLocked(service.ID) {
 		return
 	}
@@ -953,6 +1004,25 @@ func (s *MemoryService) hasActiveDeploymentLocked(serviceID types.ServiceID) boo
 		}
 	}
 	return false
+}
+
+func (s *MemoryService) maybeFinalizeServiceDeletionLocked(serviceID types.ServiceID, timestamp time.Time) {
+	service, ok := s.services[serviceID]
+	if !ok || service.Status != types.ServiceDeleting {
+		return
+	}
+	for _, task := range s.tasks {
+		if task.ServiceID != serviceID {
+			continue
+		}
+		if task.ActualStatus != types.TaskRemoved {
+			return
+		}
+	}
+	service.Status = types.ServiceDeleted
+	service.UpdatedAt = timestamp
+	s.services[serviceID] = service
+	s.appendEventLocked(events.TypeServiceDeleted, types.EventInfo, "controlplane", "service deleted", "service", string(serviceID), timestamp)
 }
 
 func (s *MemoryService) activeRollbackLocked(serviceID types.ServiceID) types.Deployment {

@@ -20,6 +20,7 @@ type ServiceStore interface {
 	GetService(ctx context.Context, id types.ServiceID) (types.Service, error)
 	ListServices(ctx context.Context) ([]types.Service, error)
 	UpdateService(ctx context.Context, id types.ServiceID, spec types.ServiceSpec, expectedUpdatedAt time.Time) (types.Service, error)
+	UpdateServiceStatus(ctx context.Context, id types.ServiceID, status types.ServiceStatus, expectedUpdatedAt time.Time) (types.Service, error)
 }
 
 type TaskStore interface {

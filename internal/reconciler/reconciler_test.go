@@ -166,14 +166,49 @@ func TestReconcileOnceIgnoresEventEmissionFailure(t *testing.T) {
 	}
 }
 
+func TestReconcileDeletingServiceWithRunningTasks(t *testing.T) {
+	store := newFakeStore(
+		[]types.Service{serviceFixtureWithStatus("svc", 1, 1, types.RestartPolicy{}, types.ServiceDeleting)},
+		[]types.Task{taskFixture("task-a", "svc", 1, types.TaskRunning, types.TaskRunning)},
+	)
+
+	if err := New(store).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcile once: %v", err)
+	}
+	if !taskIDsEqual(store.stopped, []types.TaskID{"task-a"}) {
+		t.Fatalf("expected stop directive for task-a, got %#v", store.stopped)
+	}
+	if store.services["svc"].Status != types.ServiceDeleting {
+		t.Fatalf("expected service to remain deleting while task is not removed, got %q", store.services["svc"].Status)
+	}
+}
+
+func TestReconcileDeletingServiceFinalCleanupAfterAgentReturns(t *testing.T) {
+	store := newFakeStore(
+		[]types.Service{serviceFixtureWithStatus("svc", 1, 1, types.RestartPolicy{}, types.ServiceDeleting)},
+		[]types.Task{taskFixture("task-a", "svc", 1, types.TaskStopped, types.TaskRemoved)},
+	)
+
+	if err := New(store).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcile once: %v", err)
+	}
+	if store.services["svc"].Status != types.ServiceDeleted {
+		t.Fatalf("expected service deleted after all tasks removed, got %q", store.services["svc"].Status)
+	}
+	if got := len(store.serviceStatusUpdates); got != 1 {
+		t.Fatalf("expected one service status update, got %d", got)
+	}
+}
+
 type fakeStore struct {
-	services   map[types.ServiceID]types.Service
-	tasks      map[types.TaskID]types.Task
-	created    []types.Task
-	stopped    []types.TaskID
-	events     []types.Event
-	nextID     int
-	failEvents bool
+	services             map[types.ServiceID]types.Service
+	tasks                map[types.TaskID]types.Task
+	created              []types.Task
+	stopped              []types.TaskID
+	serviceStatusUpdates []types.ServiceStatus
+	events               []types.Event
+	nextID               int
+	failEvents           bool
 }
 
 func newFakeStore(services []types.Service, tasks []types.Task) *fakeStore {
@@ -231,11 +266,26 @@ func (s *fakeStore) CreateTask(_ context.Context, task types.Task) (types.Task, 
 
 func (s *fakeStore) StopTask(_ context.Context, id types.TaskID, _ time.Time) (types.Task, error) {
 	task := s.tasks[id]
+	if task.DesiredStatus == types.TaskStopped || task.DesiredStatus == types.TaskRemoved {
+		return task, nil
+	}
 	task.DesiredStatus = types.TaskStopped
 	task.UpdatedAt = time.Now().UTC()
 	s.tasks[id] = task
 	s.stopped = append(s.stopped, id)
 	return task, nil
+}
+
+func (s *fakeStore) UpdateServiceStatus(_ context.Context, id types.ServiceID, status types.ServiceStatus, _ time.Time) (types.Service, error) {
+	service, ok := s.services[id]
+	if !ok {
+		return types.Service{}, fmt.Errorf("service not found")
+	}
+	service.Status = status
+	service.UpdatedAt = time.Now().UTC()
+	s.services[id] = service
+	s.serviceStatusUpdates = append(s.serviceStatusUpdates, status)
+	return service, nil
 }
 
 func (s *fakeStore) AppendEvent(_ context.Context, event types.Event) (types.Event, error) {
@@ -278,6 +328,10 @@ func (l fakeLease) Release(context.Context) error {
 }
 
 func serviceFixture(id types.ServiceID, replicas int, version int64, policy types.RestartPolicy) types.Service {
+	return serviceFixtureWithStatus(id, replicas, version, policy, types.ServiceActive)
+}
+
+func serviceFixtureWithStatus(id types.ServiceID, replicas int, version int64, policy types.RestartPolicy, status types.ServiceStatus) types.Service {
 	return types.Service{
 		ID: id,
 		Spec: types.ServiceSpec{
@@ -286,6 +340,7 @@ func serviceFixture(id types.ServiceID, replicas int, version int64, policy type
 			Replicas:      replicas,
 			RestartPolicy: policy,
 		},
+		Status:            status,
 		DeploymentVersion: version,
 	}
 }

@@ -19,6 +19,7 @@ type Store interface {
 	ListTasksByStatus(ctx context.Context, status types.TaskStatus) ([]types.Task, error)
 	CreateTask(ctx context.Context, task types.Task) (types.Task, error)
 	StopTask(ctx context.Context, id types.TaskID, expectedUpdatedAt time.Time) (types.Task, error)
+	UpdateServiceStatus(ctx context.Context, id types.ServiceID, status types.ServiceStatus, expectedUpdatedAt time.Time) (types.Service, error)
 	AppendEvent(ctx context.Context, event types.Event) (types.Event, error)
 }
 
@@ -166,14 +167,30 @@ func (r *Reconciler) reconcile(ctx context.Context) (Result, error) {
 		return services[i].ID < services[j].ID
 	})
 
-	activeServices := make(map[types.ServiceID]types.Service, len(services))
+	knownServices := make(map[types.ServiceID]types.Service, len(services))
 	result := Result{}
 	for _, service := range services {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		activeServices[service.ID] = service
-		serviceResult, err := r.reconcileService(ctx, service)
+		if service.Status == "" {
+			service.Status = types.ServiceActive
+		}
+		if service.Status != types.ServiceDeleted {
+			knownServices[service.ID] = service
+		}
+		var serviceResult Result
+		var err error
+		switch service.Status {
+		case types.ServiceActive:
+			serviceResult, err = r.reconcileService(ctx, service)
+		case types.ServiceDeleting:
+			serviceResult, err = r.reconcileDeletingService(ctx, service)
+		case types.ServiceDeleted:
+			continue
+		default:
+			return result, fmt.Errorf("%w: service %s has invalid status %q", store.ErrInvalidState, service.ID, service.Status)
+		}
 		result.CreatedTasks += serviceResult.CreatedTasks
 		result.StoppedTasks += serviceResult.StoppedTasks
 		if err != nil {
@@ -181,11 +198,52 @@ func (r *Reconciler) reconcile(ctx context.Context) (Result, error) {
 		}
 	}
 
-	deletedResult, err := r.reconcileDeletedServices(ctx, activeServices)
+	deletedResult, err := r.reconcileDeletedServices(ctx, knownServices)
 	result.CreatedTasks += deletedResult.CreatedTasks
 	result.StoppedTasks += deletedResult.StoppedTasks
 	if err != nil {
 		return result, err
+	}
+	return result, nil
+}
+
+func (r *Reconciler) reconcileDeletingService(ctx context.Context, service types.Service) (Result, error) {
+	tasks, err := r.store.ListTasksByService(ctx, service.ID)
+	if err != nil {
+		return Result{}, fmt.Errorf("list tasks for deleting service %s: %w", service.ID, err)
+	}
+	result := Result{}
+	allRemoved := true
+	for _, task := range sortedTasks(tasks) {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if task.ActualStatus == types.TaskRemoved {
+			continue
+		}
+		allRemoved = false
+		if err := r.stopTask(ctx, task, "service is deleting"); err != nil {
+			return result, err
+		}
+		result.StoppedTasks++
+	}
+	if allRemoved {
+		updated, err := r.store.UpdateServiceStatus(ctx, service.ID, types.ServiceDeleted, service.UpdatedAt)
+		if err != nil {
+			if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
+				return result, nil
+			}
+			return result, fmt.Errorf("mark service %s deleted: %w", service.ID, err)
+		}
+		_ = events.Emit(ctx, r.store, types.Event{
+			Type:              events.TypeServiceDeleted,
+			Severity:          types.EventInfo,
+			Source:            "reconciler",
+			Message:           "service deletion completed",
+			RelatedObjectType: "service",
+			RelatedObjectID:   string(updated.ID),
+			Timestamp:         r.now(),
+		}, events.WithLogger(r.logger))
 	}
 	return result, nil
 }

@@ -40,6 +40,8 @@ See [ROLLOUTS.md](ROLLOUTS.md) for the rolling update state machine.
 
 A service is the durable desired-state object submitted by an operator. Its spec defines the image, replica count, environment, secret references, ports, resource requests and limits, restart policy, health check, placement constraints, and deployment version.
 
+Services move through `active`, `deleting`, and `deleted` states. Delete requests are soft by default: the control plane marks the service `deleting`, the reconciler sets task desired status to `stopped`, agents stop and remove containers, and the service becomes `deleted` only after tasks report `removed`.
+
 When a service is created or updated, the control plane records a deployment version and the scheduler turns the service's replica intent into task assignments. Each task is an immutable unit of work for a specific service version and target node. Tasks carry both desired status and observed status so the control plane can reason about convergence without treating Docker as the source of truth.
 
 On each worker, the agent reconciler reads assigned tasks and asks the runtime adapter to create, update, stop, or remove the corresponding Docker container. The container ID is observed runtime state attached back to the task. Docker operations must be idempotent: repeating reconciliation should converge the same task to the same container state without creating duplicates.

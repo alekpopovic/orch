@@ -72,6 +72,8 @@ curl http://localhost:8080/v1/services/{service_id}
 curl -X DELETE http://localhost:8080/v1/services/{service_id}
 ```
 
+Delete is safe by default: it marks the service `deleting`, asks agents to stop and remove task containers, and only moves the service to `deleted` after all tasks report `removed`.
+
 Scale and rollout operations:
 
 ```sh

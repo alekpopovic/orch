@@ -70,12 +70,21 @@ func (spec NodeSpec) Validate() error {
 }
 
 type Service struct {
-	ID                ServiceID   `json:"id"`
-	Spec              ServiceSpec `json:"spec"`
-	DeploymentVersion int64       `json:"deployment_version"`
-	CreatedAt         time.Time   `json:"created_at"`
-	UpdatedAt         time.Time   `json:"updated_at"`
+	ID                ServiceID     `json:"id"`
+	Spec              ServiceSpec   `json:"spec"`
+	Status            ServiceStatus `json:"status"`
+	DeploymentVersion int64         `json:"deployment_version"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
 }
+
+type ServiceStatus string
+
+const (
+	ServiceActive   ServiceStatus = "active"
+	ServiceDeleting ServiceStatus = "deleting"
+	ServiceDeleted  ServiceStatus = "deleted"
+)
 
 type ServiceSpec struct {
 	Name                 string                `json:"name"`

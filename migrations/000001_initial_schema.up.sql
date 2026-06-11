@@ -32,6 +32,7 @@ CREATE TABLE services (
     healthcheck JSONB,
     restart_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
     placement_constraints JSONB NOT NULL DEFAULT '[]'::jsonb,
+    status TEXT NOT NULL DEFAULT 'active',
     deployment_version BIGINT NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now()),
