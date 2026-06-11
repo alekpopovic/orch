@@ -14,6 +14,8 @@ import (
 )
 
 type Service interface {
+	RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error)
+	HeartbeatNode(ctx context.Context, heartbeat NodeHeartbeat) (NodeCommand, error)
 	ListNodes(ctx context.Context) ([]types.Node, error)
 	GetNode(ctx context.Context, id types.NodeID) (types.Node, error)
 	DrainNode(ctx context.Context, id types.NodeID) (types.Node, error)
@@ -28,6 +30,32 @@ type Service interface {
 	ListTasks(ctx context.Context, filter TaskFilter) ([]types.Task, error)
 	GetTask(ctx context.Context, id types.TaskID) (types.Task, error)
 	ListEvents(ctx context.Context, filter EventFilter) ([]types.Event, error)
+}
+
+type NodeRegistration struct {
+	Name             string
+	AdvertiseAddress string
+	Labels           map[string]string
+	Capacity         types.Resources
+	Allocatable      types.Resources
+}
+
+type NodeHeartbeat struct {
+	NodeID      types.NodeID
+	Capacity    types.Resources
+	Allocatable types.Resources
+	Labels      map[string]string
+	Shutdown    bool
+}
+
+type NodeCommand struct {
+	Node       types.Node
+	Directives []AgentDirective
+}
+
+type AgentDirective struct {
+	Type    string `json:"type"`
+	Message string `json:"message,omitempty"`
 }
 
 type TaskFilter struct {
@@ -61,6 +89,102 @@ func NewMemoryService() *MemoryService {
 		deployments: make(map[types.DeploymentID]types.Deployment),
 		now:         now,
 	}
+}
+
+func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error) {
+	if err := ctx.Err(); err != nil {
+		return NodeCommand{}, err
+	}
+	spec := types.NodeSpec{
+		Hostname:         registration.Name,
+		AdvertiseAddress: registration.AdvertiseAddress,
+		Labels:           registration.Labels,
+		Capacity:         registration.Capacity,
+		Allocatable:      registration.Allocatable,
+	}
+	if err := spec.Validate(); err != nil {
+		return NodeCommand{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now()
+	for id, node := range s.nodes {
+		if node.Hostname == registration.Name {
+			node.AdvertiseAddress = registration.AdvertiseAddress
+			node.Labels = registration.Labels
+			node.Capacity = registration.Capacity
+			node.Allocatable = registration.Allocatable
+			if node.Status == types.NodeUnknown || node.Status == types.NodeOffline {
+				node.Status = types.NodeReady
+			}
+			node.LastHeartbeatAt = now
+			node.UpdatedAt = now
+			s.nodes[id] = node
+			s.appendEventLocked("node.registered", types.EventInfo, "controlplane", "node registered", "node", string(id), now)
+			return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
+		}
+	}
+
+	id := types.NodeID(newUUID())
+	node := types.Node{
+		ID:               id,
+		Hostname:         registration.Name,
+		AdvertiseAddress: registration.AdvertiseAddress,
+		Labels:           registration.Labels,
+		Capacity:         registration.Capacity,
+		Allocatable:      registration.Allocatable,
+		Status:           types.NodeReady,
+		LastHeartbeatAt:  now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	s.nodes[id] = node
+	s.appendEventLocked("node.registered", types.EventInfo, "controlplane", "node registered", "node", string(id), now)
+	return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
+}
+
+func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbeat) (NodeCommand, error) {
+	if err := ctx.Err(); err != nil {
+		return NodeCommand{}, err
+	}
+	if heartbeat.NodeID == "" {
+		return NodeCommand{}, fmt.Errorf("%w: node id is required", store.ErrInvalidState)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node, ok := s.nodes[heartbeat.NodeID]
+	if !ok {
+		return NodeCommand{}, store.ErrNotFound
+	}
+	now := s.now()
+	if heartbeat.Capacity.CPU > 0 || heartbeat.Capacity.Memory > 0 {
+		node.Capacity = heartbeat.Capacity
+	}
+	if heartbeat.Allocatable.CPU > 0 || heartbeat.Allocatable.Memory > 0 {
+		node.Allocatable = heartbeat.Allocatable
+	}
+	if heartbeat.Labels != nil {
+		node.Labels = heartbeat.Labels
+	}
+	if heartbeat.Shutdown {
+		node.Status = types.NodeOffline
+	}
+	node.LastHeartbeatAt = now
+	node.UpdatedAt = now
+	s.nodes[node.ID] = node
+
+	eventType := "node.heartbeat"
+	message := "node heartbeat"
+	if heartbeat.Shutdown {
+		eventType = "node.shutdown"
+		message = "node graceful shutdown"
+	}
+	s.appendEventLocked(eventType, types.EventInfo, "controlplane", message, "node", string(node.ID), now)
+	return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
 }
 
 func (s *MemoryService) ListNodes(ctx context.Context) ([]types.Node, error) {
@@ -409,6 +533,17 @@ func seedNodes(now func() time.Time) map[types.NodeID]types.Node {
 			CreatedAt:        timestamp,
 			UpdatedAt:        timestamp,
 		},
+	}
+}
+
+func directivesForNode(node types.Node) []AgentDirective {
+	switch node.Status {
+	case types.NodeDraining:
+		return []AgentDirective{{Type: "drain", Message: "node is marked draining"}}
+	case types.NodeOffline:
+		return []AgentDirective{{Type: "offline", Message: "node is marked offline"}}
+	default:
+		return nil
 	}
 }
 

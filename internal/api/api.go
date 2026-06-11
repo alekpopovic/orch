@@ -20,9 +20,10 @@ import (
 )
 
 type Server struct {
-	controlPlane controlplane.Service
-	logger       *slog.Logger
-	timeout      time.Duration
+	controlPlane   controlplane.Service
+	logger         *slog.Logger
+	timeout        time.Duration
+	bootstrapToken string
 }
 
 type Option func(*Server)
@@ -30,6 +31,12 @@ type Option func(*Server)
 func WithTimeout(timeout time.Duration) Option {
 	return func(server *Server) {
 		server.timeout = timeout
+	}
+}
+
+func WithBootstrapToken(token string) Option {
+	return func(server *Server) {
+		server.bootstrapToken = token
 	}
 }
 
@@ -49,6 +56,8 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.healthz)
 	mux.HandleFunc("GET /readyz", server.readyz)
+	mux.HandleFunc("POST /v1/agent/register", server.agentRegister)
+	mux.HandleFunc("POST /v1/agent/heartbeat", server.agentHeartbeat)
 	mux.HandleFunc("GET /v1/nodes", server.listNodes)
 	mux.HandleFunc("GET /v1/nodes/{id}", server.getNode)
 	mux.HandleFunc("POST /v1/nodes/{id}/drain", server.drainNode)
@@ -84,6 +93,29 @@ type RequestError struct {
 
 type ListNodesResponse struct {
 	Nodes []types.Node `json:"nodes"`
+}
+
+type AgentRegisterRequest struct {
+	NodeName         string            `json:"node_name"`
+	AdvertiseAddress string            `json:"advertise_address"`
+	Labels           map[string]string `json:"labels,omitempty"`
+	Capacity         types.Resources   `json:"capacity"`
+	Allocatable      types.Resources   `json:"allocatable"`
+	DockerSocketPath string            `json:"docker_socket_path,omitempty"`
+}
+
+type AgentHeartbeatRequest struct {
+	NodeID      types.NodeID      `json:"node_id"`
+	Capacity    types.Resources   `json:"capacity"`
+	Allocatable types.Resources   `json:"allocatable"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Shutdown    bool              `json:"shutdown,omitempty"`
+}
+
+type AgentResponse struct {
+	Node       types.Node                    `json:"node"`
+	Status     types.NodeStatus              `json:"status"`
+	Directives []controlplane.AgentDirective `json:"directives,omitempty"`
 }
 
 type NodeResponse struct {
@@ -134,6 +166,62 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, HealthResponse{Status: "ready", Time: time.Now().UTC()})
+}
+
+func (s *Server) agentRegister(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAgent(w, r) {
+		return
+	}
+	var req AgentRegisterRequest
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.NodeName) == "" {
+		s.writeError(w, r, fmt.Errorf("%w: node_name is required", store.ErrInvalidState))
+		return
+	}
+	if strings.TrimSpace(req.AdvertiseAddress) == "" {
+		s.writeError(w, r, fmt.Errorf("%w: advertise_address is required", store.ErrInvalidState))
+		return
+	}
+	command, err := s.controlPlane.RegisterNode(r.Context(), controlplane.NodeRegistration{
+		Name:             req.NodeName,
+		AdvertiseAddress: req.AdvertiseAddress,
+		Labels:           req.Labels,
+		Capacity:         req.Capacity,
+		Allocatable:      req.Allocatable,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, AgentResponse{Node: command.Node, Status: command.Node.Status, Directives: command.Directives})
+}
+
+func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAgent(w, r) {
+		return
+	}
+	var req AgentHeartbeatRequest
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	if req.NodeID == "" {
+		s.writeError(w, r, fmt.Errorf("%w: node_id is required", store.ErrInvalidState))
+		return
+	}
+	command, err := s.controlPlane.HeartbeatNode(r.Context(), controlplane.NodeHeartbeat{
+		NodeID:      req.NodeID,
+		Capacity:    req.Capacity,
+		Allocatable: req.Allocatable,
+		Labels:      req.Labels,
+		Shutdown:    req.Shutdown,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, AgentResponse{Node: command.Node, Status: command.Node.Status, Directives: command.Directives})
 }
 
 func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
@@ -410,6 +498,28 @@ func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, target any) 
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		s.writeError(w, r, fmt.Errorf("%w: request body must contain a single JSON object", store.ErrInvalidState))
+		return false
+	}
+	return true
+}
+
+func (s *Server) authorizeAgent(w http.ResponseWriter, r *http.Request) bool {
+	if s.bootstrapToken == "" {
+		return true
+	}
+	token := strings.TrimSpace(r.Header.Get("X-Orch-Bootstrap-Token"))
+	if token == "" {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	}
+	if token != s.bootstrapToken {
+		writeJSON(w, http.StatusUnauthorized, ErrorResponse{
+			Error: RequestError{
+				Code:      "unauthorized",
+				Message:   "invalid agent bootstrap token",
+				RequestID: requestID(r.Context()),
+			},
+		})
 		return false
 	}
 	return true

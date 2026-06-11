@@ -15,7 +15,12 @@ func TestLoadServerDefaultsAreValid(t *testing.T) {
 
 func TestLoadAgentDefaultsAreValid(t *testing.T) {
 	t.Setenv("ORCH_NODE_ID", "")
+	t.Setenv("ORCH_NODE_NAME", "")
+	t.Setenv("ORCH_ADVERTISE_ADDRESS", "")
+	t.Setenv("ORCH_NODE_LABELS", "")
 	t.Setenv("ORCH_SERVER_URL", "")
+	t.Setenv("ORCH_BOOTSTRAP_TOKEN", "")
+	t.Setenv("ORCH_DOCKER_SOCKET", "")
 	t.Setenv("ORCH_AGENT_HEARTBEAT_INTERVAL", "")
 	t.Setenv("ORCH_SHUTDOWN_TIMEOUT", "")
 

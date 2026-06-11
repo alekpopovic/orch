@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -11,12 +12,17 @@ type ServerConfig struct {
 	Addr                string
 	DatabaseURL         string
 	LogLevel            string
+	BootstrapToken      string
 	GracefulShutdownTTL time.Duration
 }
 
 type AgentConfig struct {
-	NodeID              string
+	NodeName            string
+	AdvertiseAddress    string
+	Labels              map[string]string
 	ServerURL           string
+	BootstrapToken      string
+	DockerSocketPath    string
 	LogLevel            string
 	HeartbeatInterval   time.Duration
 	GracefulShutdownTTL time.Duration
@@ -27,14 +33,19 @@ func LoadServer() ServerConfig {
 		Addr:                getenv("ORCH_SERVER_ADDR", ":8080"),
 		DatabaseURL:         getenv("DATABASE_URL", "postgres://orch:orch@localhost:5432/orch?sslmode=disable"),
 		LogLevel:            getenv("ORCH_LOG_LEVEL", "info"),
+		BootstrapToken:      getenv("ORCH_BOOTSTRAP_TOKEN", "dev-bootstrap-token"),
 		GracefulShutdownTTL: durationFromEnv("ORCH_SHUTDOWN_TIMEOUT", 10*time.Second),
 	}
 }
 
 func LoadAgent() AgentConfig {
 	return AgentConfig{
-		NodeID:              getenv("ORCH_NODE_ID", "local-node"),
+		NodeName:            getenv("ORCH_NODE_NAME", getenv("ORCH_NODE_ID", "local-node")),
+		AdvertiseAddress:    getenv("ORCH_ADVERTISE_ADDRESS", "127.0.0.1"),
+		Labels:              labelsFromEnv("ORCH_NODE_LABELS"),
 		ServerURL:           getenv("ORCH_SERVER_URL", "http://localhost:8080"),
+		BootstrapToken:      getenv("ORCH_BOOTSTRAP_TOKEN", "dev-bootstrap-token"),
+		DockerSocketPath:    getenv("ORCH_DOCKER_SOCKET", "/var/run/docker.sock"),
 		LogLevel:            getenv("ORCH_LOG_LEVEL", "info"),
 		HeartbeatInterval:   durationFromEnv("ORCH_AGENT_HEARTBEAT_INTERVAL", 5*time.Second),
 		GracefulShutdownTTL: durationFromEnv("ORCH_SHUTDOWN_TIMEOUT", 10*time.Second),
@@ -47,6 +58,26 @@ func getenv(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func labelsFromEnv(key string) map[string]string {
+	raw := os.Getenv(key)
+	labels := map[string]string{}
+	if raw == "" {
+		return labels
+	}
+	for _, part := range strings.Split(raw, ",") {
+		pair := strings.SplitN(part, "=", 2)
+		if len(pair) != 2 {
+			continue
+		}
+		labelKey := strings.TrimSpace(pair[0])
+		labelValue := strings.TrimSpace(pair[1])
+		if labelKey != "" {
+			labels[labelKey] = labelValue
+		}
+	}
+	return labels
 }
 
 func durationFromEnv(key string, fallback time.Duration) time.Duration {
@@ -81,11 +112,20 @@ func (cfg ServerConfig) Validate() error {
 }
 
 func (cfg AgentConfig) Validate() error {
-	if cfg.NodeID == "" {
-		return fmt.Errorf("node ID is required")
+	if cfg.NodeName == "" {
+		return fmt.Errorf("node name is required")
+	}
+	if cfg.AdvertiseAddress == "" {
+		return fmt.Errorf("advertise address is required")
 	}
 	if cfg.ServerURL == "" {
 		return fmt.Errorf("server URL is required")
+	}
+	if cfg.BootstrapToken == "" {
+		return fmt.Errorf("bootstrap token is required")
+	}
+	if cfg.DockerSocketPath == "" {
+		return fmt.Errorf("Docker socket path is required")
 	}
 	if cfg.HeartbeatInterval <= 0 {
 		return fmt.Errorf("heartbeat interval must be positive")

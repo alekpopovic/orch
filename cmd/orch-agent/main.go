@@ -6,8 +6,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
+	"github.com/alekpopovic/orch/internal/agent"
 	"github.com/alekpopovic/orch/internal/config"
 	"github.com/alekpopovic/orch/internal/logging"
 )
@@ -25,28 +25,6 @@ func main() {
 }
 
 func run(ctx context.Context, logger *slog.Logger, cfg config.AgentConfig) error {
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-
-	logger.Info("starting agent", "node_id", cfg.NodeID, "server_url", cfg.ServerURL)
-
-	ticker := time.NewTicker(cfg.HeartbeatInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Info("shutting down agent", "node_id", cfg.NodeID)
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.GracefulShutdownTTL)
-			defer cancel()
-			return shutdown(shutdownCtx)
-		case checkedAt := <-ticker.C:
-			logger.Info("agent heartbeat", "node_id", cfg.NodeID, "checked_at", checkedAt.UTC())
-		}
-	}
-}
-
-func shutdown(ctx context.Context) error {
-	return ctx.Err()
+	runner := agent.NewRunner(cfg, nil, logger)
+	return runner.Run(ctx)
 }

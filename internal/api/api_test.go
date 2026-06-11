@@ -37,6 +37,53 @@ func TestListNodes(t *testing.T) {
 	}
 }
 
+func TestAgentRegisterRequiresBootstrapToken(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithBootstrapToken("secret"))
+	rec := doRequest(t, handler, http.MethodPost, "/v1/agent/register", `{
+		"node_name": "node-a",
+		"advertise_address": "10.0.0.10",
+		"capacity": {"cpu": 4000, "memory": 1024},
+		"allocatable": {"cpu": 4000, "memory": 1024}
+	}`)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rec.Code)
+	}
+}
+
+func TestAgentRegisterAndHeartbeat(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithBootstrapToken("secret"))
+	rec := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/register", `{
+		"node_name": "node-a",
+		"advertise_address": "10.0.0.10",
+		"labels": {"role": "app"},
+		"capacity": {"cpu": 4000, "memory": 1024},
+		"allocatable": {"cpu": 3000, "memory": 512}
+	}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+	var registered AgentResponse
+	decodeResponse(t, rec, &registered)
+	if registered.Node.ID == "" || registered.Status != "ready" {
+		t.Fatalf("unexpected register response %#v", registered)
+	}
+
+	heartbeat := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/heartbeat", `{
+		"node_id": "`+string(registered.Node.ID)+`",
+		"capacity": {"cpu": 4000, "memory": 1024},
+		"allocatable": {"cpu": 3000, "memory": 512}
+	}`)
+	if heartbeat.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, heartbeat.Code, heartbeat.Body.String())
+	}
+	var acknowledged AgentResponse
+	decodeResponse(t, heartbeat, &acknowledged)
+	if acknowledged.Node.LastHeartbeatAt.IsZero() {
+		t.Fatalf("expected heartbeat timestamp")
+	}
+}
+
 func TestDrainNode(t *testing.T) {
 	handler := newTestHandler()
 	rec := doRequest(t, handler, http.MethodPost, "/v1/nodes/00000000-0000-4000-8000-000000000001/drain", nil)
@@ -199,6 +246,16 @@ func doRequest(t *testing.T, handler http.Handler, method string, path string, b
 	req := httptest.NewRequest(method, path, reader)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Request-ID", "test-request-id")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func doAgentRequest(t *testing.T, handler http.Handler, method string, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body.(string)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec

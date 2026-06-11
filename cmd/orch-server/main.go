@@ -35,7 +35,7 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewHandler(logger, controlplane.NewMemoryService()),
+		Handler:           api.NewHandler(logger, controlplane.NewMemoryService(), api.WithBootstrapToken(cfg.BootstrapToken)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

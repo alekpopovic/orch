@@ -44,7 +44,11 @@ services:
       - .env
     environment:
       ORCH_SERVER_URL: http://orch-server:8080
-      ORCH_NODE_ID: local-agent-1
+      ORCH_BOOTSTRAP_TOKEN: dev-bootstrap-token
+      ORCH_NODE_NAME: local-agent-1
+      ORCH_ADVERTISE_ADDRESS: local-agent-1
+      ORCH_NODE_LABELS: role=worker
+      ORCH_DOCKER_SOCKET: /var/run/docker.sock
     depends_on:
       - orch-server
 
