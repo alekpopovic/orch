@@ -264,6 +264,31 @@ func (s *PostgresStore) GetTask(ctx context.Context, id types.TaskID) (types.Tas
 	return task, nil
 }
 
+func (s *PostgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID types.NodeID, expectedUpdatedAt time.Time) (types.Task, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE tasks
+		SET node_id = $2,
+			actual_status = $3,
+			updated_at = timezone('utc', now()),
+			row_version = row_version + 1
+		WHERE id = $1 AND updated_at = $4 AND actual_status = 'pending'
+		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
+			image, version, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+		string(id),
+		string(nodeID),
+		string(types.TaskAssigned),
+		expectedUpdatedAt.UTC(),
+	)
+	task, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return types.Task{}, ErrConflict
+		}
+		return types.Task{}, mapPostgresError(err)
+	}
+	return task, nil
+}
+
 func (s *PostgresStore) UpdateTaskStatus(ctx context.Context, id types.TaskID, desired types.TaskStatus, actual types.TaskStatus, containerID string, failureReason string, expectedUpdatedAt time.Time) (types.Task, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE tasks

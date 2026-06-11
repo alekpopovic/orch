@@ -23,6 +23,7 @@ type ServiceStore interface {
 type TaskStore interface {
 	CreateTask(ctx context.Context, task types.Task) (types.Task, error)
 	GetTask(ctx context.Context, id types.TaskID) (types.Task, error)
+	AssignTask(ctx context.Context, id types.TaskID, nodeID types.NodeID, expectedUpdatedAt time.Time) (types.Task, error)
 	UpdateTaskStatus(ctx context.Context, id types.TaskID, desired types.TaskStatus, actual types.TaskStatus, containerID string, failureReason string, expectedUpdatedAt time.Time) (types.Task, error)
 	ListTasksByService(ctx context.Context, serviceID types.ServiceID) ([]types.Task, error)
 	ListTasksByNode(ctx context.Context, nodeID types.NodeID) ([]types.Task, error)
