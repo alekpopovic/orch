@@ -77,7 +77,7 @@ func (c *Controller) RunOnce(ctx context.Context) error {
 
 func (c *Controller) activeDeployments(ctx context.Context) ([]types.Deployment, error) {
 	var deployments []types.Deployment
-	for _, status := range []types.DeploymentStatus{types.DeploymentPending, types.DeploymentRunning} {
+	for _, status := range []types.DeploymentStatus{types.DeploymentPending, types.DeploymentRunning, types.DeploymentRollingBack} {
 		items, err := c.store.ListDeploymentsByStatus(ctx, status)
 		if err != nil {
 			return nil, fmt.Errorf("list %s deployments: %w", status, err)
@@ -109,7 +109,7 @@ func (c *Controller) reconcileDeployment(ctx context.Context, deployment types.D
 		return err
 	}
 	if state.oldActive == 0 && state.newHealthy >= service.Spec.Replicas {
-		_, err := c.setStatus(ctx, deployment, types.DeploymentSucceeded, "rollout completed", types.EventInfo)
+		_, err := c.setStatus(ctx, deployment, terminalStatusFor(deployment), terminalMessageFor(deployment), types.EventInfo)
 		return err
 	}
 	if deployment.Status == types.DeploymentPending {
@@ -145,7 +145,7 @@ func (c *Controller) reconcileDeployment(ctx context.Context, deployment types.D
 		}, events.WithLogger(c.logger))
 	}
 	if state.oldActive == 0 && state.newHealthy >= service.Spec.Replicas {
-		_, err := c.setStatus(ctx, deployment, types.DeploymentSucceeded, "rollout completed", types.EventInfo)
+		_, err := c.setStatus(ctx, deployment, terminalStatusFor(deployment), terminalMessageFor(deployment), types.EventInfo)
 		return err
 	}
 	return nil
@@ -302,4 +302,18 @@ func isActive(task types.Task) bool {
 
 func isAvailable(task types.Task) bool {
 	return task.ActualStatus == types.TaskRunning || task.ActualStatus == types.TaskHealthy
+}
+
+func terminalStatusFor(deployment types.Deployment) types.DeploymentStatus {
+	if deployment.ToVersion < deployment.FromVersion {
+		return types.DeploymentRolledBack
+	}
+	return types.DeploymentSucceeded
+}
+
+func terminalMessageFor(deployment types.Deployment) string {
+	if deployment.ToVersion < deployment.FromVersion {
+		return "rollback completed"
+	}
+	return "rollout completed"
 }

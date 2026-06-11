@@ -94,6 +94,7 @@ type MemoryService struct {
 	mu          sync.RWMutex
 	nodes       map[types.NodeID]types.Node
 	services    map[types.ServiceID]types.Service
+	versions    map[types.ServiceID]map[int64]types.ServiceSpec
 	tasks       map[types.TaskID]types.Task
 	deployments map[types.DeploymentID]types.Deployment
 	events      []types.Event
@@ -105,6 +106,7 @@ func NewMemoryService() *MemoryService {
 	return &MemoryService{
 		nodes:       make(map[types.NodeID]types.Node),
 		services:    make(map[types.ServiceID]types.Service),
+		versions:    make(map[types.ServiceID]map[int64]types.ServiceSpec),
 		tasks:       make(map[types.TaskID]types.Task),
 		deployments: make(map[types.DeploymentID]types.Deployment),
 		now:         now,
@@ -376,6 +378,7 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 		UpdatedAt:         now,
 	}
 	s.services[service.ID] = service
+	s.storeServiceVersionLocked(service.ID, service.DeploymentVersion, spec)
 	s.reconcileServiceTasksLocked(service, now)
 	s.appendEventLocked(events.TypeServiceCreated, types.EventInfo, "controlplane", "service created", "service", string(service.ID), now)
 	return service, nil
@@ -492,6 +495,7 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 	service.DeploymentVersion++
 	service.UpdatedAt = now
 	s.services[id] = service
+	s.storeServiceVersionLocked(id, service.DeploymentVersion, service.Spec)
 
 	deployment := types.Deployment{
 		ID:             types.DeploymentID(newUUID()),
@@ -561,13 +565,18 @@ func (s *MemoryService) RollbackService(ctx context.Context, id types.ServiceID)
 	if !ok {
 		return types.Deployment{}, store.ErrNotFound
 	}
-	if service.DeploymentVersion <= 1 {
-		return types.Deployment{}, fmt.Errorf("%w: no previous deployment version", store.ErrInvalidState)
+	if active := s.activeRollbackLocked(id); active.ID != "" {
+		return active, nil
+	}
+	targetVersion, targetSpec, ok := s.previousSuccessfulVersionLocked(service)
+	if !ok {
+		return types.Deployment{}, fmt.Errorf("%w: no previous successful deployment version", store.ErrInvalidState)
 	}
 
 	now := s.now()
 	fromVersion := service.DeploymentVersion
-	service.DeploymentVersion--
+	service.Spec = targetSpec
+	service.DeploymentVersion = targetVersion
 	service.UpdatedAt = now
 	s.services[id] = service
 
@@ -575,13 +584,14 @@ func (s *MemoryService) RollbackService(ctx context.Context, id types.ServiceID)
 		ID:             types.DeploymentID(newUUID()),
 		ServiceID:      id,
 		FromVersion:    fromVersion,
-		ToVersion:      service.DeploymentVersion,
+		ToVersion:      targetVersion,
 		Strategy:       types.RolloutRollingUpdate,
 		Status:         types.DeploymentRollingBack,
 		MaxUnavailable: 1,
 		MaxSurge:       0,
 		CreatedAt:      now,
 		UpdatedAt:      now,
+		StartedAt:      now,
 	}
 	s.deployments[deployment.ID] = deployment
 	s.appendEventLocked(events.TypeRollbackStarted, types.EventInfo, "controlplane", "service rollback started", "service", string(id), now)
@@ -732,7 +742,7 @@ func (s *MemoryService) UpdateDeploymentStatus(ctx context.Context, id types.Dep
 	now := s.now()
 	deployment.Status = status
 	deployment.UpdatedAt = now
-	if status == types.DeploymentRunning && deployment.StartedAt.IsZero() {
+	if (status == types.DeploymentRunning || status == types.DeploymentRollingBack) && deployment.StartedAt.IsZero() {
 		deployment.StartedAt = now
 	}
 	if status == types.DeploymentSucceeded || status == types.DeploymentFailed || status == types.DeploymentPaused || status == types.DeploymentRolledBack {
@@ -943,6 +953,55 @@ func (s *MemoryService) hasActiveDeploymentLocked(serviceID types.ServiceID) boo
 		}
 	}
 	return false
+}
+
+func (s *MemoryService) activeRollbackLocked(serviceID types.ServiceID) types.Deployment {
+	var latest types.Deployment
+	for _, deployment := range s.deployments {
+		if deployment.ServiceID != serviceID || deployment.ToVersion >= deployment.FromVersion {
+			continue
+		}
+		if deployment.Status != types.DeploymentRollingBack && deployment.Status != types.DeploymentPending && deployment.Status != types.DeploymentRunning {
+			continue
+		}
+		if latest.ID == "" || deployment.CreatedAt.After(latest.CreatedAt) || (deployment.CreatedAt.Equal(latest.CreatedAt) && deployment.ID > latest.ID) {
+			latest = deployment
+		}
+	}
+	return latest
+}
+
+func (s *MemoryService) previousSuccessfulVersionLocked(service types.Service) (int64, types.ServiceSpec, bool) {
+	version := int64(0)
+	if _, ok := s.versions[service.ID][1]; ok && service.DeploymentVersion > 1 {
+		version = 1
+	}
+	for _, deployment := range s.deployments {
+		if deployment.ServiceID != service.ID {
+			continue
+		}
+		if deployment.ToVersion >= service.DeploymentVersion {
+			continue
+		}
+		if deployment.Status != types.DeploymentSucceeded && deployment.Status != types.DeploymentRolledBack {
+			continue
+		}
+		if deployment.ToVersion > version {
+			version = deployment.ToVersion
+		}
+	}
+	if version == 0 {
+		return 0, types.ServiceSpec{}, false
+	}
+	spec, ok := s.versions[service.ID][version]
+	return version, spec, ok
+}
+
+func (s *MemoryService) storeServiceVersionLocked(serviceID types.ServiceID, version int64, spec types.ServiceSpec) {
+	if s.versions[serviceID] == nil {
+		s.versions[serviceID] = make(map[int64]types.ServiceSpec)
+	}
+	s.versions[serviceID][version] = spec
 }
 
 func (s *MemoryService) readyNodesLocked() []types.Node {

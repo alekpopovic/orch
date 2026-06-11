@@ -81,6 +81,32 @@ func TestControllerIdempotentResume(t *testing.T) {
 	assertTaskVersions(t, fake.tasks, map[int64]int{1: 2, 2: 1})
 }
 
+func TestControllerCompletesRollback(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeStore(2, types.Deployment{
+		FromVersion:    2,
+		ToVersion:      1,
+		Status:         types.DeploymentRollingBack,
+		MaxUnavailable: 1,
+		MaxSurge:       0,
+	})
+	fake.service.DeploymentVersion = 1
+	fake.service.Spec.Image = "ghcr.io/example/api:1.0.0"
+	fake.tasks = map[types.TaskID]types.Task{
+		"old-a": task("old-a", 2, types.TaskRunning, types.TaskHealthy),
+		"old-b": task("old-b", 2, types.TaskRunning, types.TaskHealthy),
+		"new-a": task("new-a", 1, types.TaskRunning, types.TaskHealthy),
+		"new-b": task("new-b", 1, types.TaskRunning, types.TaskHealthy),
+	}
+
+	if err := NewController(fake, slog.Default()).RunOnce(ctx); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if fake.deployment.Status != types.DeploymentRolledBack {
+		t.Fatalf("expected rolled_back deployment, got %q", fake.deployment.Status)
+	}
+}
+
 func mustRunOnce(t *testing.T, controller *Controller, ctx context.Context) {
 	t.Helper()
 	if err := controller.RunOnce(ctx); err != nil {
@@ -103,8 +129,12 @@ func newFakeStore(replicas int, deployment types.Deployment) *fakeStore {
 		deployment.ID = "00000000-0000-4000-8000-000000000100"
 	}
 	deployment.ServiceID = "00000000-0000-4000-8000-000000000001"
-	deployment.FromVersion = 1
-	deployment.ToVersion = 2
+	if deployment.FromVersion == 0 {
+		deployment.FromVersion = 1
+	}
+	if deployment.ToVersion == 0 {
+		deployment.ToVersion = 2
+	}
 	deployment.Strategy = types.RolloutRollingUpdate
 	if deployment.Status == "" {
 		deployment.Status = types.DeploymentPending

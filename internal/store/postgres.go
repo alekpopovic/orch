@@ -457,7 +457,7 @@ func (s *PostgresStore) UpdateDeploymentStatus(ctx context.Context, id types.Dep
 	row := s.pool.QueryRow(ctx, `
 		UPDATE deployments
 		SET status = $2,
-			started_at = CASE WHEN $2 = 'running' AND started_at IS NULL THEN timezone('utc', now()) ELSE started_at END,
+			started_at = CASE WHEN $2 IN ('running', 'rolling_back') AND started_at IS NULL THEN timezone('utc', now()) ELSE started_at END,
 			completed_at = CASE WHEN $2 IN ('succeeded', 'failed', 'paused', 'rolled_back') AND completed_at IS NULL THEN timezone('utc', now()) ELSE completed_at END,
 			updated_at = timezone('utc', now()),
 			row_version = row_version + 1
