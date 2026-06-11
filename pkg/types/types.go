@@ -280,14 +280,17 @@ type Task struct {
 type TaskStatus string
 
 const (
-	TaskPending  TaskStatus = "pending"
-	TaskAssigned TaskStatus = "assigned"
-	TaskPulling  TaskStatus = "pulling"
-	TaskStarting TaskStatus = "starting"
-	TaskRunning  TaskStatus = "running"
-	TaskStopping TaskStatus = "stopping"
-	TaskStopped  TaskStatus = "stopped"
-	TaskFailed   TaskStatus = "failed"
+	TaskPending   TaskStatus = "pending"
+	TaskAssigned  TaskStatus = "assigned"
+	TaskPulling   TaskStatus = "pulling"
+	TaskCreated   TaskStatus = "created"
+	TaskStarting  TaskStatus = "starting"
+	TaskRunning   TaskStatus = "running"
+	TaskUnhealthy TaskStatus = "unhealthy"
+	TaskStopping  TaskStatus = "stopping"
+	TaskStopped   TaskStatus = "stopped"
+	TaskRemoved   TaskStatus = "removed"
+	TaskFailed    TaskStatus = "failed"
 )
 
 type Deployment struct {

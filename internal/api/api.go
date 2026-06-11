@@ -58,6 +58,8 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux.HandleFunc("GET /readyz", server.readyz)
 	mux.HandleFunc("POST /v1/agent/register", server.agentRegister)
 	mux.HandleFunc("POST /v1/agent/heartbeat", server.agentHeartbeat)
+	mux.HandleFunc("GET /v1/agent/tasks", server.agentListTasks)
+	mux.HandleFunc("POST /v1/agent/tasks/{task_id}/status", server.agentTaskStatus)
 	mux.HandleFunc("GET /v1/nodes", server.listNodes)
 	mux.HandleFunc("GET /v1/nodes/{id}", server.getNode)
 	mux.HandleFunc("POST /v1/nodes/{id}/drain", server.drainNode)
@@ -116,6 +118,17 @@ type AgentResponse struct {
 	Node       types.Node                    `json:"node"`
 	Status     types.NodeStatus              `json:"status"`
 	Directives []controlplane.AgentDirective `json:"directives,omitempty"`
+}
+
+type AgentTasksResponse struct {
+	Tasks []types.Task `json:"tasks"`
+}
+
+type AgentTaskStatusRequest struct {
+	NodeID        types.NodeID     `json:"node_id"`
+	Status        types.TaskStatus `json:"status"`
+	ContainerID   string           `json:"container_id,omitempty"`
+	FailureReason string           `json:"failure_reason,omitempty"`
 }
 
 type NodeResponse struct {
@@ -222,6 +235,73 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, AgentResponse{Node: command.Node, Status: command.Node.Status, Directives: command.Directives})
+}
+
+func (s *Server) agentListTasks(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAgent(w, r) {
+		return
+	}
+	nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
+	if !validUUID(nodeID) {
+		s.writeError(w, r, fmt.Errorf("%w: node_id must be a UUID", store.ErrInvalidState))
+		return
+	}
+	tasks, err := s.controlPlane.ListAssignedTasks(r.Context(), types.NodeID(nodeID))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, AgentTasksResponse{Tasks: tasks})
+}
+
+func (s *Server) agentTaskStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeAgent(w, r) {
+		return
+	}
+	taskID := strings.TrimSpace(r.PathValue("task_id"))
+	if !validUUID(taskID) {
+		s.writeError(w, r, fmt.Errorf("%w: task_id must be a UUID", store.ErrInvalidState))
+		return
+	}
+	var req AgentTaskStatusRequest
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	if req.NodeID == "" {
+		s.writeError(w, r, fmt.Errorf("%w: node_id is required", store.ErrInvalidState))
+		return
+	}
+	if !validAgentTaskStatus(req.Status) {
+		s.writeError(w, r, fmt.Errorf("%w: task status is invalid", store.ErrInvalidState))
+		return
+	}
+	task, err := s.controlPlane.ReportTaskStatus(r.Context(), controlplane.TaskStatusReport{
+		TaskID:        types.TaskID(taskID),
+		NodeID:        req.NodeID,
+		Status:        req.Status,
+		ContainerID:   req.ContainerID,
+		FailureReason: req.FailureReason,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, TaskResponse{Task: task})
+}
+
+func validAgentTaskStatus(status types.TaskStatus) bool {
+	switch status {
+	case types.TaskPulling,
+		types.TaskCreated,
+		types.TaskRunning,
+		types.TaskUnhealthy,
+		types.TaskFailed,
+		types.TaskStopped,
+		types.TaskRemoved:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
@@ -671,10 +751,13 @@ func validTaskStatus(status types.TaskStatus) bool {
 	case types.TaskPending,
 		types.TaskAssigned,
 		types.TaskPulling,
+		types.TaskCreated,
 		types.TaskStarting,
 		types.TaskRunning,
+		types.TaskUnhealthy,
 		types.TaskStopping,
 		types.TaskStopped,
+		types.TaskRemoved,
 		types.TaskFailed:
 		return true
 	default:

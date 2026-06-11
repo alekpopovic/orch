@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
@@ -16,19 +17,23 @@ import (
 
 	"github.com/alekpopovic/orch/internal/api"
 	"github.com/alekpopovic/orch/internal/config"
+	orchdocker "github.com/alekpopovic/orch/internal/docker"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
 type Client interface {
 	Register(ctx context.Context, req api.AgentRegisterRequest) (api.AgentResponse, error)
 	Heartbeat(ctx context.Context, req api.AgentHeartbeatRequest) (api.AgentResponse, error)
+	ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]types.Task, error)
+	ReportTaskStatus(ctx context.Context, taskID types.TaskID, req api.AgentTaskStatusRequest) (types.Task, error)
 }
 
 type Runner struct {
-	cfg    config.AgentConfig
-	client Client
-	logger *slog.Logger
-	rand   *rand.Rand
+	cfg     config.AgentConfig
+	client  Client
+	runtime orchdocker.Runtime
+	logger  *slog.Logger
+	rand    *rand.Rand
 }
 
 func NewRunner(cfg config.AgentConfig, client Client, logger *slog.Logger) *Runner {
@@ -43,6 +48,11 @@ func NewRunner(cfg config.AgentConfig, client Client, logger *slog.Logger) *Runn
 	}
 }
 
+func (r *Runner) WithRuntime(runtime orchdocker.Runtime) *Runner {
+	r.runtime = runtime
+	return r
+}
+
 func (r *Runner) Run(ctx context.Context) error {
 	if err := r.cfg.Validate(); err != nil {
 		return err
@@ -53,6 +63,13 @@ func (r *Runner) Run(ctx context.Context) error {
 			return err
 		}
 		r.client = client
+	}
+	if r.runtime == nil {
+		runtime, err := orchdocker.NewEngineRuntimeFromEnv()
+		if err != nil {
+			return err
+		}
+		r.runtime = runtime
 	}
 
 	capacity := DetectCapacity()
@@ -76,10 +93,104 @@ func (r *Runner) Run(ctx context.Context) error {
 				return err
 			}
 			node = resp.Node
+			if err := r.reconcileAssignedTasks(ctx, node.ID); err != nil {
+				r.logger.Warn("task reconciliation failed", "node_id", node.ID, "error", err)
+			}
 			r.logger.Info("agent heartbeat acknowledged", "node_id", node.ID, "status", node.Status)
 			timer.Reset(r.nextHeartbeatDelay())
 		}
 	}
+}
+
+func (r *Runner) reconcileAssignedTasks(ctx context.Context, nodeID types.NodeID) error {
+	tasks, err := r.client.ListAssignedTasks(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	assigned := make(map[types.TaskID]types.Task, len(tasks))
+	for _, task := range tasks {
+		assigned[task.ID] = task
+		if err := r.ensureTask(ctx, nodeID, task); err != nil {
+			r.logger.Warn("task execution failed", "task_id", task.ID, "error", err)
+		}
+	}
+	return r.cleanupUnassigned(ctx, nodeID, assigned)
+}
+
+func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, task types.Task) error {
+	if task.DesiredStatus != types.TaskRunning {
+		return nil
+	}
+	if task.ContainerID != "" {
+		status, err := r.runtime.InspectContainer(ctx, orchdocker.ContainerID(task.ContainerID))
+		if err == nil && status.Running {
+			return nil
+		}
+		if err == nil {
+			if err := r.runtime.StartContainer(ctx, status.ID); err != nil {
+				_, _ = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, ContainerID: string(status.ID), FailureReason: err.Error()})
+				return err
+			}
+			_, err = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRunning, ContainerID: string(status.ID)})
+			return err
+		}
+	}
+	if _, err := r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskPulling}); err != nil {
+		return err
+	}
+	if err := r.runtime.PullImage(ctx, task.Image, nil); err != nil {
+		_, _ = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, FailureReason: err.Error()})
+		return err
+	}
+
+	containerID, err := r.runtime.CreateContainer(ctx, orchdocker.ContainerSpec{
+		Name:      "orch-" + string(task.ID),
+		Image:     task.Image,
+		ServiceID: string(task.ServiceID),
+		TaskID:    string(task.ID),
+		NodeID:    string(nodeID),
+		Version:   task.Version,
+	})
+	if err != nil {
+		_, _ = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, FailureReason: err.Error()})
+		return err
+	}
+	if _, err := r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskCreated, ContainerID: string(containerID)}); err != nil {
+		return err
+	}
+
+	if err := r.runtime.StartContainer(ctx, containerID); err != nil {
+		_, _ = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, ContainerID: string(containerID), FailureReason: err.Error()})
+		return err
+	}
+	_, err = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRunning, ContainerID: string(containerID)})
+	return err
+}
+
+func (r *Runner) cleanupUnassigned(ctx context.Context, nodeID types.NodeID, assigned map[types.TaskID]types.Task) error {
+	containers, err := r.runtime.ListManagedContainers(ctx, map[string]string{orchdocker.NodeIDLabel: string(nodeID)})
+	if err != nil {
+		return err
+	}
+	for _, container := range containers {
+		taskID := types.TaskID(container.Labels[orchdocker.TaskIDLabel])
+		if taskID == "" {
+			continue
+		}
+		if _, ok := assigned[taskID]; ok {
+			continue
+		}
+		if err := r.runtime.StopContainer(ctx, container.ID, 10*time.Second); err != nil {
+			r.logger.Warn("failed to stop unassigned container", "container_id", container.ID, "task_id", taskID, "error", err)
+			continue
+		}
+		if err := r.runtime.RemoveContainer(ctx, container.ID, true); err != nil {
+			r.logger.Warn("failed to remove unassigned container", "container_id", container.ID, "task_id", taskID, "error", err)
+			continue
+		}
+		_, _ = r.client.ReportTaskStatus(ctx, taskID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRemoved, ContainerID: string(container.ID)})
+	}
+	return nil
 }
 
 func (r *Runner) registerWithRetry(ctx context.Context, capacity types.Resources) (api.AgentResponse, error) {
@@ -221,16 +332,45 @@ func (c *HTTPClient) Heartbeat(ctx context.Context, req api.AgentHeartbeatReques
 	return out, nil
 }
 
-func (c *HTTPClient) do(ctx context.Context, path string, body any, out any) error {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("encode request: %w", err)
+func (c *HTTPClient) ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]types.Task, error) {
+	var out api.AgentTasksResponse
+	path := "/v1/agent/tasks?node_id=" + url.QueryEscape(string(nodeID))
+	if err := c.doMethod(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(data))
+	return out.Tasks, nil
+}
+
+func (c *HTTPClient) ReportTaskStatus(ctx context.Context, taskID types.TaskID, req api.AgentTaskStatusRequest) (types.Task, error) {
+	var out api.TaskResponse
+	if err := c.do(ctx, "/v1/agent/tasks/"+string(taskID)+"/status", req, &out); err != nil {
+		return types.Task{}, err
+	}
+	return out.Task, nil
+}
+
+func (c *HTTPClient) do(ctx context.Context, path string, body any, out any) error {
+	return c.doMethod(ctx, http.MethodPost, path, body, out)
+}
+
+func (c *HTTPClient) doMethod(ctx context.Context, method string, path string, body any, out any) error {
+	var reader *bytes.Reader
+	if body == nil {
+		reader = bytes.NewReader(nil)
+	} else {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("encode request: %w", err)
+		}
+		reader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 
 	resp, err := c.client.Do(req)

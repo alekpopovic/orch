@@ -96,6 +96,26 @@ curl http://localhost:8080/v1/tasks?status=running
 curl http://localhost:8080/v1/tasks/{task_id}
 ```
 
+## Agent Tasks
+
+Agent endpoints require `Authorization: Bearer <ORCH_BOOTSTRAP_TOKEN>` when a bootstrap token is configured.
+
+```sh
+curl -H 'Authorization: Bearer local-bootstrap-token' \
+  'http://localhost:8080/v1/agent/tasks?node_id={node_id}'
+
+curl -X POST http://localhost:8080/v1/agent/tasks/{task_id}/status \
+  -H 'Authorization: Bearer local-bootstrap-token' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "node_id": "{node_id}",
+    "status": "running",
+    "container_id": "container-id"
+  }'
+```
+
+Agents may report `pulling`, `created`, `running`, `unhealthy`, `failed`, `stopped`, and `removed`.
+
 ## Events
 
 ```sh

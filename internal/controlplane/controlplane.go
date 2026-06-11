@@ -16,6 +16,8 @@ import (
 type Service interface {
 	RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error)
 	HeartbeatNode(ctx context.Context, heartbeat NodeHeartbeat) (NodeCommand, error)
+	ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]types.Task, error)
+	ReportTaskStatus(ctx context.Context, report TaskStatusReport) (types.Task, error)
 	ListNodes(ctx context.Context) ([]types.Node, error)
 	GetNode(ctx context.Context, id types.NodeID) (types.Node, error)
 	DrainNode(ctx context.Context, id types.NodeID) (types.Node, error)
@@ -58,6 +60,14 @@ type AgentDirective struct {
 	Message string `json:"message,omitempty"`
 }
 
+type TaskStatusReport struct {
+	TaskID        types.TaskID
+	NodeID        types.NodeID
+	Status        types.TaskStatus
+	ContainerID   string
+	FailureReason string
+}
+
 type TaskFilter struct {
 	ServiceID types.ServiceID
 	NodeID    types.NodeID
@@ -83,7 +93,7 @@ type MemoryService struct {
 func NewMemoryService() *MemoryService {
 	now := func() time.Time { return time.Now().UTC() }
 	return &MemoryService{
-		nodes:       seedNodes(now),
+		nodes:       make(map[types.NodeID]types.Node),
 		services:    make(map[types.ServiceID]types.Service),
 		tasks:       make(map[types.TaskID]types.Task),
 		deployments: make(map[types.DeploymentID]types.Deployment),
@@ -122,6 +132,7 @@ func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegis
 			node.LastHeartbeatAt = now
 			node.UpdatedAt = now
 			s.nodes[id] = node
+			s.reconcileAllServicesLocked(now)
 			s.appendEventLocked("node.registered", types.EventInfo, "controlplane", "node registered", "node", string(id), now)
 			return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
 		}
@@ -141,6 +152,7 @@ func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegis
 		UpdatedAt:        now,
 	}
 	s.nodes[id] = node
+	s.reconcileAllServicesLocked(now)
 	s.appendEventLocked("node.registered", types.EventInfo, "controlplane", "node registered", "node", string(id), now)
 	return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
 }
@@ -185,6 +197,78 @@ func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbe
 	}
 	s.appendEventLocked(eventType, types.EventInfo, "controlplane", message, "node", string(node.ID), now)
 	return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
+}
+
+func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]types.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if nodeID == "" {
+		return nil, fmt.Errorf("%w: node id is required", store.ErrInvalidState)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tasks := make([]types.Task, 0)
+	for _, task := range s.tasks {
+		if task.NodeID != nodeID {
+			continue
+		}
+		if task.DesiredStatus == types.TaskRemoved || task.DesiredStatus == types.TaskStopped {
+			continue
+		}
+		tasks = append(tasks, task)
+	}
+	slices.SortFunc(tasks, func(a, b types.Task) int {
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
+		return 0
+	})
+	return tasks, nil
+}
+
+func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusReport) (types.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Task{}, err
+	}
+	if report.TaskID == "" {
+		return types.Task{}, fmt.Errorf("%w: task id is required", store.ErrInvalidState)
+	}
+	if report.NodeID == "" {
+		return types.Task{}, fmt.Errorf("%w: node id is required", store.ErrInvalidState)
+	}
+	if !validAgentTaskStatus(report.Status) {
+		return types.Task{}, fmt.Errorf("%w: task status %q is invalid", store.ErrInvalidState, report.Status)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, ok := s.tasks[report.TaskID]
+	if !ok {
+		return types.Task{}, store.ErrNotFound
+	}
+	if task.NodeID != report.NodeID {
+		return types.Task{}, fmt.Errorf("%w: task is not assigned to node", store.ErrInvalidState)
+	}
+	task.ActualStatus = report.Status
+	task.ContainerID = report.ContainerID
+	task.FailureReason = report.FailureReason
+	task.UpdatedAt = s.now()
+	if report.Status == types.TaskRunning && task.StartedAt.IsZero() {
+		task.StartedAt = task.UpdatedAt
+	}
+	if report.Status == types.TaskStopped || report.Status == types.TaskFailed || report.Status == types.TaskRemoved {
+		task.FinishedAt = task.UpdatedAt
+	}
+	s.tasks[task.ID] = task
+	s.appendEventLocked("task.status", types.EventInfo, "agent", "task status reported", "task", string(task.ID), task.UpdatedAt)
+	return task, nil
 }
 
 func (s *MemoryService) ListNodes(ctx context.Context) ([]types.Node, error) {
@@ -258,6 +342,7 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 		UpdatedAt:         now,
 	}
 	s.services[service.ID] = service
+	s.reconcileServiceTasksLocked(service, now)
 	s.appendEventLocked("service.created", types.EventInfo, "controlplane", "service created", "service", string(service.ID), now)
 	return service, nil
 }
@@ -337,6 +422,7 @@ func (s *MemoryService) ScaleService(ctx context.Context, id types.ServiceID, re
 	service.Spec.Replicas = replicas
 	service.UpdatedAt = s.now()
 	s.services[id] = service
+	s.reconcileServiceTasksLocked(service, service.UpdatedAt)
 	s.appendEventLocked("service.scaled", types.EventInfo, "controlplane", "service scaled", "service", string(id), service.UpdatedAt)
 	return service, nil
 }
@@ -362,6 +448,7 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 	service.DeploymentVersion++
 	service.UpdatedAt = now
 	s.services[id] = service
+	s.reconcileServiceTasksLocked(service, now)
 
 	deployment := types.Deployment{
 		ID:             types.DeploymentID(newUUID()),
@@ -500,6 +587,9 @@ func (s *MemoryService) setNodeStatus(ctx context.Context, id types.NodeID, stat
 	node.Status = status
 	node.UpdatedAt = s.now()
 	s.nodes[id] = node
+	if status == types.NodeReady {
+		s.reconcileAllServicesLocked(node.UpdatedAt)
+	}
 	s.appendEventLocked("node.status.changed", types.EventInfo, "controlplane", "node status changed", "node", string(id), node.UpdatedAt)
 	return node, nil
 }
@@ -517,25 +607,6 @@ func (s *MemoryService) appendEventLocked(eventType string, severity types.Event
 	})
 }
 
-func seedNodes(now func() time.Time) map[types.NodeID]types.Node {
-	timestamp := now()
-	id := types.NodeID("00000000-0000-4000-8000-000000000001")
-	return map[types.NodeID]types.Node{
-		id: {
-			ID:               id,
-			Hostname:         "local-node",
-			AdvertiseAddress: "127.0.0.1",
-			Labels:           map[string]string{"role": "worker"},
-			Capacity:         types.Resources{CPU: 4000, Memory: 8 * 1024 * 1024 * 1024},
-			Allocatable:      types.Resources{CPU: 3500, Memory: 7 * 1024 * 1024 * 1024},
-			Status:           types.NodeReady,
-			LastHeartbeatAt:  timestamp,
-			CreatedAt:        timestamp,
-			UpdatedAt:        timestamp,
-		},
-	}
-}
-
 func directivesForNode(node types.Node) []AgentDirective {
 	switch node.Status {
 	case types.NodeDraining:
@@ -544,6 +615,118 @@ func directivesForNode(node types.Node) []AgentDirective {
 		return []AgentDirective{{Type: "offline", Message: "node is marked offline"}}
 	default:
 		return nil
+	}
+}
+
+func (s *MemoryService) reconcileAllServicesLocked(timestamp time.Time) {
+	services := make([]types.Service, 0, len(s.services))
+	for _, service := range s.services {
+		services = append(services, service)
+	}
+	slices.SortFunc(services, func(a, b types.Service) int {
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
+		return 0
+	})
+	for _, service := range services {
+		s.reconcileServiceTasksLocked(service, timestamp)
+	}
+}
+
+func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, timestamp time.Time) {
+	active := make([]types.Task, 0)
+	for _, task := range s.tasks {
+		if task.ServiceID != service.ID {
+			continue
+		}
+		if task.DesiredStatus == types.TaskRemoved || task.DesiredStatus == types.TaskStopped {
+			continue
+		}
+		if task.Image != service.Spec.Image || task.Version != service.DeploymentVersion {
+			task.DesiredStatus = types.TaskRemoved
+			task.UpdatedAt = timestamp
+			s.tasks[task.ID] = task
+			continue
+		}
+		active = append(active, task)
+	}
+	slices.SortFunc(active, func(a, b types.Task) int {
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
+		return 0
+	})
+
+	nodes := s.readyNodesLocked()
+	if len(nodes) == 0 {
+		return
+	}
+
+	for len(active) < service.Spec.Replicas {
+		node := nodes[len(active)%len(nodes)]
+		task := types.Task{
+			ID:            types.TaskID(newUUID()),
+			ServiceID:     service.ID,
+			NodeID:        node.ID,
+			DesiredStatus: types.TaskRunning,
+			ActualStatus:  types.TaskAssigned,
+			Image:         service.Spec.Image,
+			Version:       service.DeploymentVersion,
+			CreatedAt:     timestamp,
+			UpdatedAt:     timestamp,
+		}
+		s.tasks[task.ID] = task
+		active = append(active, task)
+	}
+
+	for i, task := range active {
+		if i >= service.Spec.Replicas {
+			task.DesiredStatus = types.TaskRemoved
+			task.UpdatedAt = timestamp
+			s.tasks[task.ID] = task
+			continue
+		}
+	}
+}
+
+func (s *MemoryService) readyNodesLocked() []types.Node {
+	nodes := make([]types.Node, 0, len(s.nodes))
+	for _, node := range s.nodes {
+		if node.Status == types.NodeReady {
+			nodes = append(nodes, node)
+		}
+	}
+	slices.SortFunc(nodes, func(a, b types.Node) int {
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
+		return 0
+	})
+	return nodes
+}
+
+func validAgentTaskStatus(status types.TaskStatus) bool {
+	switch status {
+	case types.TaskPulling,
+		types.TaskCreated,
+		types.TaskRunning,
+		types.TaskUnhealthy,
+		types.TaskFailed,
+		types.TaskStopped,
+		types.TaskRemoved:
+		return true
+	default:
+		return false
 	}
 }
 

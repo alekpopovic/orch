@@ -27,6 +27,21 @@ After registration, the agent sends `POST /v1/agent/heartbeat` every configured 
 
 The agent does not choose to become draining on its own. Draining is controlled by the server response, usually after an operator calls `orch node drain`. The agent records and logs the returned status and directives.
 
+## Task Assignment
+
+After each successful heartbeat, the agent calls `GET /v1/agent/tasks?node_id=<id>`. The control plane remains the source of truth and returns the desired tasks currently assigned to that node.
+
+For each assigned task with desired status `running`, the agent reconciles Docker state idempotently:
+
+- report `pulling`, pull the image, and retry safely if the pull fails.
+- create a managed container labeled with service, task, node, and version identity.
+- report `created` once a container ID exists.
+- start the container and report `running`.
+
+The agent may also report `unhealthy`, `failed`, `stopped`, or `removed` through `POST /v1/agent/tasks/{task_id}/status`. Status reports include the node ID so the server can reject updates for tasks assigned elsewhere.
+
+On every poll, the agent lists locally managed Docker containers for its node. Containers whose `orch.task_id` is no longer assigned are stopped and removed. This makes process restarts safe without a local durable cache: Docker labels provide local identity, and the server provides desired state.
+
 ## Shutdown
 
 On graceful shutdown, the agent sends a final heartbeat with `shutdown=true`. If the notification succeeds, the control plane marks the node offline. If it fails, the agent logs a warning and continues shutdown.
