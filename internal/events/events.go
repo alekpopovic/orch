@@ -22,6 +22,7 @@ const (
 	TypeRollbackStarted        = "service.rollback.started"
 	TypeTaskAssigned           = "task.assigned"
 	TypeTaskStatus             = "task.status"
+	TypeTaskFailed             = "task.failed"
 	TypeTaskHealthFailed       = "task.health.failed"
 	TypeTaskHealthUnhealthy    = "task.health.unhealthy"
 	TypeReconcilerTaskCreated  = "reconciler.task.created"

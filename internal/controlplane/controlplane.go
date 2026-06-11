@@ -325,6 +325,11 @@ func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusR
 	eventType := events.TypeTaskStatus
 	severity := types.EventInfo
 	message := "task status reported"
+	if report.Status == types.TaskFailed {
+		eventType = events.TypeTaskFailed
+		severity = types.EventError
+		message = "task failed"
+	}
 	if report.Status == types.TaskUnhealthy {
 		severity = types.EventWarning
 		service := s.services[task.ServiceID]

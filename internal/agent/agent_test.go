@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -41,13 +42,206 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 		t.Fatalf("reconcile assigned tasks: %v", err)
 	}
 
-	wantRuntimeCalls := []string{"pull:nginx:1.27", "create:" + string(taskID), "start:container-1", "list"}
+	wantRuntimeCalls := []string{"list", "pull:nginx:1.27", "create:" + string(taskID), "start:container-1", "list"}
 	if !equalStrings(runtime.calls, wantRuntimeCalls) {
 		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.calls)
 	}
 	wantStatuses := []types.TaskStatus{types.TaskPulling, types.TaskCreated, types.TaskRunning}
 	if !equalStatuses(client.statuses, wantStatuses) {
 		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+}
+
+func TestReconcileAssignedTaskRecreatesManuallyDeletedContainer(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
+	client := &fakeAgentClient{tasks: []api.AgentTask{{
+		Task: types.Task{
+			ID:            taskID,
+			ServiceID:     types.ServiceID("00000000-0000-4000-8000-000000000003"),
+			NodeID:        nodeID,
+			ContainerID:   "missing-container",
+			DesiredStatus: types.TaskRunning,
+			ActualStatus:  types.TaskRunning,
+			Image:         "nginx:1.27",
+			Version:       1,
+		},
+	}}}
+	runtime := &fakeRuntime{
+		inspect:   map[orchdocker.ContainerID]orchdocker.ContainerStatus{},
+		createdID: "replacement-container",
+	}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
+
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("reconcile assigned tasks: %v", err)
+	}
+	wantRuntimeCalls := []string{"inspect:missing-container", "list", "pull:nginx:1.27", "create:" + string(taskID), "start:replacement-container", "list"}
+	if !equalStrings(runtime.calls, wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.calls)
+	}
+	wantStatuses := []types.TaskStatus{types.TaskPulling, types.TaskCreated, types.TaskRunning}
+	if !equalStatuses(client.statuses, wantStatuses) {
+		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+}
+
+func TestReconcileAssignedTaskReReportsRunningContainerAfterAgentRestart(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
+	client := &fakeAgentClient{tasks: []api.AgentTask{{
+		Task: types.Task{
+			ID:            taskID,
+			ServiceID:     types.ServiceID("00000000-0000-4000-8000-000000000003"),
+			NodeID:        nodeID,
+			DesiredStatus: types.TaskRunning,
+			ActualStatus:  types.TaskAssigned,
+			Image:         "nginx:1.27",
+			Version:       1,
+		},
+	}}}
+	runtime := &fakeRuntime{managed: []orchdocker.ContainerStatus{{
+		ID:      "container-1",
+		Running: true,
+		Labels: map[string]string{
+			orchdocker.ManagedLabel: "true",
+			orchdocker.TaskIDLabel:  string(taskID),
+			orchdocker.NodeIDLabel:  string(nodeID),
+		},
+	}}}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
+
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("reconcile assigned tasks: %v", err)
+	}
+	wantRuntimeCalls := []string{"list", "list"}
+	if !equalStrings(runtime.calls, wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.calls)
+	}
+	wantStatuses := []types.TaskStatus{types.TaskRunning}
+	if !equalStatuses(client.statuses, wantStatuses) {
+		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+	if client.containerIDs[0] != "container-1" {
+		t.Fatalf("expected recovered container id, got %q", client.containerIDs[0])
+	}
+}
+
+func TestReconcileAssignedTaskDoesNotRecreateWhenDockerUnavailable(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
+	client := &fakeAgentClient{tasks: []api.AgentTask{{
+		Task: types.Task{
+			ID:            taskID,
+			ServiceID:     types.ServiceID("00000000-0000-4000-8000-000000000003"),
+			NodeID:        nodeID,
+			ContainerID:   "container-1",
+			DesiredStatus: types.TaskRunning,
+			ActualStatus:  types.TaskRunning,
+			Image:         "nginx:1.27",
+			Version:       1,
+		},
+	}}}
+	runtime := &fakeRuntime{inspectErr: errDockerUnavailable, listErr: errDockerUnavailable}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
+
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != errDockerUnavailable {
+		t.Fatalf("expected docker unavailable error, got %v", err)
+	}
+	wantRuntimeCalls := []string{"inspect:container-1", "list", "list"}
+	if !equalStrings(runtime.calls, wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.calls)
+	}
+	if len(client.statuses) != 0 {
+		t.Fatalf("expected no status reports while Docker availability is unknown, got %#v", client.statuses)
+	}
+}
+
+func TestReconcileAssignedTaskReportsExitedContainerFailed(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
+	client := &fakeAgentClient{tasks: []api.AgentTask{{
+		Task: types.Task{
+			ID:            taskID,
+			ServiceID:     types.ServiceID("00000000-0000-4000-8000-000000000003"),
+			NodeID:        nodeID,
+			ContainerID:   "container-1",
+			DesiredStatus: types.TaskRunning,
+			ActualStatus:  types.TaskRunning,
+			Image:         "nginx:1.27",
+			Version:       1,
+		},
+	}}}
+	runtime := &fakeRuntime{inspect: map[orchdocker.ContainerID]orchdocker.ContainerStatus{
+		"container-1": {ID: "container-1", Running: false, ExitCode: 2},
+	}}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
+
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err == nil {
+		t.Fatalf("expected exited container error")
+	}
+	wantStatuses := []types.TaskStatus{types.TaskFailed}
+	if !equalStatuses(client.statuses, wantStatuses) {
+		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+	if client.failureReasons[0] != "container exited with code 2" {
+		t.Fatalf("unexpected failure reason %q", client.failureReasons[0])
+	}
+}
+
+func TestReconcileAssignedTaskReportsPullAndCreateFailures(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
+	tests := []struct {
+		name         string
+		runtime      *fakeRuntime
+		wantCalls    []string
+		wantReason   string
+		wantStatuses []types.TaskStatus
+	}{
+		{
+			name:         "pull failure",
+			runtime:      &fakeRuntime{pullErr: errors.New("pull failed")},
+			wantCalls:    []string{"list", "pull:nginx:1.27", "list"},
+			wantReason:   "pull failed",
+			wantStatuses: []types.TaskStatus{types.TaskPulling, types.TaskFailed},
+		},
+		{
+			name:         "create failure",
+			runtime:      &fakeRuntime{createErr: errors.New("port is already allocated")},
+			wantCalls:    []string{"list", "pull:nginx:1.27", "create:" + string(taskID), "list"},
+			wantReason:   "port is already allocated",
+			wantStatuses: []types.TaskStatus{types.TaskPulling, types.TaskFailed},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakeAgentClient{tasks: []api.AgentTask{{
+				Task: types.Task{
+					ID:            taskID,
+					ServiceID:     types.ServiceID("00000000-0000-4000-8000-000000000003"),
+					NodeID:        nodeID,
+					DesiredStatus: types.TaskRunning,
+					ActualStatus:  types.TaskAssigned,
+					Image:         "nginx:1.27",
+					Version:       1,
+				},
+			}}}
+			runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(tt.runtime)
+
+			if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err == nil {
+				t.Fatalf("expected task execution error")
+			}
+			if !equalStrings(tt.runtime.calls, tt.wantCalls) {
+				t.Fatalf("expected runtime calls %#v, got %#v", tt.wantCalls, tt.runtime.calls)
+			}
+			if !equalStatuses(client.statuses, tt.wantStatuses) {
+				t.Fatalf("expected statuses %#v, got %#v", tt.wantStatuses, client.statuses)
+			}
+			if client.failureReasons[len(client.failureReasons)-1] != tt.wantReason {
+				t.Fatalf("expected failure reason %q, got %#v", tt.wantReason, client.failureReasons)
+			}
+		})
 	}
 }
 
@@ -212,8 +406,10 @@ func TestLogHandlerExposesMetrics(t *testing.T) {
 }
 
 type fakeAgentClient struct {
-	tasks    []api.AgentTask
-	statuses []types.TaskStatus
+	tasks          []api.AgentTask
+	statuses       []types.TaskStatus
+	failureReasons []string
+	containerIDs   []string
 }
 
 func (c *fakeAgentClient) Register(context.Context, api.AgentRegisterRequest) (api.AgentResponse, error) {
@@ -230,6 +426,8 @@ func (c *fakeAgentClient) ListAssignedTasks(context.Context, types.NodeID) ([]ap
 
 func (c *fakeAgentClient) ReportTaskStatus(_ context.Context, taskID types.TaskID, req api.AgentTaskStatusRequest) (types.Task, error) {
 	c.statuses = append(c.statuses, req.Status)
+	c.failureReasons = append(c.failureReasons, req.FailureReason)
+	c.containerIDs = append(c.containerIDs, req.ContainerID)
 	return types.Task{
 		ID:            taskID,
 		NodeID:        req.NodeID,
@@ -244,17 +442,24 @@ type fakeRuntime struct {
 	createdID  orchdocker.ContainerID
 	managed    []orchdocker.ContainerStatus
 	inspect    map[orchdocker.ContainerID]orchdocker.ContainerStatus
+	inspectErr error
+	listErr    error
+	pullErr    error
+	createErr  error
 	logStarted chan struct{}
 	logBlock   bool
 }
 
 func (r *fakeRuntime) PullImage(_ context.Context, image string, _ *orchdocker.RegistryAuth) error {
 	r.calls = append(r.calls, "pull:"+image)
-	return nil
+	return r.pullErr
 }
 
 func (r *fakeRuntime) CreateContainer(_ context.Context, spec orchdocker.ContainerSpec) (orchdocker.ContainerID, error) {
 	r.calls = append(r.calls, "create:"+spec.TaskID)
+	if r.createErr != nil {
+		return "", r.createErr
+	}
 	return r.createdID, nil
 }
 
@@ -275,6 +480,9 @@ func (r *fakeRuntime) RemoveContainer(_ context.Context, id orchdocker.Container
 
 func (r *fakeRuntime) InspectContainer(_ context.Context, id orchdocker.ContainerID) (orchdocker.ContainerStatus, error) {
 	r.calls = append(r.calls, "inspect:"+string(id))
+	if r.inspectErr != nil {
+		return orchdocker.ContainerStatus{}, r.inspectErr
+	}
 	if r.inspect == nil {
 		return orchdocker.ContainerStatus{}, errFakeNotFound{}
 	}
@@ -287,6 +495,9 @@ func (r *fakeRuntime) InspectContainer(_ context.Context, id orchdocker.Containe
 
 func (r *fakeRuntime) ListManagedContainers(_ context.Context, _ map[string]string) ([]orchdocker.ContainerStatus, error) {
 	r.calls = append(r.calls, "list")
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
 	return r.managed, nil
 }
 
@@ -309,6 +520,8 @@ type errFakeNotFound struct{}
 func (errFakeNotFound) Error() string {
 	return "not found"
 }
+
+var errDockerUnavailable = errors.New("docker unavailable")
 
 type fakeHealthChecker struct {
 	results []bool
