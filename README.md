@@ -4,42 +4,80 @@
 
 ## Quickstart
 
+### Prerequisites
+
+- Go 1.25 or newer.
+- Docker Engine with access to `/var/run/docker.sock`.
+- Docker Compose v2, available as `docker compose`.
+- Bash, `curl`, and standard Unix shell tools.
+
+No script requires root directly, but your user must be allowed to use Docker.
+
+### Local Development Environment
+
+Start PostgreSQL, `orch-server`, and one `orch-agent`:
+
+```sh
+./scripts/dev-up.sh
+```
+
+Apply the initial database schema:
+
+```sh
+./scripts/migrate-up.sh
+```
+
+Confirm the agent registered with the control plane:
+
+```sh
+export ORCH_SERVER_URL=http://localhost:8080
+go run ./cmd/orch node ls
+```
+
+Deploy the demo app:
+
+```sh
+./scripts/demo-deploy.sh
+```
+
+Scale it:
+
+```sh
+go run ./cmd/orch scale http-api --replicas 2
+```
+
+View tasks, logs, and events:
+
+```sh
+go run ./cmd/orch service ps http-api
+go run ./cmd/orch logs http-api --tail 100
+go run ./cmd/orch events --service http-api
+```
+
+Delete the demo app:
+
+```sh
+go run ./cmd/orch delete http-api
+```
+
+Stop the local environment:
+
+```sh
+./scripts/dev-down.sh
+```
+
+Optional standalone demo container:
+
+```sh
+docker compose --profile demo up -d demo-app
+curl http://localhost:18080
+```
+
 Build and test:
 
 ```sh
 make build
 make test
-```
-
-Run the control plane API server:
-
-```sh
-cp .env.example .env
-make run-server
-```
-
-In another shell, run an agent:
-
-```sh
-make run-agent
-```
-
-Start local PostgreSQL:
-
-```sh
-docker compose up postgres
-```
-
-Apply the initial schema:
-
-```sh
-psql "postgres://orch:orch@localhost:5432/orch?sslmode=disable" -f migrations/000001_initial_schema.up.sql
-```
-
-Start PostgreSQL plus optional local orchestrator services:
-
-```sh
-docker compose --profile local-orch up --build
 ```
 
 ## Binaries

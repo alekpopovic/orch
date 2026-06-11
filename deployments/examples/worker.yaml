@@ -1,0 +1,11 @@
+name: worker
+image: redis:7-alpine
+replicas: 1
+resources:
+  cpu: 100m
+  memory: 64Mi
+restart:
+  policy: always
+placement:
+  labels:
+    role: worker

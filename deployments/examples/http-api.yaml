@@ -1,0 +1,14 @@
+name: http-api
+image: nginx:1.27-alpine
+replicas: 1
+ports:
+  - container: 80
+    public: 0
+resources:
+  cpu: 100m
+  memory: 128Mi
+restart:
+  policy: always
+placement:
+  labels:
+    role: worker
