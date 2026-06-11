@@ -79,12 +79,15 @@ func TestAgentRegisterAndHeartbeat(t *testing.T) {
 	if registered.Node.ID == "" || registered.Status != "ready" {
 		t.Fatalf("unexpected register response %#v", registered)
 	}
+	if registered.Credential == nil || registered.Credential.Token == "" {
+		t.Fatalf("expected issued agent credential")
+	}
 
-	heartbeat := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/heartbeat", `{
+	heartbeat := doAgentCredentialRequest(t, handler, http.MethodPost, "/v1/agent/heartbeat", `{
 		"node_id": "`+string(registered.Node.ID)+`",
 		"capacity": {"cpu": 4000, "memory": 1024},
 		"allocatable": {"cpu": 3000, "memory": 512}
-	}`)
+	}`, registered.Credential.Token)
 	if heartbeat.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, heartbeat.Code, heartbeat.Body.String())
 	}
@@ -92,6 +95,17 @@ func TestAgentRegisterAndHeartbeat(t *testing.T) {
 	decodeResponse(t, heartbeat, &acknowledged)
 	if acknowledged.Node.LastHeartbeatAt.IsZero() {
 		t.Fatalf("expected heartbeat timestamp")
+	}
+	if acknowledged.Credential == nil || acknowledged.Credential.Token == "" || acknowledged.Credential.Token == registered.Credential.Token {
+		t.Fatalf("expected rotated heartbeat credential")
+	}
+	oldCredentialHeartbeat := doAgentCredentialRequest(t, handler, http.MethodPost, "/v1/agent/heartbeat", `{
+		"node_id": "`+string(registered.Node.ID)+`",
+		"capacity": {"cpu": 4000, "memory": 1024},
+		"allocatable": {"cpu": 3000, "memory": 512}
+	}`, registered.Credential.Token)
+	if oldCredentialHeartbeat.Code != http.StatusUnauthorized {
+		t.Fatalf("expected old credential to be rejected, got %d", oldCredentialHeartbeat.Code)
 	}
 }
 
@@ -127,7 +141,7 @@ func TestAgentTaskAssignmentAndStatus(t *testing.T) {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, create.Code, create.Body.String())
 	}
 
-	list := doAgentRequest(t, handler, http.MethodGet, "/v1/agent/tasks?node_id="+string(registered.Node.ID), nil)
+	list := doAgentCredentialRequest(t, handler, http.MethodGet, "/v1/agent/tasks?node_id="+string(registered.Node.ID), nil, registered.Credential.Token)
 	if list.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, list.Code, list.Body.String())
 	}
@@ -137,11 +151,11 @@ func TestAgentTaskAssignmentAndStatus(t *testing.T) {
 		t.Fatalf("expected one assigned task, got %d", len(tasks.Tasks))
 	}
 
-	report := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/tasks/"+string(tasks.Tasks[0].Task.ID)+"/status", AgentTaskStatusRequest{
+	report := doAgentCredentialRequest(t, handler, http.MethodPost, "/v1/agent/tasks/"+string(tasks.Tasks[0].Task.ID)+"/status", AgentTaskStatusRequest{
 		NodeID:      registered.Node.ID,
 		Status:      types.TaskRunning,
 		ContainerID: "container-1",
-	})
+	}, registered.Credential.Token)
 	if report.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, report.Code, report.Body.String())
 	}
@@ -160,12 +174,12 @@ func TestStreamLogsCancellation(t *testing.T) {
 	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithBootstrapToken("secret"), WithLogStreamer(streamer))
 	registered := registerTestNode(t, handler)
 	created := createLogTestService(t, handler)
-	tasks := listAgentTasks(t, handler, registered.Node.ID)
-	report := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/tasks/"+string(tasks.Tasks[0].Task.ID)+"/status", AgentTaskStatusRequest{
+	tasks := listAgentTasks(t, handler, registered)
+	report := doAgentCredentialRequest(t, handler, http.MethodPost, "/v1/agent/tasks/"+string(tasks.Tasks[0].Task.ID)+"/status", AgentTaskStatusRequest{
 		NodeID:      registered.Node.ID,
 		Status:      types.TaskRunning,
 		ContainerID: "container-1",
-	})
+	}, registered.Credential.Token)
 	if report.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, report.Code, report.Body.String())
 	}
@@ -191,19 +205,19 @@ func TestStreamLogsRejectsOfflineNode(t *testing.T) {
 	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithBootstrapToken("secret"))
 	registered := registerTestNode(t, handler)
 	created := createLogTestService(t, handler)
-	tasks := listAgentTasks(t, handler, registered.Node.ID)
-	report := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/tasks/"+string(tasks.Tasks[0].Task.ID)+"/status", AgentTaskStatusRequest{
+	tasks := listAgentTasks(t, handler, registered)
+	report := doAgentCredentialRequest(t, handler, http.MethodPost, "/v1/agent/tasks/"+string(tasks.Tasks[0].Task.ID)+"/status", AgentTaskStatusRequest{
 		NodeID:      registered.Node.ID,
 		Status:      types.TaskRunning,
 		ContainerID: "container-1",
-	})
+	}, registered.Credential.Token)
 	if report.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, report.Code, report.Body.String())
 	}
-	heartbeat := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/heartbeat", `{
+	heartbeat := doAgentCredentialRequest(t, handler, http.MethodPost, "/v1/agent/heartbeat", `{
 		"node_id": "`+string(registered.Node.ID)+`",
 		"shutdown": true
-	}`)
+	}`, registered.Credential.Token)
 	if heartbeat.Code != http.StatusOK {
 		t.Fatalf("expected heartbeat status %d, got %d: %s", http.StatusOK, heartbeat.Code, heartbeat.Body.String())
 	}
@@ -539,6 +553,11 @@ func doAgentRequest(t *testing.T, handler http.Handler, method string, path stri
 	return rec
 }
 
+func doAgentCredentialRequest(t *testing.T, handler http.Handler, method string, path string, body any, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	return requestWithHeaders(t, handler, method, path, body, map[string]string{"Authorization": "Bearer " + token})
+}
+
 func userToken(t *testing.T, role auth.Role) string {
 	t.Helper()
 	token, err := auth.SignJWT(auth.Claims{
@@ -566,6 +585,9 @@ func registerTestNode(t *testing.T, handler http.Handler) AgentResponse {
 	}
 	var registered AgentResponse
 	decodeResponse(t, rec, &registered)
+	if registered.Credential == nil || registered.Credential.Token == "" {
+		t.Fatalf("expected issued agent credential")
+	}
 	return registered
 }
 
@@ -587,9 +609,9 @@ func createLogTestService(t *testing.T, handler http.Handler) ServiceResponse {
 	return created
 }
 
-func listAgentTasks(t *testing.T, handler http.Handler, nodeID types.NodeID) AgentTasksResponse {
+func listAgentTasks(t *testing.T, handler http.Handler, registered AgentResponse) AgentTasksResponse {
 	t.Helper()
-	list := doAgentRequest(t, handler, http.MethodGet, "/v1/agent/tasks?node_id="+string(nodeID), nil)
+	list := doAgentCredentialRequest(t, handler, http.MethodGet, "/v1/agent/tasks?node_id="+string(registered.Node.ID), nil, registered.Credential.Token)
 	if list.Code != http.StatusOK {
 		t.Fatalf("expected tasks status %d, got %d: %s", http.StatusOK, list.Code, list.Body.String())
 	}

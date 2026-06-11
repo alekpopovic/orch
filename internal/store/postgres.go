@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,7 +55,7 @@ func (s *PostgresStore) CreateNode(ctx context.Context, spec types.NodeSpec) (ty
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, timezone('utc', now()))
 		RETURNING id, hostname, advertise_address, labels,
 			capacity_cpu, capacity_memory, allocatable_cpu, allocatable_memory,
-			status, last_heartbeat_at, created_at, updated_at`,
+			status, last_heartbeat_at, agent_token_hash, agent_token_expires_at, agent_revoked, created_at, updated_at`,
 		spec.Hostname,
 		spec.AdvertiseAddress,
 		labels,
@@ -75,7 +76,7 @@ func (s *PostgresStore) GetNode(ctx context.Context, id types.NodeID) (types.Nod
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, hostname, advertise_address, labels,
 			capacity_cpu, capacity_memory, allocatable_cpu, allocatable_memory,
-			status, last_heartbeat_at, created_at, updated_at
+			status, last_heartbeat_at, agent_token_hash, agent_token_expires_at, agent_revoked, created_at, updated_at
 		FROM nodes
 		WHERE id = $1`,
 		string(id),
@@ -115,12 +116,15 @@ func (s *PostgresStore) UpdateNode(ctx context.Context, node types.Node, expecte
 			allocatable_memory = $8,
 			status = $9,
 			last_heartbeat_at = $10,
+			agent_token_hash = nullif($12, ''),
+			agent_token_expires_at = $13,
+			agent_revoked = $14,
 			updated_at = timezone('utc', now()),
 			version = version + 1
 		WHERE id = $1 AND updated_at = $11
 		RETURNING id, hostname, advertise_address, labels,
 			capacity_cpu, capacity_memory, allocatable_cpu, allocatable_memory,
-			status, last_heartbeat_at, created_at, updated_at`,
+			status, last_heartbeat_at, agent_token_hash, agent_token_expires_at, agent_revoked, created_at, updated_at`,
 		string(node.ID),
 		node.Hostname,
 		node.AdvertiseAddress,
@@ -132,6 +136,9 @@ func (s *PostgresStore) UpdateNode(ctx context.Context, node types.Node, expecte
 		string(node.Status),
 		utcOrNow(node.LastHeartbeatAt),
 		expectedUpdatedAt.UTC(),
+		node.AgentTokenHash,
+		nilTime(node.AgentTokenExpiry),
+		node.AgentRevoked,
 	)
 	updated, err := scanNode(row)
 	if err != nil {
@@ -147,7 +154,7 @@ func (s *PostgresStore) ListNodesByStatus(ctx context.Context, status types.Node
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, hostname, advertise_address, labels,
 			capacity_cpu, capacity_memory, allocatable_cpu, allocatable_memory,
-			status, last_heartbeat_at, created_at, updated_at
+			status, last_heartbeat_at, agent_token_hash, agent_token_expires_at, agent_revoked, created_at, updated_at
 		FROM nodes
 		WHERE status = $1
 		ORDER BY hostname, id`,
@@ -711,6 +718,8 @@ func scanNode(row pgx.Row) (types.Node, error) {
 	var node types.Node
 	var id string
 	var labels []byte
+	var tokenHash sql.NullString
+	var tokenExpiry sql.NullTime
 	err := row.Scan(
 		&id,
 		&node.Hostname,
@@ -722,6 +731,9 @@ func scanNode(row pgx.Row) (types.Node, error) {
 		&node.Allocatable.Memory,
 		&node.Status,
 		&node.LastHeartbeatAt,
+		&tokenHash,
+		&tokenExpiry,
+		&node.AgentRevoked,
 		&node.CreatedAt,
 		&node.UpdatedAt,
 	)
@@ -731,6 +743,12 @@ func scanNode(row pgx.Row) (types.Node, error) {
 	node.ID = types.NodeID(id)
 	if err := json.Unmarshal(labels, &node.Labels); err != nil {
 		return types.Node{}, fmt.Errorf("decode node labels: %w", err)
+	}
+	if tokenHash.Valid {
+		node.AgentTokenHash = tokenHash.String
+	}
+	if tokenExpiry.Valid {
+		node.AgentTokenExpiry = tokenExpiry.Time.UTC()
 	}
 	node.LastHeartbeatAt = node.LastHeartbeatAt.UTC()
 	node.CreatedAt = node.CreatedAt.UTC()

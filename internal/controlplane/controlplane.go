@@ -18,6 +18,8 @@ import (
 type Service interface {
 	RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error)
 	HeartbeatNode(ctx context.Context, heartbeat NodeHeartbeat) (NodeCommand, error)
+	SetAgentCredential(ctx context.Context, nodeID types.NodeID, tokenHash string, expiresAt time.Time) (types.Node, error)
+	RevokeNode(ctx context.Context, nodeID types.NodeID) (types.Node, error)
 	ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]AgentTask, error)
 	ReportTaskStatus(ctx context.Context, report TaskStatusReport) (types.Task, error)
 	ListNodes(ctx context.Context) ([]types.Node, error)
@@ -209,6 +211,49 @@ func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbe
 	}
 	s.appendEventLocked(eventType, types.EventInfo, "controlplane", message, "node", string(node.ID), now)
 	return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
+}
+
+func (s *MemoryService) SetAgentCredential(ctx context.Context, nodeID types.NodeID, tokenHash string, expiresAt time.Time) (types.Node, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Node{}, err
+	}
+	if nodeID == "" {
+		return types.Node{}, fmt.Errorf("%w: node id is required", store.ErrInvalidState)
+	}
+	if tokenHash == "" || expiresAt.IsZero() {
+		return types.Node{}, fmt.Errorf("%w: agent credential hash and expiry are required", store.ErrInvalidState)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node, ok := s.nodes[nodeID]
+	if !ok {
+		return types.Node{}, store.ErrNotFound
+	}
+	node.AgentTokenHash = tokenHash
+	node.AgentTokenExpiry = expiresAt.UTC()
+	node.AgentRevoked = false
+	node.UpdatedAt = s.now()
+	s.nodes[nodeID] = node
+	return node, nil
+}
+
+func (s *MemoryService) RevokeNode(ctx context.Context, nodeID types.NodeID) (types.Node, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Node{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node, ok := s.nodes[nodeID]
+	if !ok {
+		return types.Node{}, store.ErrNotFound
+	}
+	node.AgentRevoked = true
+	node.UpdatedAt = s.now()
+	s.nodes[nodeID] = node
+	s.appendEventLocked(events.TypeNodeStatusChanged, types.EventWarning, "controlplane", "node agent credential revoked", "node", string(node.ID), node.UpdatedAt)
+	return node, nil
 }
 
 func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]AgentTask, error) {

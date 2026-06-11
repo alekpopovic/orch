@@ -12,7 +12,7 @@ On startup the agent loads:
 - `ORCH_NODE_LABELS`: comma-separated labels such as `role=app,zone=a`.
 - `ORCH_AGENT_HEARTBEAT_INTERVAL`: heartbeat period.
 - `ORCH_DOCKER_SOCKET`: Docker Engine socket path.
-- `ORCH_BOOTSTRAP_TOKEN`: static bootstrap token used until stronger node identity is added.
+- `ORCH_AGENT_REGISTRATION_TOKEN`: static registration token used to obtain a short-lived agent credential until stronger node identity is added.
 
 The agent detects local capacity from the host:
 
@@ -52,12 +52,14 @@ On graceful shutdown, the agent sends a final heartbeat with `shutdown=true`. If
 
 ## Security
 
-The first version uses a static bootstrap token:
+Registration uses a static registration token:
 
 ```text
-Authorization: Bearer <ORCH_BOOTSTRAP_TOKEN>
+Authorization: Bearer <ORCH_AGENT_REGISTRATION_TOKEN>
 ```
 
-This is intentionally isolated to the agent endpoint boundary so mTLS-based node identity can replace it later. Treat the token as a secret. Do not commit it, print it, or expose it through logs.
+After registration, the server returns a short-lived agent credential. The agent uses that credential for heartbeat, task polling, and task status updates. Heartbeat responses rotate the credential.
+
+This is intentionally isolated to the agent endpoint boundary so mTLS-based node identity can replace or combine with token credentials later. Treat tokens as secrets. Do not commit them, print them, or expose them through logs.
 
 Access to the Docker socket is highly privileged. A compromised agent can control containers on the node and may be able to affect the host. See `docs/DEVELOPMENT.md` for Docker daemon permission risks.

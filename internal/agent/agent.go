@@ -465,9 +465,10 @@ func detectMemory() int64 {
 }
 
 type HTTPClient struct {
-	baseURL string
-	token   string
-	client  *http.Client
+	baseURL        string
+	bootstrapToken string
+	credential     string
+	client         *http.Client
 }
 
 func NewHTTPClient(serverURL string, token string) (*HTTPClient, error) {
@@ -476,9 +477,9 @@ func NewHTTPClient(serverURL string, token string) (*HTTPClient, error) {
 		return nil, fmt.Errorf("server URL is required")
 	}
 	return &HTTPClient{
-		baseURL: serverURL,
-		token:   token,
-		client:  &http.Client{Timeout: 15 * time.Second},
+		baseURL:        serverURL,
+		bootstrapToken: token,
+		client:         &http.Client{Timeout: 15 * time.Second},
 	}, nil
 }
 
@@ -487,6 +488,7 @@ func (c *HTTPClient) Register(ctx context.Context, req api.AgentRegisterRequest)
 	if err := c.do(ctx, "/v1/agent/register", req, &out); err != nil {
 		return api.AgentResponse{}, err
 	}
+	c.updateCredential(out)
 	return out, nil
 }
 
@@ -495,6 +497,7 @@ func (c *HTTPClient) Heartbeat(ctx context.Context, req api.AgentHeartbeatReques
 	if err := c.do(ctx, "/v1/agent/heartbeat", req, &out); err != nil {
 		return api.AgentResponse{}, err
 	}
+	c.updateCredential(out)
 	return out, nil
 }
 
@@ -537,7 +540,13 @@ func (c *HTTPClient) doMethod(ctx context.Context, method string, path string, b
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	if path == "/v1/agent/register" {
+		req.Header.Set("Authorization", "Bearer "+c.bootstrapToken)
+	} else if c.credential != "" {
+		req.Header.Set("Authorization", "Bearer "+c.credential)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+c.bootstrapToken)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -553,4 +562,10 @@ func (c *HTTPClient) doMethod(ctx context.Context, method string, path string, b
 		return fmt.Errorf("server returned %s", resp.Status)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *HTTPClient) updateCredential(resp api.AgentResponse) {
+	if resp.Credential != nil && resp.Credential.Token != "" {
+		c.credential = resp.Credential.Token
+	}
 }

@@ -107,14 +107,14 @@ curl http://localhost:8080/v1/tasks/{task_id}
 
 ## Agent Tasks
 
-Agent endpoints require `Authorization: Bearer <ORCH_BOOTSTRAP_TOKEN>` when a bootstrap token is configured.
+Agent registration requires `Authorization: Bearer <ORCH_AGENT_REGISTRATION_TOKEN>`. Registration returns a short-lived agent credential used for heartbeat, task polling, and task status updates.
 
 ```sh
-curl -H 'Authorization: Bearer local-bootstrap-token' \
+curl -H 'Authorization: Bearer <agent-credential>' \
   'http://localhost:8080/v1/agent/tasks?node_id={node_id}'
 
 curl -X POST http://localhost:8080/v1/agent/tasks/{task_id}/status \
-  -H 'Authorization: Bearer local-bootstrap-token' \
+  -H 'Authorization: Bearer <agent-credential>' \
   -H 'Content-Type: application/json' \
   -d '{
     "node_id": "{node_id}",

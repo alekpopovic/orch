@@ -29,6 +29,7 @@ type Server struct {
 	bootstrapToken string
 	jwtSecret      string
 	staticUsers    map[string]auth.Role
+	agentIssuer    auth.AgentCredentialIssuer
 	now            func() time.Time
 }
 
@@ -64,6 +65,12 @@ func WithLogStreamer(streamer LogStreamer) Option {
 	}
 }
 
+func WithAgentCredentialIssuer(issuer auth.AgentCredentialIssuer) Option {
+	return func(server *Server) {
+		server.agentIssuer = issuer
+	}
+}
+
 func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...Option) http.Handler {
 	if controlPlane == nil {
 		controlPlane = controlplane.NewMemoryService()
@@ -79,6 +86,9 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	}
 	if server.logStreamer == nil {
 		server.logStreamer = &AgentHTTPLogStreamer{}
+	}
+	if server.agentIssuer == nil {
+		server.agentIssuer = auth.NewTokenAgentCredentialIssuer(15 * time.Minute)
 	}
 
 	mux := http.NewServeMux()
@@ -148,6 +158,7 @@ type AgentHeartbeatRequest struct {
 type AgentResponse struct {
 	Node       types.Node                    `json:"node"`
 	Status     types.NodeStatus              `json:"status"`
+	Credential *auth.AgentCredential         `json:"credential,omitempty"`
 	Directives []controlplane.AgentDirective `json:"directives,omitempty"`
 }
 
@@ -217,7 +228,7 @@ func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) agentRegister(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeAgent(w, r) {
+	if !s.authorizeAgentRegistration(w, r) {
 		return
 	}
 	var req AgentRegisterRequest
@@ -243,19 +254,24 @@ func (s *Server) agentRegister(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, AgentResponse{Node: command.Node, Status: command.Node.Status, Directives: command.Directives})
+	credential, err := s.issueAgentCredential(r.Context(), command.Node.ID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, AgentResponse{Node: command.Node, Status: command.Node.Status, Credential: &credential, Directives: command.Directives})
 }
 
 func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeAgent(w, r) {
-		return
-	}
 	var req AgentHeartbeatRequest
 	if !s.decodeJSON(w, r, &req) {
 		return
 	}
 	if req.NodeID == "" {
 		s.writeError(w, r, fmt.Errorf("%w: node_id is required", store.ErrInvalidState))
+		return
+	}
+	if !s.authorizeAgentCredential(w, r, req.NodeID) {
 		return
 	}
 	command, err := s.controlPlane.HeartbeatNode(r.Context(), controlplane.NodeHeartbeat{
@@ -269,16 +285,21 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, AgentResponse{Node: command.Node, Status: command.Node.Status, Directives: command.Directives})
+	credential, err := s.issueAgentCredential(r.Context(), command.Node.ID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, AgentResponse{Node: command.Node, Status: command.Node.Status, Credential: &credential, Directives: command.Directives})
 }
 
 func (s *Server) agentListTasks(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeAgent(w, r) {
-		return
-	}
 	nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
 	if !validUUID(nodeID) {
 		s.writeError(w, r, fmt.Errorf("%w: node_id must be a UUID", store.ErrInvalidState))
+		return
+	}
+	if !s.authorizeAgentCredential(w, r, types.NodeID(nodeID)) {
 		return
 	}
 	tasks, err := s.controlPlane.ListAssignedTasks(r.Context(), types.NodeID(nodeID))
@@ -290,9 +311,6 @@ func (s *Server) agentListTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) agentTaskStatus(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeAgent(w, r) {
-		return
-	}
 	taskID := strings.TrimSpace(r.PathValue("task_id"))
 	if !validUUID(taskID) {
 		s.writeError(w, r, fmt.Errorf("%w: task_id must be a UUID", store.ErrInvalidState))
@@ -304,6 +322,9 @@ func (s *Server) agentTaskStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.NodeID == "" {
 		s.writeError(w, r, fmt.Errorf("%w: node_id is required", store.ErrInvalidState))
+		return
+	}
+	if !s.authorizeAgentCredential(w, r, req.NodeID) {
 		return
 	}
 	if !validAgentTaskStatus(req.Status) {
@@ -775,7 +796,7 @@ func (s *Server) decodeJSON(w http.ResponseWriter, r *http.Request, target any) 
 	return true
 }
 
-func (s *Server) authorizeAgent(w http.ResponseWriter, r *http.Request) bool {
+func (s *Server) authorizeAgentRegistration(w http.ResponseWriter, r *http.Request) bool {
 	if s.bootstrapToken == "" {
 		return true
 	}
@@ -788,13 +809,47 @@ func (s *Server) authorizeAgent(w http.ResponseWriter, r *http.Request) bool {
 		writeJSON(w, http.StatusUnauthorized, ErrorResponse{
 			Error: RequestError{
 				Code:      "unauthorized",
-				Message:   "invalid agent bootstrap token",
+				Message:   "invalid agent registration token",
 				RequestID: requestID(r.Context()),
 			},
 		})
 		return false
 	}
 	return true
+}
+
+func (s *Server) authorizeAgentCredential(w http.ResponseWriter, r *http.Request, nodeID types.NodeID) bool {
+	token, err := auth.ParseBearer(r.Header.Get("Authorization"))
+	if err != nil {
+		s.writeAuthError(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid agent credential")
+		return false
+	}
+	node, err := s.controlPlane.GetNode(r.Context(), nodeID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return false
+	}
+	record := auth.AgentCredentialRecord{
+		Hash:      node.AgentTokenHash,
+		ExpiresAt: node.AgentTokenExpiry,
+		Revoked:   node.AgentRevoked,
+	}
+	if err := s.agentIssuer.Validate(r.Context(), token, record, s.now()); err != nil {
+		s.writeAuthError(w, r, http.StatusUnauthorized, "unauthorized", "invalid agent credential")
+		return false
+	}
+	return true
+}
+
+func (s *Server) issueAgentCredential(ctx context.Context, nodeID types.NodeID) (auth.AgentCredential, error) {
+	credential, record, err := s.agentIssuer.Issue(ctx, auth.AgentIdentity{NodeID: string(nodeID)})
+	if err != nil {
+		return auth.AgentCredential{}, err
+	}
+	if _, err := s.controlPlane.SetAgentCredential(ctx, nodeID, record.Hash, record.ExpiresAt); err != nil {
+		return auth.AgentCredential{}, err
+	}
+	return credential, nil
 }
 
 func (s *Server) writeAuthError(w http.ResponseWriter, r *http.Request, status int, code string, message string) {

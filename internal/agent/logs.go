@@ -87,7 +87,7 @@ func (s *logServer) authorize(w http.ResponseWriter, r *http.Request) bool {
 		token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 	}
 	if token != s.token {
-		http.Error(w, "invalid agent bootstrap token", http.StatusUnauthorized)
+		http.Error(w, "invalid agent registration token", http.StatusUnauthorized)
 		return false
 	}
 	return true

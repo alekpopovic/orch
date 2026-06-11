@@ -27,4 +27,4 @@ The response is newline-delimited text over chunked HTTP. `--follow` keeps the s
 - If the node is offline or unreachable, logs are unavailable.
 - The control plane depends on each node's `advertise_address` pointing to the agent HTTP listener.
 
-Agents protect the log endpoint with the bootstrap token for now. mTLS should replace this before production multi-tenant use.
+Agents protect the log endpoint with the registration token for now. mTLS should replace this before production multi-tenant use.

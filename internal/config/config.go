@@ -36,7 +36,7 @@ func LoadServer() ServerConfig {
 		Addr:                getenv("ORCH_SERVER_ADDR", ":8080"),
 		DatabaseURL:         getenv("DATABASE_URL", "postgres://orch:orch@localhost:5432/orch?sslmode=disable"),
 		LogLevel:            getenv("ORCH_LOG_LEVEL", "info"),
-		BootstrapToken:      getenv("ORCH_BOOTSTRAP_TOKEN", "dev-bootstrap-token"),
+		BootstrapToken:      getenv("ORCH_AGENT_REGISTRATION_TOKEN", getenv("ORCH_BOOTSTRAP_TOKEN", "dev-bootstrap-token")),
 		JWTSecret:           getenv("ORCH_JWT_SECRET", ""),
 		Users:               getenv("ORCH_USERS", ""),
 		GracefulShutdownTTL: durationFromEnv("ORCH_SHUTDOWN_TIMEOUT", 10*time.Second),
@@ -50,7 +50,7 @@ func LoadAgent() AgentConfig {
 		AgentAddr:           getenv("ORCH_AGENT_ADDR", ":8081"),
 		Labels:              labelsFromEnv("ORCH_NODE_LABELS"),
 		ServerURL:           getenv("ORCH_SERVER_URL", "http://localhost:8080"),
-		BootstrapToken:      getenv("ORCH_BOOTSTRAP_TOKEN", "dev-bootstrap-token"),
+		BootstrapToken:      getenv("ORCH_AGENT_REGISTRATION_TOKEN", getenv("ORCH_BOOTSTRAP_TOKEN", "dev-bootstrap-token")),
 		DockerSocketPath:    getenv("ORCH_DOCKER_SOCKET", "/var/run/docker.sock"),
 		LogLevel:            getenv("ORCH_LOG_LEVEL", "info"),
 		HeartbeatInterval:   durationFromEnv("ORCH_AGENT_HEARTBEAT_INTERVAL", 5*time.Second),
@@ -131,7 +131,7 @@ func (cfg AgentConfig) Validate() error {
 		return fmt.Errorf("server URL is required")
 	}
 	if cfg.BootstrapToken == "" {
-		return fmt.Errorf("bootstrap token is required")
+		return fmt.Errorf("agent registration token is required")
 	}
 	if cfg.DockerSocketPath == "" {
 		return fmt.Errorf("Docker socket path is required")

@@ -24,6 +24,9 @@ type Node struct {
 	Allocatable      Resources         `json:"allocatable"`
 	Status           NodeStatus        `json:"status"`
 	LastHeartbeatAt  time.Time         `json:"last_heartbeat_at"`
+	AgentTokenHash   string            `json:"-"`
+	AgentTokenExpiry time.Time         `json:"-"`
+	AgentRevoked     bool              `json:"-"`
 	CreatedAt        time.Time         `json:"created_at"`
 	UpdatedAt        time.Time         `json:"updated_at"`
 }
