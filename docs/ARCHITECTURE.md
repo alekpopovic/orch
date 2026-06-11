@@ -10,7 +10,7 @@ The system has three primary binaries:
 - `orch-agent`: worker node agent that reports node state, runs local reconciliation against assigned tasks, performs health checks, and streams node events.
 - `orch`: Cobra-based CLI for operators and automation.
 
-PostgreSQL stores durable desired state, observed state, deployment history, events, and rollout metadata. Prometheus metrics expose control plane, agent, scheduler, reconciler, runtime, and health check behavior.
+PostgreSQL stores durable desired state, observed state, deployment history, events, and rollout metadata. Prometheus metrics will expose control plane, agent, scheduler, reconciler, runtime, and health check behavior as the implementation grows.
 
 ## Core Components
 

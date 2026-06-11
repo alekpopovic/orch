@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: orch
+      POSTGRES_USER: orch
+      POSTGRES_PASSWORD: orch
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orch -d orch"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  orch-server:
+    build:
+      context: .
+      dockerfile: deployments/examples/Dockerfile
+      args:
+        TARGET: orch-server
+    profiles: ["local-orch"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://orch:orch@postgres:5432/orch?sslmode=disable
+      ORCH_SERVER_ADDR: :8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  orch-agent:
+    build:
+      context: .
+      dockerfile: deployments/examples/Dockerfile
+      args:
+        TARGET: orch-agent
+    profiles: ["local-orch"]
+    env_file:
+      - .env
+    environment:
+      ORCH_SERVER_URL: http://orch-server:8080
+      ORCH_NODE_ID: local-agent-1
+    depends_on:
+      - orch-server
+
+volumes:
+  postgres-data:
