@@ -1,65 +1,90 @@
-# Agent Lifecycle
+# Agent
 
-`orch-agent` is the worker process that represents one node to the control plane.
+`orch-agent` is the worker-node process. It is responsible for local Docker reconciliation only; the server remains the source of truth for desired tasks.
+
+## Configuration
+
+Environment variables:
+
+- `ORCH_SERVER_URL`: control-plane URL. Default: `http://localhost:8080`.
+- `ORCH_NODE_NAME`: stable node name. Default: `local-node`.
+- `ORCH_ADVERTISE_ADDRESS`: address operators/server use to reach the agent log endpoint. Default: `http://127.0.0.1:8081`.
+- `ORCH_AGENT_ADDR`: listen address for agent logs/metrics. Default: `:8081`.
+- `ORCH_NODE_LABELS`: comma-separated labels such as `role=worker,zone=a`.
+- `ORCH_AGENT_HEARTBEAT_INTERVAL`: heartbeat interval. Default: `5s`.
+- `ORCH_DOCKER_SOCKET`: Docker socket path. Default: `/var/run/docker.sock`.
+- `ORCH_AGENT_REGISTRATION_TOKEN`: registration token.
+- `ORCH_LOG_LEVEL`: structured log level. Default: `info`.
+- `ORCH_SHUTDOWN_TIMEOUT`: graceful shutdown timeout. Default: `10s`.
 
 ## Startup
 
-On startup the agent loads:
+On startup the agent:
 
-- `ORCH_SERVER_URL`: control-plane API URL.
-- `ORCH_NODE_NAME`: stable node name.
-- `ORCH_ADVERTISE_ADDRESS`: address the control plane and operators should use for the node.
-- `ORCH_NODE_LABELS`: comma-separated labels such as `role=app,zone=a`.
-- `ORCH_AGENT_HEARTBEAT_INTERVAL`: heartbeat period.
-- `ORCH_DOCKER_SOCKET`: Docker Engine socket path.
-- `ORCH_AGENT_REGISTRATION_TOKEN`: static registration token used to obtain a short-lived agent credential until stronger node identity is added.
+1. Loads config.
+2. Creates a Docker Engine runtime client.
+3. Detects CPU capacity from `runtime.NumCPU()`.
+4. Detects memory from `/proc/meminfo` when available.
+5. Calls `POST /v1/agent/register` with the registration token.
+6. Receives a node ID, node status, directives, and short-lived credential.
+7. Starts the heartbeat and task reconciliation loop.
 
-The agent detects local capacity from the host:
-
-- CPU as millicores from `runtime.NumCPU()`.
-- Memory from `/proc/meminfo` when available.
-
-It then calls `POST /v1/agent/register`. The control plane creates or updates the node record and returns the authoritative node status plus any directives.
+Registration is keyed by stable node name in the current in-memory control plane. If a node returns after graceful offline, registering with the same name reuses the node ID.
 
 ## Heartbeats
 
-After registration, the agent sends `POST /v1/agent/heartbeat` every configured interval. The loop uses context cancellation, exponential backoff, and jitter so reconnecting agents do not all retry at the same instant.
+The agent sends `POST /v1/agent/heartbeat` every interval. The loop supports context cancellation, exponential backoff, and jitter.
 
-The agent does not choose to become draining on its own. Draining is controlled by the server response, usually after an operator calls `orch node drain`. The agent records and logs the returned status and directives.
+Heartbeats update capacity, allocatable resources, labels, and last heartbeat time. A graceful shutdown heartbeat sets `shutdown=true`; the server marks the node `offline` if it receives it.
 
-## Task Assignment
+Roadmap: a server-side heartbeat expiry controller should mark abruptly lost nodes offline.
 
-After each successful heartbeat, the agent calls `GET /v1/agent/tasks?node_id=<id>`. The control plane remains the source of truth and returns the desired tasks currently assigned to that node.
+## Task Polling
 
-For each assigned task with desired status `running`, the agent reconciles Docker state idempotently:
+After successful heartbeats, the agent polls:
 
-- report `pulling`, pull the image, and retry safely if the pull fails.
-- create a managed container labeled with service, task, node, and version identity.
-- report `created` once a container ID exists.
-- start the container and report `running`.
+```text
+GET /v1/agent/tasks?node_id=<node-id>
+```
 
-The agent may also report `unhealthy`, `failed`, `stopped`, or `removed` through `POST /v1/agent/tasks/{task_id}/status`. Status reports include the node ID so the server can reject updates for tasks assigned elsewhere.
+The response contains assigned tasks plus service healthcheck and port metadata.
 
-On every poll, the agent lists locally managed Docker containers for its node. Containers whose `orch.task_id` is no longer assigned are stopped and removed. This makes process restarts safe without a local durable cache: Docker labels provide local identity, and the server provides desired state.
+## Docker Reconciliation
+
+For each assigned task whose desired status is `running`, the agent:
+
+1. Looks for an existing task container by container ID.
+2. If needed, searches Docker by orchestrator labels:
+   - `orch.managed=true`
+   - `orch.service_id`
+   - `orch.task_id`
+   - `orch.node_id`
+   - `orch.version`
+3. If a running container is found, reports `running` with the recovered container ID.
+4. If a stopped container exited non-zero, reports `failed`.
+5. If no container exists and Docker is reachable, pulls the image, creates the container, starts it, and reports status after each step.
+
+The agent does not create a replacement if Docker cannot list managed containers. That avoids duplicates during Docker daemon restarts or transient Docker API failures.
+
+## Stop And Cleanup
+
+For tasks whose desired status is `stopped` or `removed`, the agent stops and removes the managed container when possible, then reports terminal status.
+
+On every poll, the agent lists local managed containers for its node. Containers with `orch.managed=true` and no corresponding assigned task are stopped and removed. Cleanup is limited to orchestrator-managed containers for the current node.
 
 ## Health Checks
 
-For running assigned tasks with a service healthcheck, the agent performs HTTP or TCP probes and reports `healthy` or `unhealthy` only after the configured consecutive threshold is met. Probes respect context cancellation, use the service timeout, and add jitter to avoid synchronized checks. See `docs/HEALTHCHECKS.md`.
+The agent performs HTTP/TCP checks for running tasks with a configured healthcheck. It reports `healthy` or `unhealthy` only after the configured consecutive threshold is met. It does not restart containers based on health; restart/replacement is a control-plane decision.
 
-## Shutdown
+## Logs And Metrics
 
-On graceful shutdown, the agent sends a final heartbeat with `shutdown=true`. If the notification succeeds, the control plane marks the node offline. If it fails, the agent logs a warning and continues shutdown.
+The agent exposes:
 
-## Security
+- `GET /metrics`
+- log streaming endpoints used by the server log proxy
 
-Registration uses a static registration token:
+The log endpoint reads from Docker and streams without loading unbounded logs into memory.
 
-```text
-Authorization: Bearer <ORCH_AGENT_REGISTRATION_TOKEN>
-```
+## Security Considerations
 
-After registration, the server returns a short-lived agent credential. The agent uses that credential for heartbeat, task polling, and task status updates. Heartbeat responses rotate the credential.
-
-This is intentionally isolated to the agent endpoint boundary so mTLS-based node identity can replace or combine with token credentials later. Treat tokens as secrets. Do not commit them, print them, or expose them through logs.
-
-Access to the Docker socket is highly privileged. A compromised agent can control containers on the node and may be able to affect the host. See `docs/DEVELOPMENT.md` for Docker daemon permission risks.
+The Docker socket is highly privileged. A compromised agent can usually control containers on the node and may affect the host. Only run trusted agent binaries, protect the registration token, and restrict network access to the agent log endpoint.

@@ -1,59 +1,152 @@
 # Architecture
 
-`orch` is a Go-based container orchestrator for multi-node Docker deployments. The first runtime target is Docker Engine API, with runtime access isolated behind interfaces so the control plane can later support containerd.
+`orch` is a Docker-first container orchestrator written in Go. It models services as desired state, tasks as per-replica work items, nodes as worker capacity, and Docker containers as local runtime artifacts managed by agents.
 
-## System Overview
+The current codebase is built to separate control-plane decisions from runtime side effects. Scheduling, reconciliation, rollout progression, validation, and resource accounting are unit-testable without Docker.
 
-The system has three primary binaries:
+## Current Implementation Boundary
 
-- `orch-server`: control plane API server that owns desired state, scheduling decisions, deployment workflows, authentication, and persistence.
-- `orch-agent`: worker node agent that reports node state, runs local reconciliation against assigned tasks, performs health checks, and streams node events.
-- `orch`: Cobra-based CLI for operators and automation.
+Implemented today:
 
-PostgreSQL stores durable desired state, observed state, deployment history, events, and rollout metadata. Prometheus metrics will expose control plane, agent, scheduler, reconciler, runtime, and health check behavior as the implementation grows.
+- REST API with request IDs, structured JSON errors, access logs, recovery middleware, timeouts, optional JWT user auth, and token-based agent auth.
+- In-memory control plane used by the default `orch-server` binary.
+- PostgreSQL migrations and a PostgreSQL store implementation with optimistic concurrency, but not yet wired into `orch-server`.
+- Docker Engine runtime package used by `orch-agent`.
+- Scheduler, reconciler, rollout controller, health checks, events, logs, and Prometheus metrics.
 
-## Core Components
+Roadmap:
 
-- API server: validates requests, enforces authorization, writes desired state, and exposes stable request/response contracts.
-- Scheduler: deterministically places tasks on nodes based on inputs such as node health, capacity, constraints, and existing assignments.
-- Reconciler: continuously compares desired state with observed state and issues idempotent runtime operations until the node converges.
-- Store: owns PostgreSQL access through `sqlc` or `pgx` and hides persistence details from domain packages.
-- Docker runtime: wraps Docker Engine API operations for image, network, volume, container, and health-related behavior.
-- Healthchecker: performs HTTP and TCP checks with timeouts, context cancellation, and deterministic test doubles.
-- Rollout manager: coordinates rolling updates, rollback, health gates, and deployment progress.
-- Events, logs, and metrics: provide operator visibility and machine-readable orchestration history.
+- Wire `orch-server` to PostgreSQL for durable production state.
+- Add heartbeat-expiry node monitor.
+- Add real HA leader election.
+- Add mTLS node identity.
+- Add containerd runtime support.
 
-## Control Flow
+## Components
 
-1. A user or automation calls `orch` or the control plane API.
-2. `orch-server` validates and persists desired state in PostgreSQL.
-3. The scheduler computes deterministic task placements.
-4. Agents receive or poll their assigned desired state.
-5. Each agent reconciler compares desired task state with local Docker state.
-6. The Docker runtime adapter performs idempotent Docker Engine API operations.
-7. Health checks, events, logs, and metrics update observed state and deployment progress.
-8. The rollout manager advances, pauses, or rolls back deployments based on health and policy.
+### orch-server
 
-See [ROLLOUTS.md](ROLLOUTS.md) for the rolling update state machine.
+The server exposes operator and agent APIs. It validates requests, enforces optional JWT/RBAC for user-facing endpoints, validates agent credentials for agent endpoints, owns the active control-plane implementation, and runs the rollout controller loop.
 
-## Service, Task, And Container Lifecycle
+In the current binary, the control plane is `internal/controlplane.MemoryService`. It is suitable for local development and tests, not for restart-safe production state.
 
-A service is the durable desired-state object submitted by an operator. Its spec defines the image, replica count, environment, secret references, ports, resource requests and limits, restart policy, health check, placement constraints, and deployment version.
+### orch-agent
 
-Services move through `active`, `deleting`, and `deleted` states. Delete requests are soft by default: the control plane marks the service `deleting`, the reconciler sets task desired status to `stopped`, agents stop and remove containers, and the service becomes `deleted` only after tasks report `removed`.
+The agent represents one worker node. It detects local CPU and memory, registers with the server, heartbeats, polls assigned tasks, reconciles Docker containers, runs health checks, streams logs, and reports task status.
 
-When a service is created or updated, the control plane records a deployment version and the scheduler turns the service's replica intent into task assignments. Each task is an immutable unit of work for a specific service version and target node. Tasks carry both desired status and observed status so the control plane can reason about convergence without treating Docker as the source of truth.
+The agent does not schedule tasks and does not decide service replica count. It follows server desired state.
 
-On each worker, the agent reconciler reads assigned tasks and asks the runtime adapter to create, update, stop, or remove the corresponding Docker container. The container ID is observed runtime state attached back to the task. Docker operations must be idempotent: repeating reconciliation should converge the same task to the same container state without creating duplicates.
+### CLI
 
-Health checks, restart policy, and container exit state update the task's actual status, restart count, failure reason, and timestamps. Rollouts advance only when the expected tasks for the new service version become healthy; failed health checks or runtime failures can pause the deployment or trigger rollback to the previous version.
+`orch` is a Cobra CLI that calls the REST API. It supports table and JSON output, deploy YAML parsing, service operations, node operations, rollouts, events, and logs.
 
-## Design Principles
+### Store
 
-- Keep domain logic independent from Docker, PostgreSQL, clocks, and network probes.
-- Make scheduler and reconciler behavior deterministic and unit-testable.
-- Treat runtime operations as convergent, not one-shot commands.
-- Keep APIs explicit, validated, and backward-compatible.
-- Support graceful shutdown through context cancellation in every long-running loop.
-- Store all timestamps in UTC.
-- Protect secrets through encryption at rest and redaction everywhere else.
+`internal/store` defines interfaces and a PostgreSQL implementation. Migrations create tables for nodes, services, service versions, tasks, deployments, and events.
+
+The store uses UUID primary keys, UTC timestamps, indexes for common queries, optimistic concurrency through timestamps/versions, and domain errors such as `ErrNotFound`, `ErrConflict`, `ErrInvalidState`, and `ErrDuplicate`.
+
+### Scheduler
+
+The scheduler reads pending tasks, ready nodes, running tasks, and service specs. It computes deterministic assignments and persists them with optimistic concurrency. It does not call Docker.
+
+### Reconciler
+
+The reconciler keeps active services aligned with desired replica counts. It creates pending tasks, stops excess tasks, replaces failed restartable tasks, and finalizes soft deletion after tasks are removed. It does not schedule tasks or call Docker.
+
+### Rollout Controller
+
+The rollout controller advances deployments asynchronously. It creates target-version tasks subject to surge limits, waits for healthy target tasks, stops old-version tasks subject to availability limits, and marks deployments succeeded, failed, or rolled back.
+
+### Runtime
+
+`internal/docker` wraps the Docker Engine API behind a `Runtime` interface. All orchestrator-created containers carry labels identifying service, task, node, version, and `orch.managed=true`.
+
+## Core Data Model
+
+### Node
+
+A node records stable identity, hostname, advertise address, labels, capacity, allocatable resources, status, heartbeat time, and agent credential metadata.
+
+Node statuses:
+
+- `ready`
+- `draining`
+- `offline`
+- `unknown`
+
+### Service
+
+A service is desired state: name, image, replicas, environment, secret references, ports, resource requirements, healthcheck, restart policy, placement constraints, status, and deployment version.
+
+Service statuses:
+
+- `active`
+- `deleting`
+- `deleted`
+
+### Task
+
+A task is one service replica for one service version. It records service ID, node ID, container ID, desired status, actual status, image, version, restart count, failure reason, and timestamps.
+
+Task desired state is controlled by the server. Task actual state is reported by agents.
+
+### Deployment
+
+A deployment records rollout or rollback progress between service versions. It stores strategy, status, max unavailable, max surge, and timestamps.
+
+### Event
+
+Events record important control-plane and agent decisions with type, severity, source, message, related object, and timestamp.
+
+## Service To Container Lifecycle
+
+1. An operator creates a service through the CLI or API.
+2. The control plane stores service desired state.
+3. The reconciler creates pending tasks when replica count is below desired.
+4. The scheduler assigns pending tasks to ready nodes.
+5. The agent polls assigned tasks for its node.
+6. The agent pulls the image, creates a labeled Docker container, starts it, and reports task status after each step.
+7. Health checks report `healthy` or `unhealthy`.
+8. If a task fails and restart policy allows replacement, the reconciler creates a new pending task.
+9. When a service is deleted, tasks move toward stopped/removed and the service becomes `deleted` only after all tasks report removed.
+
+## Deployment Flow
+
+Create:
+
+1. `orch deploy service.yaml` parses and validates YAML.
+2. API receives `POST /v1/services`.
+3. Service is created as `active`, version `1`.
+4. Reconciliation creates tasks.
+5. Scheduling assigns tasks.
+6. Agents create containers and report status.
+
+Scale:
+
+1. `orch scale api --replicas N` calls `POST /v1/services/{id}/scale`.
+2. Service replica count changes.
+3. Reconciler creates missing tasks or stops extra tasks.
+4. Scheduler and agents converge actual state.
+
+Rolling update:
+
+1. `orch rollout api --image new:image` calls `POST /v1/services/{id}/rollout`.
+2. Service image and deployment version advance.
+3. Deployment starts as `pending`.
+4. Rollout controller creates new-version tasks and stops old-version tasks according to limits.
+5. Deployment succeeds only after old active tasks are gone and target-version healthy tasks meet replica count.
+
+Rollback:
+
+1. `orch rollback api` selects the previous successful service version.
+2. Service spec is restored.
+3. A rollback deployment runs through the same rollout controller.
+
+## Time, Context, And Determinism
+
+- All timestamps are UTC.
+- Long-running loops accept context cancellation.
+- Scheduler and reconciler logic are deterministic over sorted inputs.
+- External side effects are behind interfaces.
+- Docker operations are idempotent by task label and container ID.

@@ -1,38 +1,85 @@
 # Observability
 
-`orch-server` and `orch-agent` expose Prometheus metrics at:
+`orch-server` and `orch-agent` expose structured logs, events, and Prometheus metrics.
 
-- `GET /metrics` on the server address, for example `http://localhost:8080/metrics`.
-- `GET /metrics` on the agent address, for example `http://localhost:8081/metrics`.
+## Logs
+
+Both binaries use structured logging through `log/slog`.
+
+Important fields:
+
+- request ID;
+- method;
+- route/path;
+- status;
+- duration;
+- task ID, node ID, service ID, or rollout ID when relevant;
+- error messages.
+
+Do not log tokens, credentials, or secret values.
+
+## Events
+
+Events are operator-facing audit records. They include:
+
+- type;
+- severity: `info`, `warning`, or `error`;
+- source;
+- message;
+- related object type and ID;
+- timestamp.
+
+Events are emitted for service changes, scheduler assignments, reconciler decisions, agent status changes, health failures, rollouts, and rollbacks.
+
+Current implementation note: the default server stores events in memory. The PostgreSQL store can persist events, but server wiring to Postgres is not yet active.
+
+## Metrics Endpoints
+
+Server:
+
+```text
+GET /metrics
+```
+
+Agent:
+
+```text
+GET /metrics
+```
+
+In local Compose:
+
+- server: `http://localhost:8080/metrics`
+- agent: `http://localhost:8081/metrics`
 
 ## Server Metrics
 
-- `api_requests_total{method,route,status}`: API requests by HTTP method, route template, and status code.
-- `api_request_duration_seconds{method,route,status}`: API request latency.
-- `scheduler_runs_total`: scheduler pass count.
-- `scheduler_errors_total`: scheduler pass failures.
-- `scheduler_duration_seconds`: scheduler pass duration.
-- `reconciler_runs_total`: reconciler pass count.
-- `reconciler_errors_total`: reconciler pass failures.
-- `reconciler_duration_seconds`: reconciler pass duration.
-- `tasks_created_total`: tasks created by controllers.
-- `tasks_failed_total`: tasks reported failed.
-- `rollouts_total`: rollout or rollback requests accepted.
-- `rollout_failures_total`: rollouts marked failed.
+- `api_requests_total{method,route,status}`
+- `api_request_duration_seconds{method,route,status}`
+- `scheduler_runs_total`
+- `scheduler_errors_total`
+- `scheduler_duration_seconds`
+- `reconciler_runs_total`
+- `reconciler_errors_total`
+- `reconciler_duration_seconds`
+- `tasks_created_total`
+- `tasks_failed_total`
+- `rollouts_total`
+- `rollout_failures_total`
 
-API metrics use route templates such as `/v1/services/{id}` rather than raw paths. This keeps labels low-cardinality and avoids embedding service IDs, task IDs, node IDs, or names in Prometheus series.
+Current implementation note: API, task failure, and rollout request metrics are wired into the server binary. Scheduler and reconciler metric types exist and are used by their packages, but those loops are not all wired into the default `orch-server` process yet.
 
 ## Agent Metrics
 
-- `heartbeat_success_total`: successful heartbeat attempts.
-- `heartbeat_failure_total`: failed heartbeat attempts.
-- `docker_operations_total{operation}`: Docker runtime operations by operation type.
-- `docker_operation_errors_total{operation}`: Docker runtime operation failures by operation type.
-- `task_state_changes_total{status}`: task status updates accepted by the control plane.
-- `healthcheck_success_total`: successful health checks.
-- `healthcheck_failure_total`: failed health checks.
+- `heartbeat_success_total`
+- `heartbeat_failure_total`
+- `docker_operations_total{operation}`
+- `docker_operation_errors_total{operation}`
+- `task_state_changes_total{status}`
+- `healthcheck_success_total`
+- `healthcheck_failure_total`
 
-Agent labels are intentionally limited to operation and status enums. Do not add labels for service names, task IDs, container IDs, node IDs, image tags, or user-provided labels unless there is a reviewed operational reason.
+Labels are intentionally low-cardinality. Do not add service names, task IDs, node IDs, image tags, or user-provided labels to Prometheus metrics.
 
 ## Prometheus Scrape Example
 
@@ -47,4 +94,20 @@ scrape_configs:
       - targets: ["localhost:8081"]
 ```
 
-For production, discover agents through your infrastructure inventory or service discovery rather than hard-coding every node.
+## Suggested Alerts
+
+For an MVP environment:
+
+- API 5xx rate above baseline.
+- Agent heartbeat failures increasing.
+- Docker operation errors increasing.
+- Task failures increasing.
+- Rollout failures non-zero.
+- No events or metrics from an expected node.
+
+Roadmap:
+
+- Add service-level SLO metrics.
+- Add node heartbeat expiry metrics.
+- Add persistent audit export.
+- Add trace spans around API/controller/store operations.

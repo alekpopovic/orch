@@ -1,6 +1,12 @@
 # API
 
-The control-plane API uses JSON request and response bodies. Errors use a stable envelope:
+`orch-server` exposes a JSON REST API for operators and agents. User-facing routes are under `/v1/*`; agent routes are under `/v1/agent/*`.
+
+All responses use UTC timestamps.
+
+## Errors
+
+Errors use a stable envelope:
 
 ```json
 {
@@ -12,29 +18,52 @@ The control-plane API uses JSON request and response bodies. Errors use a stable
 }
 ```
 
-User-facing `/v1/*` endpoints require `Authorization: Bearer <jwt>` when `ORCH_JWT_SECRET` is configured. Agent endpoints use the separate bootstrap-token flow documented below.
+Clients may send `X-Request-ID`. If absent, the server generates one and includes it in errors and access logs.
 
-Clients may send `X-Request-ID`; otherwise the server generates one.
+## Authentication
 
-## Health
+User API:
+
+- If `ORCH_JWT_SECRET` is empty, user auth is disabled. This is the local-development default.
+- If `ORCH_JWT_SECRET` is set, user-facing `/v1/*` endpoints require `Authorization: Bearer <jwt>`.
+- Roles are `viewer`, `operator`, and `admin`.
+
+Agent API:
+
+- `POST /v1/agent/register` uses `Authorization: Bearer <ORCH_AGENT_REGISTRATION_TOKEN>`.
+- Registration returns a short-lived agent credential.
+- Heartbeat, task polling, and task status updates use the issued credential.
+
+See [SECURITY.md](SECURITY.md).
+
+## Health And Metrics
 
 ```sh
 curl http://localhost:8080/healthz
 curl http://localhost:8080/readyz
+curl http://localhost:8080/metrics
 ```
+
+`readyz` currently reports readiness for the in-process server. It does not yet validate PostgreSQL connectivity because the shipped server is not wired to the PostgreSQL store.
 
 ## Nodes
 
 ```sh
 curl http://localhost:8080/v1/nodes
-curl http://localhost:8080/v1/nodes/00000000-0000-4000-8000-000000000001
-curl -X POST http://localhost:8080/v1/nodes/00000000-0000-4000-8000-000000000001/drain
-curl -X POST http://localhost:8080/v1/nodes/00000000-0000-4000-8000-000000000001/uncordon
+curl http://localhost:8080/v1/nodes/{node_id}
+curl -X POST http://localhost:8080/v1/nodes/{node_id}/drain
+curl -X POST http://localhost:8080/v1/nodes/{node_id}/uncordon
 ```
+
+Node operations:
+
+- `drain` marks a node draining, excluding it from new scheduler placements.
+- `uncordon` marks a node ready.
+- Abrupt node heartbeat expiry is not implemented yet.
 
 ## Services
 
-Create a service:
+Create:
 
 ```sh
 curl -X POST http://localhost:8080/v1/services \
@@ -61,12 +90,12 @@ curl -X POST http://localhost:8080/v1/services \
         "unhealthy_threshold": 3
       },
       "restart_policy": {"condition": "on_failure", "max_attempts": 3},
-      "placement_constraints": [{"key": "region", "operator": "equals", "value": "local"}]
+      "placement_constraints": [{"key": "role", "operator": "equals", "value": "worker"}]
     }
   }'
 ```
 
-List, fetch, and delete:
+Read and delete:
 
 ```sh
 curl http://localhost:8080/v1/services
@@ -74,45 +103,100 @@ curl http://localhost:8080/v1/services/{service_id}
 curl -X DELETE http://localhost:8080/v1/services/{service_id}
 ```
 
-Resource values are normalized as CPU millicores and memory bytes. The API also accepts string inputs such as `"500m"`, `"2.5"`, `"512Mi"`, and `"1Gi"` for resource fields.
+Delete is soft. It marks the service `deleting`, directs tasks to stop/remove, and marks the service `deleted` only after all tasks report `removed`.
 
-Delete is safe by default: it marks the service `deleting`, asks agents to stop and remove task containers, and only moves the service to `deleted` after all tasks report `removed`.
-
-Scale and rollout operations:
+Scale:
 
 ```sh
 curl -X POST http://localhost:8080/v1/services/{service_id}/scale \
   -H 'Content-Type: application/json' \
   -d '{"replicas": 4}'
+```
 
+Rollout:
+
+```sh
 curl -X POST http://localhost:8080/v1/services/{service_id}/rollout \
   -H 'Content-Type: application/json' \
   -d '{"image": "nginx:1.28", "maxUnavailable": 1, "maxSurge": 1}'
 
 curl http://localhost:8080/v1/services/{service_id}/rollout
 curl http://localhost:8080/v1/rollouts/{rollout_id}
+```
 
+Rollback:
+
+```sh
 curl -X POST http://localhost:8080/v1/services/{service_id}/rollback
 ```
+
+Resource values are normalized to CPU millicores and memory bytes. The CLI deploy parser accepts strings such as `500m`, `2.5`, `512Mi`, and `1Gi`.
 
 ## Tasks
 
 ```sh
 curl http://localhost:8080/v1/tasks
-curl http://localhost:8080/v1/tasks?service_id={service_id}
-curl http://localhost:8080/v1/tasks?node_id={node_id}
-curl http://localhost:8080/v1/tasks?status=running
+curl 'http://localhost:8080/v1/tasks?service_id={service_id}'
+curl 'http://localhost:8080/v1/tasks?node_id={node_id}'
+curl 'http://localhost:8080/v1/tasks?status=running'
 curl http://localhost:8080/v1/tasks/{task_id}
 ```
 
+Valid task statuses include:
+
+- `pending`
+- `assigned`
+- `pulling`
+- `created`
+- `starting`
+- `running`
+- `healthy`
+- `unhealthy`
+- `stopping`
+- `stopped`
+- `removed`
+- `failed`
+
+## Agent Registration And Heartbeat
+
+Register:
+
+```sh
+curl -X POST http://localhost:8080/v1/agent/register \
+  -H 'Authorization: Bearer <registration-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "node_name": "node-a",
+    "advertise_address": "http://node-a:8081",
+    "labels": {"role": "worker"},
+    "capacity": {"cpu": 4000, "memory": 8589934592},
+    "allocatable": {"cpu": 3500, "memory": 7516192768}
+  }'
+```
+
+Heartbeat:
+
+```sh
+curl -X POST http://localhost:8080/v1/agent/heartbeat \
+  -H 'Authorization: Bearer <agent-credential>' \
+  -H 'Content-Type: application/json' \
+  -d '{"node_id": "{node_id}"}'
+```
+
+Heartbeat responses may include a rotated credential.
+
 ## Agent Tasks
 
-Agent registration requires `Authorization: Bearer <ORCH_AGENT_REGISTRATION_TOKEN>`. Registration returns a short-lived agent credential used for heartbeat, task polling, and task status updates.
+Poll assigned tasks:
 
 ```sh
 curl -H 'Authorization: Bearer <agent-credential>' \
   'http://localhost:8080/v1/agent/tasks?node_id={node_id}'
+```
 
+Report task status:
+
+```sh
 curl -X POST http://localhost:8080/v1/agent/tasks/{task_id}/status \
   -H 'Authorization: Bearer <agent-credential>' \
   -H 'Content-Type: application/json' \
@@ -123,19 +207,30 @@ curl -X POST http://localhost:8080/v1/agent/tasks/{task_id}/status \
   }'
 ```
 
-The task poll response includes each task plus service healthcheck metadata and ports so the agent can probe running containers.
+Agents may report:
 
-Agents may report `pulling`, `created`, `running`, `healthy`, `unhealthy`, `failed`, `stopped`, and `removed`.
+- `pulling`
+- `created`
+- `running`
+- `healthy`
+- `unhealthy`
+- `failed`
+- `stopped`
+- `removed`
+
+The server rejects status reports from the wrong node and rejects stale active reports for tasks that are stopping, removed, or terminal.
 
 ## Events
 
 ```sh
 curl http://localhost:8080/v1/events
 curl 'http://localhost:8080/v1/events?service_id={service_id}&limit=50'
-curl 'http://localhost:8080/v1/events?task_id={task_id}&type=task.status'
+curl 'http://localhost:8080/v1/events?task_id={task_id}&type=task.failed'
 curl 'http://localhost:8080/v1/events?node_id={node_id}&severity=warning'
 curl 'http://localhost:8080/v1/events?since=2026-06-11T10:00:00Z'
 ```
+
+Events support filtering by service, task, node, event type, severity, and `since`.
 
 ## Logs
 
@@ -145,4 +240,4 @@ curl 'http://localhost:8080/v1/logs?service_id={service_id}&follow=true'
 curl 'http://localhost:8080/v1/logs?service_id={service_id}&task_id={task_id}'
 ```
 
-The MVP response is newline-delimited text proxied from a worker agent.
+Logs are proxied from the agent that owns the task. The MVP uses newline-delimited text/chunked streaming and does not persist logs centrally.

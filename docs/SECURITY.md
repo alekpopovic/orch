@@ -1,14 +1,18 @@
 # Security
 
+`orch` separates user authentication from agent authentication. The current model is appropriate for local and controlled environments; production hardening requires the roadmap items listed below.
+
 ## User API Authentication
 
 User-facing REST API endpoints support JWT authentication when `ORCH_JWT_SECRET` is configured on `orch-server`.
 
-Tokens use HMAC SHA-256 (`HS256`) and must include:
+If `ORCH_JWT_SECRET` is empty, user auth is disabled. This is the default in local Compose.
+
+JWTs use HMAC SHA-256 (`HS256`) and should include:
 
 - `sub`: user identifier.
-- `role`: one of `admin`, `operator`, or `viewer`.
-- `exp`: recommended expiration timestamp.
+- `role`: `admin`, `operator`, or `viewer`.
+- `exp`: expiration timestamp.
 
 Example claims:
 
@@ -20,59 +24,85 @@ Example claims:
 }
 ```
 
-The server validates the signature, role, and expiration before applying RBAC.
-
-For MVP static users can be configured with `ORCH_USERS`:
+Optional static user config:
 
 ```sh
 ORCH_USERS=alice:admin,bob:operator,carol:viewer
 ```
 
-When `ORCH_USERS` is set, the JWT `sub` must match a configured user and the configured role is authoritative. This prevents a token from escalating itself by changing the `role` claim.
+When `ORCH_USERS` is set, the JWT `sub` must match a configured user and the configured role is authoritative.
 
 ## Roles
 
-- `viewer`: list/read nodes, services, tasks, events, and logs.
+- `viewer`: read/list nodes, services, tasks, events, and logs.
 - `operator`: viewer access plus deploy, scale, rollout, rollback, and delete services.
 - `admin`: operator access plus node drain/uncordon and future cluster/user administration.
 
-Roles are hierarchical: `admin` includes `operator` and `viewer`; `operator` includes `viewer`.
+Roles are hierarchical.
 
 ## Agent Authentication
 
-Agent authentication is separate from user authentication.
+Agent auth is separate from user JWT auth.
 
-The registration token configured by `ORCH_AGENT_REGISTRATION_TOKEN` is only used for registration. An agent presents it to `POST /v1/agent/register`. After successful registration, the server issues a short-lived agent credential. The server stores only a hash of that credential on the node record, never the raw token.
+1. Agent registers with `Authorization: Bearer <ORCH_AGENT_REGISTRATION_TOKEN>`.
+2. Server issues a short-lived agent credential.
+3. Server stores only a hash of the issued credential.
+4. Agent uses the credential for heartbeat, task polling, and task status updates.
+5. Heartbeat responses rotate the credential.
+6. Revoked nodes cannot authenticate with their current credential.
 
-Agents use the issued credential for:
+Never log or store raw tokens.
 
-- `POST /v1/agent/heartbeat`
-- `GET /v1/agent/tasks`
-- `POST /v1/agent/tasks/{task_id}/status`
+## Docker Socket Risk
 
-Heartbeat responses rotate the credential. The new credential replaces the previous hash, so older credentials stop working. Nodes also have a server-side revocation flag; revoked nodes cannot authenticate with their current credential.
+The agent needs Docker Engine access. Mounting `/var/run/docker.sock` gives the agent broad control over the node. Treat agent compromise as node compromise.
 
-Do not reuse user JWT secrets as agent registration tokens or agent credentials.
+Recommended controls:
 
-## Future mTLS Design
+- Run agents only on trusted nodes.
+- Restrict access to the agent HTTP port.
+- Keep the agent image minimal and pinned.
+- Do not expose the Docker socket to service containers.
+- Monitor Docker operation error metrics and audit task events.
 
-The agent auth implementation is intentionally behind credential issuer/validator interfaces. A future mTLS authenticator can be added beside or instead of token auth:
+## Secret Handling
 
-1. Issue each node a client certificate at registration or through external provisioning.
-2. Bind the certificate subject or SPIFFE ID to the node ID.
-3. Validate certificate chains and revocation status in middleware.
-4. Optionally require both mTLS identity and short-lived token credentials during migration.
-5. Remove static registration tokens once node identity is fully automated.
+Service specs support secret references, not plaintext secret storage. Do not put secret values in service env vars, deploy YAML, logs, or events.
 
-The API should continue to treat user JWT auth and agent identity as separate middleware chains.
+Roadmap:
+
+- Integrate a secret manager.
+- Encrypt sensitive persisted data.
+- Add server-side redaction for any future secret-bearing fields.
 
 ## Logging
 
-The API access log records request ID, method, path, status, and duration. It does not log `Authorization` headers, JWTs, registration tokens, agent credentials, or request bodies.
+The API access log records request ID, method, path, status, duration, and route. It must not log:
 
-## MVP Limitations
+- `Authorization` headers;
+- JWTs;
+- registration tokens;
+- agent credentials;
+- request bodies containing env or secret references.
 
-- Users are represented by signed JWT claims plus optional `ORCH_USERS` static config; there is no database-backed user management yet.
-- Token issuance is external to the server for now.
-- Use a long, random `ORCH_JWT_SECRET` and rotate it through your deployment secret manager.
-- mTLS should replace or harden registration-token-based agent bootstrap before production multi-tenant use.
+## Future mTLS Design
+
+The agent credential code is behind issuer/validator interfaces so mTLS can be added later.
+
+Target design:
+
+1. Provision each node with a client certificate or SPIFFE identity.
+2. Bind certificate identity to node ID.
+3. Validate certificate chain and revocation in agent middleware.
+4. Optionally require both mTLS and short-lived token credentials during migration.
+5. Remove static registration tokens after node identity is automated.
+
+## Production Requirements Before Multi-Tenant Use
+
+- Wire `orch-server` to PostgreSQL durable state.
+- Enable JWT auth with a strong rotated secret.
+- Replace static registration bootstrap with mTLS or one-time enrollment.
+- Add TLS termination for server and agent endpoints.
+- Add audit export and retention.
+- Add secret manager integration.
+- Add network policy/firewall rules around server, agent, metrics, and Docker access.
