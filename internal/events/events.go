@@ -26,6 +26,10 @@ const (
 	TypeReconcilerTaskCreated = "reconciler.task.created"
 	TypeReconcilerTaskStopped = "reconciler.task.stopped"
 	TypeRolloutManagerStarted = "rollout.started"
+	TypeRolloutAdvanced       = "rollout.advanced"
+	TypeRolloutTaskCreated    = "rollout.task.created"
+	TypeRolloutTaskStopped    = "rollout.task.stopped"
+	TypeRolloutStatusChanged  = "rollout.status.changed"
 )
 
 type Event = types.Event

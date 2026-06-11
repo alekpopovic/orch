@@ -34,6 +34,8 @@ PostgreSQL stores durable desired state, observed state, deployment history, eve
 7. Health checks, events, logs, and metrics update observed state and deployment progress.
 8. The rollout manager advances, pauses, or rolls back deployments based on health and policy.
 
+See [ROLLOUTS.md](ROLLOUTS.md) for the rolling update state machine.
+
 ## Service, Task, And Container Lifecycle
 
 A service is the durable desired-state object submitted by an operator. Its spec defines the image, replica count, environment, secret references, ports, resource requests and limits, restart policy, health check, placement constraints, and deployment version.

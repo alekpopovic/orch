@@ -177,7 +177,7 @@ func TestTaskAssignmentReconcilesWhenNodeRegistersAfterService(t *testing.T) {
 	}
 }
 
-func TestRolloutCreatesReplacementTasks(t *testing.T) {
+func TestRolloutStartsAsyncDeployment(t *testing.T) {
 	service := NewMemoryService()
 	ctx := context.Background()
 
@@ -207,29 +207,44 @@ func TestRolloutCreatesReplacementTasks(t *testing.T) {
 		t.Fatalf("expected one task before rollout, got %d", len(before))
 	}
 
-	if _, err := service.RolloutService(ctx, created.ID, "ghcr.io/example/api:2.0.0"); err != nil {
+	deployment, err := service.RolloutService(ctx, created.ID, RolloutSpec{
+		Image:          "ghcr.io/example/api:2.0.0",
+		MaxUnavailable: 1,
+		MaxSurge:       1,
+	})
+	if err != nil {
 		t.Fatalf("rollout service: %v", err)
+	}
+	if deployment.Status != types.DeploymentPending {
+		t.Fatalf("expected pending deployment, got %q", deployment.Status)
+	}
+	updated, err := service.GetService(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get updated service: %v", err)
+	}
+	if updated.Spec.Image != "ghcr.io/example/api:2.0.0" || updated.DeploymentVersion != 2 {
+		t.Fatalf("expected updated service version/image, got version=%d image=%q", updated.DeploymentVersion, updated.Spec.Image)
 	}
 	after, err := service.ListAssignedTasks(ctx, registered.Node.ID)
 	if err != nil {
 		t.Fatalf("list tasks after rollout: %v", err)
 	}
 	if len(after) != 1 {
-		t.Fatalf("expected one active task after rollout, got %d", len(after))
+		t.Fatalf("expected old active task before rollout controller runs, got %d", len(after))
 	}
-	if after[0].Task.ID == before[0].Task.ID {
-		t.Fatalf("expected replacement task id, got same task %q", after[0].Task.ID)
+	if after[0].Task.ID != before[0].Task.ID {
+		t.Fatalf("expected existing task to remain assigned, got replacement %q", after[0].Task.ID)
 	}
-	if after[0].Task.Image != "ghcr.io/example/api:2.0.0" {
-		t.Fatalf("expected rollout image, got %q", after[0].Task.Image)
+	if after[0].Task.Image != "ghcr.io/example/api:1.0.0" {
+		t.Fatalf("expected old task image, got %q", after[0].Task.Image)
 	}
 
 	allTasks, err := service.ListTasks(ctx, TaskFilter{ServiceID: created.ID})
 	if err != nil {
 		t.Fatalf("list all service tasks: %v", err)
 	}
-	if len(allTasks) != 2 {
-		t.Fatalf("expected old and replacement tasks, got %d", len(allTasks))
+	if len(allTasks) != 1 {
+		t.Fatalf("expected only existing task before controller runs, got %d", len(allTasks))
 	}
 }
 

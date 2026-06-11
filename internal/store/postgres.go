@@ -432,10 +432,33 @@ func (s *PostgresStore) GetDeployment(ctx context.Context, id types.DeploymentID
 	return deployment, nil
 }
 
+func (s *PostgresStore) ListDeploymentsByStatus(ctx context.Context, status types.DeploymentStatus) ([]types.Deployment, error) {
+	rows, err := s.pool.Query(ctx, deploymentSelectSQL()+` WHERE status = $1 ORDER BY created_at, id`, string(status))
+	if err != nil {
+		return nil, mapPostgresError(err)
+	}
+	defer rows.Close()
+
+	var deployments []types.Deployment
+	for rows.Next() {
+		deployment, err := scanDeployment(rows)
+		if err != nil {
+			return nil, mapPostgresError(err)
+		}
+		deployments = append(deployments, deployment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapPostgresError(err)
+	}
+	return deployments, nil
+}
+
 func (s *PostgresStore) UpdateDeploymentStatus(ctx context.Context, id types.DeploymentID, status types.DeploymentStatus, expectedUpdatedAt time.Time) (types.Deployment, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE deployments
 		SET status = $2,
+			started_at = CASE WHEN $2 = 'running' AND started_at IS NULL THEN timezone('utc', now()) ELSE started_at END,
+			completed_at = CASE WHEN $2 IN ('succeeded', 'failed', 'paused', 'rolled_back') AND completed_at IS NULL THEN timezone('utc', now()) ELSE completed_at END,
 			updated_at = timezone('utc', now()),
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $3

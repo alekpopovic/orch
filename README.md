@@ -99,6 +99,7 @@ orch service inspect api --output json
 orch service ps api
 orch scale api --replicas 5
 orch rollout api --image ghcr.io/example/api:1.0.1
+orch rollout status api
 orch rollback api
 orch events
 orch logs api --tail 100

@@ -36,6 +36,7 @@ type TaskStore interface {
 type DeploymentStore interface {
 	CreateDeployment(ctx context.Context, deployment types.Deployment) (types.Deployment, error)
 	GetDeployment(ctx context.Context, id types.DeploymentID) (types.Deployment, error)
+	ListDeploymentsByStatus(ctx context.Context, status types.DeploymentStatus) ([]types.Deployment, error)
 	UpdateDeploymentStatus(ctx context.Context, id types.DeploymentID, status types.DeploymentStatus, expectedUpdatedAt time.Time) (types.Deployment, error)
 }
 

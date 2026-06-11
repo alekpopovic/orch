@@ -14,6 +14,7 @@ import (
 	"github.com/alekpopovic/orch/internal/config"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/logging"
+	"github.com/alekpopovic/orch/internal/rollout"
 )
 
 func main() {
@@ -33,9 +34,17 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 		return err
 	}
 
+	controlPlane := controlplane.NewMemoryService()
+	rolloutController := rollout.NewController(controlPlane, logger)
+	go func() {
+		if err := rolloutController.Run(ctx, 5*time.Second); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Warn("rollout controller stopped", "error", err)
+		}
+	}()
+
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewHandler(logger, controlplane.NewMemoryService(), api.WithBootstrapToken(cfg.BootstrapToken)),
+		Handler:           api.NewHandler(logger, controlPlane, api.WithBootstrapToken(cfg.BootstrapToken)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

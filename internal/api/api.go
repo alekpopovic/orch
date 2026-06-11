@@ -81,6 +81,8 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux.HandleFunc("DELETE /v1/services/{id}", server.deleteService)
 	mux.HandleFunc("POST /v1/services/{id}/scale", server.scaleService)
 	mux.HandleFunc("POST /v1/services/{id}/rollout", server.rolloutService)
+	mux.HandleFunc("GET /v1/services/{id}/rollout", server.getServiceRollout)
+	mux.HandleFunc("GET /v1/rollouts/{id}", server.getRollout)
 	mux.HandleFunc("POST /v1/services/{id}/rollback", server.rollbackService)
 	mux.HandleFunc("GET /v1/tasks", server.listTasks)
 	mux.HandleFunc("GET /v1/tasks/{id}", server.getTask)
@@ -166,7 +168,9 @@ type ScaleServiceRequest struct {
 }
 
 type RolloutServiceRequest struct {
-	Image string `json:"image"`
+	Image          string `json:"image"`
+	MaxUnavailable int    `json:"maxUnavailable"`
+	MaxSurge       int    `json:"maxSurge"`
 }
 
 type DeploymentResponse struct {
@@ -453,12 +457,55 @@ func (s *Server) rolloutService(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, fmt.Errorf("%w: image is required", store.ErrInvalidState))
 		return
 	}
-	deployment, err := s.controlPlane.RolloutService(r.Context(), id, req.Image)
+	if req.MaxUnavailable < 0 {
+		s.writeError(w, r, fmt.Errorf("%w: maxUnavailable cannot be negative", store.ErrInvalidState))
+		return
+	}
+	if req.MaxSurge < 0 {
+		s.writeError(w, r, fmt.Errorf("%w: maxSurge cannot be negative", store.ErrInvalidState))
+		return
+	}
+	if req.MaxUnavailable == 0 && req.MaxSurge == 0 {
+		req.MaxUnavailable = 1
+		req.MaxSurge = 1
+	}
+	deployment, err := s.controlPlane.RolloutService(r.Context(), id, controlplane.RolloutSpec{
+		Image:          req.Image,
+		MaxUnavailable: req.MaxUnavailable,
+		MaxSurge:       req.MaxSurge,
+	})
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, DeploymentResponse{Deployment: deployment})
+}
+
+func (s *Server) getServiceRollout(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathServiceID(w, r)
+	if !ok {
+		return
+	}
+	deployment, err := s.controlPlane.GetServiceRollout(r.Context(), id)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, DeploymentResponse{Deployment: deployment})
+}
+
+func (s *Server) getRollout(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if !validUUID(id) {
+		s.writeError(w, r, fmt.Errorf("%w: rollout id must be a UUID", store.ErrInvalidState))
+		return
+	}
+	deployment, err := s.controlPlane.GetDeployment(r.Context(), types.DeploymentID(id))
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, DeploymentResponse{Deployment: deployment})
 }
 
 func (s *Server) rollbackService(w http.ResponseWriter, r *http.Request) {

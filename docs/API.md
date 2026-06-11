@@ -81,7 +81,10 @@ curl -X POST http://localhost:8080/v1/services/{service_id}/scale \
 
 curl -X POST http://localhost:8080/v1/services/{service_id}/rollout \
   -H 'Content-Type: application/json' \
-  -d '{"image": "nginx:1.28"}'
+  -d '{"image": "nginx:1.28", "maxUnavailable": 1, "maxSurge": 1}'
+
+curl http://localhost:8080/v1/services/{service_id}/rollout
+curl http://localhost:8080/v1/rollouts/{rollout_id}
 
 curl -X POST http://localhost:8080/v1/services/{service_id}/rollback
 ```

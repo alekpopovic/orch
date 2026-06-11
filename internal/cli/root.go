@@ -29,7 +29,8 @@ type Client interface {
 	GetService(ctx context.Context, id string) (types.Service, error)
 	DeleteService(ctx context.Context, id string) error
 	ScaleService(ctx context.Context, id string, replicas int) (types.Service, error)
-	RolloutService(ctx context.Context, id string, image string) (types.Deployment, error)
+	RolloutService(ctx context.Context, id string, image string, maxUnavailable int, maxSurge int) (types.Deployment, error)
+	GetServiceRollout(ctx context.Context, id string) (types.Deployment, error)
 	RollbackService(ctx context.Context, id string) (types.Deployment, error)
 	ListTasks(ctx context.Context, query url.Values) ([]types.Task, error)
 	GetTask(ctx context.Context, id string) (types.Task, error)
@@ -300,6 +301,8 @@ func (a *app) scaleCommand() *cobra.Command {
 
 func (a *app) rolloutCommand() *cobra.Command {
 	var image string
+	var maxUnavailable int
+	var maxSurge int
 	cmd := &cobra.Command{
 		Use:   "rollout <service-name-or-id>",
 		Short: "Roll out a new service image",
@@ -313,7 +316,16 @@ func (a *app) rolloutCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			deployment, err := client.RolloutService(cmd.Context(), string(service.ID), image)
+			if maxUnavailable < 0 {
+				return fmt.Errorf("--max-unavailable must be zero or greater")
+			}
+			if maxSurge < 0 {
+				return fmt.Errorf("--max-surge must be zero or greater")
+			}
+			if maxUnavailable == 0 && maxSurge == 0 {
+				return fmt.Errorf("--max-unavailable and --max-surge cannot both be zero")
+			}
+			deployment, err := client.RolloutService(cmd.Context(), string(service.ID), image, maxUnavailable, maxSurge)
 			if err != nil {
 				return err
 			}
@@ -321,7 +333,25 @@ func (a *app) rolloutCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&image, "image", "", "new image")
+	cmd.Flags().IntVar(&maxUnavailable, "max-unavailable", 1, "maximum unavailable replicas during rollout")
+	cmd.Flags().IntVar(&maxSurge, "max-surge", 1, "maximum extra replicas during rollout")
 	_ = cmd.MarkFlagRequired("image")
+	cmd.AddCommand(&cobra.Command{
+		Use:   "status <service-name-or-id>",
+		Short: "Show latest rollout status",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, service, err := a.clientAndService(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			deployment, err := client.GetServiceRollout(cmd.Context(), string(service.ID))
+			if err != nil {
+				return err
+			}
+			return writeDeployment(a.out, a.output, deployment)
+		},
+	})
 	return cmd
 }
 

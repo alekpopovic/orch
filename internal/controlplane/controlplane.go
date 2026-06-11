@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,7 +29,9 @@ type Service interface {
 	GetService(ctx context.Context, id types.ServiceID) (types.Service, error)
 	DeleteService(ctx context.Context, id types.ServiceID) error
 	ScaleService(ctx context.Context, id types.ServiceID, replicas int) (types.Service, error)
-	RolloutService(ctx context.Context, id types.ServiceID, image string) (types.Deployment, error)
+	RolloutService(ctx context.Context, id types.ServiceID, spec RolloutSpec) (types.Deployment, error)
+	GetDeployment(ctx context.Context, id types.DeploymentID) (types.Deployment, error)
+	GetServiceRollout(ctx context.Context, id types.ServiceID) (types.Deployment, error)
 	RollbackService(ctx context.Context, id types.ServiceID) (types.Deployment, error)
 	ListTasks(ctx context.Context, filter TaskFilter) ([]types.Task, error)
 	GetTask(ctx context.Context, id types.TaskID) (types.Task, error)
@@ -79,6 +82,12 @@ type TaskFilter struct {
 	ServiceID types.ServiceID
 	NodeID    types.NodeID
 	Status    types.TaskStatus
+}
+
+type RolloutSpec struct {
+	Image          string
+	MaxUnavailable int
+	MaxSurge       int
 }
 
 type MemoryService struct {
@@ -452,12 +461,22 @@ func (s *MemoryService) ScaleService(ctx context.Context, id types.ServiceID, re
 	return service, nil
 }
 
-func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, image string) (types.Deployment, error) {
+func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, spec RolloutSpec) (types.Deployment, error) {
 	if err := ctx.Err(); err != nil {
 		return types.Deployment{}, err
 	}
-	if image == "" {
+	spec.Image = strings.TrimSpace(spec.Image)
+	if spec.Image == "" {
 		return types.Deployment{}, fmt.Errorf("%w: image is required", store.ErrInvalidState)
+	}
+	if spec.MaxUnavailable < 0 {
+		return types.Deployment{}, fmt.Errorf("%w: maxUnavailable cannot be negative", store.ErrInvalidState)
+	}
+	if spec.MaxSurge < 0 {
+		return types.Deployment{}, fmt.Errorf("%w: maxSurge cannot be negative", store.ErrInvalidState)
+	}
+	if spec.MaxUnavailable == 0 && spec.MaxSurge == 0 {
+		return types.Deployment{}, fmt.Errorf("%w: maxUnavailable and maxSurge cannot both be zero", store.ErrInvalidState)
 	}
 
 	s.mu.Lock()
@@ -469,11 +488,10 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 	}
 	now := s.now()
 	fromVersion := service.DeploymentVersion
-	service.Spec.Image = image
+	service.Spec.Image = spec.Image
 	service.DeploymentVersion++
 	service.UpdatedAt = now
 	s.services[id] = service
-	s.reconcileServiceTasksLocked(service, now)
 
 	deployment := types.Deployment{
 		ID:             types.DeploymentID(newUUID()),
@@ -482,14 +500,53 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 		ToVersion:      service.DeploymentVersion,
 		Strategy:       types.RolloutRollingUpdate,
 		Status:         types.DeploymentPending,
-		MaxUnavailable: 1,
-		MaxSurge:       1,
+		MaxUnavailable: spec.MaxUnavailable,
+		MaxSurge:       spec.MaxSurge,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
 	s.deployments[deployment.ID] = deployment
 	s.appendEventLocked(events.TypeRolloutStarted, types.EventInfo, "controlplane", "service rollout started", "service", string(id), now)
 	return deployment, nil
+}
+
+func (s *MemoryService) GetDeployment(ctx context.Context, id types.DeploymentID) (types.Deployment, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Deployment{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	deployment, ok := s.deployments[id]
+	if !ok {
+		return types.Deployment{}, store.ErrNotFound
+	}
+	return deployment, nil
+}
+
+func (s *MemoryService) GetServiceRollout(ctx context.Context, id types.ServiceID) (types.Deployment, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Deployment{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, ok := s.services[id]; !ok {
+		return types.Deployment{}, store.ErrNotFound
+	}
+	var latest types.Deployment
+	for _, deployment := range s.deployments {
+		if deployment.ServiceID != id {
+			continue
+		}
+		if latest.ID == "" || deployment.CreatedAt.After(latest.CreatedAt) || (deployment.CreatedAt.Equal(latest.CreatedAt) && deployment.ID > latest.ID) {
+			latest = deployment
+		}
+	}
+	if latest.ID == "" {
+		return types.Deployment{}, store.ErrNotFound
+	}
+	return latest, nil
 }
 
 func (s *MemoryService) RollbackService(ctx context.Context, id types.ServiceID) (types.Deployment, error) {
@@ -566,6 +623,146 @@ func (s *MemoryService) GetTask(ctx context.Context, id types.TaskID) (types.Tas
 		return types.Task{}, store.ErrNotFound
 	}
 	return task, nil
+}
+
+func (s *MemoryService) CreateTask(ctx context.Context, task types.Task) (types.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Task{}, err
+	}
+	if task.ServiceID == "" {
+		return types.Task{}, fmt.Errorf("%w: service id is required", store.ErrInvalidState)
+	}
+	if task.DesiredStatus == "" {
+		task.DesiredStatus = types.TaskRunning
+	}
+	if task.ActualStatus == "" {
+		task.ActualStatus = types.TaskPending
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.services[task.ServiceID]; !ok {
+		return types.Task{}, store.ErrNotFound
+	}
+	now := s.now()
+	if task.ID == "" {
+		task.ID = types.TaskID(newUUID())
+	}
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = now
+	}
+	task.UpdatedAt = now
+	s.tasks[task.ID] = task
+	return task, nil
+}
+
+func (s *MemoryService) StopTask(ctx context.Context, id types.TaskID, expectedUpdatedAt time.Time) (types.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Task{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, ok := s.tasks[id]
+	if !ok {
+		return types.Task{}, store.ErrNotFound
+	}
+	if !expectedUpdatedAt.IsZero() && !task.UpdatedAt.Equal(expectedUpdatedAt) {
+		return types.Task{}, store.ErrConflict
+	}
+	if task.DesiredStatus == types.TaskStopped || task.DesiredStatus == types.TaskRemoved {
+		return task, nil
+	}
+	task.DesiredStatus = types.TaskStopped
+	task.UpdatedAt = s.now()
+	s.tasks[id] = task
+	return task, nil
+}
+
+func (s *MemoryService) ListTasksByService(ctx context.Context, serviceID types.ServiceID) ([]types.Task, error) {
+	return s.ListTasks(ctx, TaskFilter{ServiceID: serviceID})
+}
+
+func (s *MemoryService) ListDeploymentsByStatus(ctx context.Context, status types.DeploymentStatus) ([]types.Deployment, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	deployments := make([]types.Deployment, 0)
+	for _, deployment := range s.deployments {
+		if deployment.Status == status {
+			deployments = append(deployments, deployment)
+		}
+	}
+	slices.SortFunc(deployments, func(a, b types.Deployment) int {
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			if a.ID < b.ID {
+				return -1
+			}
+			if a.ID > b.ID {
+				return 1
+			}
+			return 0
+		}
+		if a.CreatedAt.Before(b.CreatedAt) {
+			return -1
+		}
+		return 1
+	})
+	return deployments, nil
+}
+
+func (s *MemoryService) UpdateDeploymentStatus(ctx context.Context, id types.DeploymentID, status types.DeploymentStatus, expectedUpdatedAt time.Time) (types.Deployment, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Deployment{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	deployment, ok := s.deployments[id]
+	if !ok {
+		return types.Deployment{}, store.ErrNotFound
+	}
+	if !expectedUpdatedAt.IsZero() && !deployment.UpdatedAt.Equal(expectedUpdatedAt) {
+		return types.Deployment{}, store.ErrConflict
+	}
+	now := s.now()
+	deployment.Status = status
+	deployment.UpdatedAt = now
+	if status == types.DeploymentRunning && deployment.StartedAt.IsZero() {
+		deployment.StartedAt = now
+	}
+	if status == types.DeploymentSucceeded || status == types.DeploymentFailed || status == types.DeploymentPaused || status == types.DeploymentRolledBack {
+		if deployment.CompletedAt.IsZero() {
+			deployment.CompletedAt = now
+		}
+	}
+	s.deployments[id] = deployment
+	return deployment, nil
+}
+
+func (s *MemoryService) AppendEvent(ctx context.Context, event types.Event) (types.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Event{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if event.ID == "" {
+		event.ID = types.EventID(newUUID())
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = s.now()
+	}
+	event.Timestamp = event.Timestamp.UTC()
+	if event.Severity == "" {
+		event.Severity = types.EventInfo
+	}
+	s.events = append(s.events, event)
+	return event, nil
 }
 
 func (s *MemoryService) ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error) {
@@ -675,6 +872,9 @@ func (s *MemoryService) reconcileAllServicesLocked(timestamp time.Time) {
 }
 
 func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, timestamp time.Time) {
+	if s.hasActiveDeploymentLocked(service.ID) {
+		return
+	}
 	active := make([]types.Task, 0)
 	for _, task := range s.tasks {
 		if task.ServiceID != service.ID {
@@ -731,6 +931,18 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 			continue
 		}
 	}
+}
+
+func (s *MemoryService) hasActiveDeploymentLocked(serviceID types.ServiceID) bool {
+	for _, deployment := range s.deployments {
+		if deployment.ServiceID != serviceID {
+			continue
+		}
+		if deployment.Status == types.DeploymentPending || deployment.Status == types.DeploymentRunning {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *MemoryService) readyNodesLocked() []types.Node {

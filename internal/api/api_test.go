@@ -313,6 +313,52 @@ func TestScaleService(t *testing.T) {
 	}
 }
 
+func TestStartAndGetRollout(t *testing.T) {
+	handler := newTestHandler()
+	create := doRequest(t, handler, http.MethodPost, "/v1/services", `{
+		"spec": {
+			"name": "api",
+			"image": "nginx:1.27",
+			"replicas": 2,
+			"resource_requirements": {"requests": {}, "limits": {}}
+		}
+	}`)
+	var created ServiceResponse
+	decodeResponse(t, create, &created)
+
+	start := doRequest(t, handler, http.MethodPost, "/v1/services/"+string(created.Service.ID)+"/rollout", `{
+		"image": "nginx:1.28",
+		"maxUnavailable": 0,
+		"maxSurge": 2
+	}`)
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, start.Code, start.Body.String())
+	}
+	var started DeploymentResponse
+	decodeResponse(t, start, &started)
+	if started.Deployment.Status != types.DeploymentPending {
+		t.Fatalf("expected pending deployment, got %q", started.Deployment.Status)
+	}
+	if started.Deployment.MaxUnavailable != 0 || started.Deployment.MaxSurge != 2 {
+		t.Fatalf("unexpected rollout limits %#v", started.Deployment)
+	}
+
+	latest := doRequest(t, handler, http.MethodGet, "/v1/services/"+string(created.Service.ID)+"/rollout", nil)
+	if latest.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, latest.Code, latest.Body.String())
+	}
+	var latestBody DeploymentResponse
+	decodeResponse(t, latest, &latestBody)
+	if latestBody.Deployment.ID != started.Deployment.ID {
+		t.Fatalf("expected latest rollout %q, got %q", started.Deployment.ID, latestBody.Deployment.ID)
+	}
+
+	byID := doRequest(t, handler, http.MethodGet, "/v1/rollouts/"+string(started.Deployment.ID), nil)
+	if byID.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, byID.Code, byID.Body.String())
+	}
+}
+
 func TestListEvents(t *testing.T) {
 	handler := newTestHandler()
 	create := doRequest(t, handler, http.MethodPost, "/v1/services", `{

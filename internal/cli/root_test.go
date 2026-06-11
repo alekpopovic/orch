@@ -30,6 +30,7 @@ func TestRootCommandConstruction(t *testing.T) {
 		"service ps",
 		"scale",
 		"rollout",
+		"rollout status",
 		"rollback",
 		"delete",
 		"events",
@@ -196,16 +197,74 @@ func TestEventsCommandFiltersByServiceName(t *testing.T) {
 	}
 }
 
+func TestRolloutCommandSendsStrategyLimits(t *testing.T) {
+	client := &fakeClient{
+		services: []types.Service{{
+			ID:                "00000000-0000-4000-8000-000000000010",
+			Spec:              types.ServiceSpec{Name: "api", Image: "nginx", Replicas: 2},
+			DeploymentVersion: 1,
+		}},
+	}
+	cmd := NewRootCommand(Options{
+		Out: &bytes.Buffer{},
+		Err: &bytes.Buffer{},
+		NewClient: func(string) (Client, error) {
+			return client, nil
+		},
+	})
+	cmd.SetArgs([]string{"--server", "http://server.example", "rollout", "api", "--image", "nginx:2", "--max-unavailable", "0", "--max-surge", "2"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute rollout: %v", err)
+	}
+	if client.rolloutID != "00000000-0000-4000-8000-000000000010" || client.rolloutImage != "nginx:2" {
+		t.Fatalf("unexpected rollout target id=%q image=%q", client.rolloutID, client.rolloutImage)
+	}
+	if client.rolloutMaxUnavailable != 0 || client.rolloutMaxSurge != 2 {
+		t.Fatalf("unexpected rollout limits maxUnavailable=%d maxSurge=%d", client.rolloutMaxUnavailable, client.rolloutMaxSurge)
+	}
+}
+
+func TestRolloutStatusResolvesService(t *testing.T) {
+	client := &fakeClient{
+		services: []types.Service{{
+			ID:                "00000000-0000-4000-8000-000000000010",
+			Spec:              types.ServiceSpec{Name: "api", Image: "nginx", Replicas: 1},
+			DeploymentVersion: 1,
+		}},
+	}
+	cmd := NewRootCommand(Options{
+		Out: &bytes.Buffer{},
+		Err: &bytes.Buffer{},
+		NewClient: func(string) (Client, error) {
+			return client, nil
+		},
+	})
+	cmd.SetArgs([]string{"--server", "http://server.example", "rollout", "status", "api"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute rollout status: %v", err)
+	}
+	if client.rolloutStatusID != "00000000-0000-4000-8000-000000000010" {
+		t.Fatalf("unexpected rollout status id %q", client.rolloutStatusID)
+	}
+}
+
 type fakeClient struct {
-	services       []types.Service
-	created        types.Service
-	scaledID       string
-	scaledReplicas int
-	logServiceID   string
-	logTaskID      string
-	logFollow      bool
-	logTail        string
-	eventFilter    events.Filter
+	services              []types.Service
+	created               types.Service
+	scaledID              string
+	scaledReplicas        int
+	rolloutID             string
+	rolloutImage          string
+	rolloutMaxUnavailable int
+	rolloutMaxSurge       int
+	rolloutStatusID       string
+	logServiceID          string
+	logTaskID             string
+	logFollow             bool
+	logTail               string
+	eventFilter           events.Filter
 }
 
 func (f *fakeClient) ListNodes(context.Context) ([]types.Node, error) {
@@ -258,8 +317,17 @@ func (f *fakeClient) ScaleService(_ context.Context, id string, replicas int) (t
 	return types.Service{ID: types.ServiceID(id), Spec: types.ServiceSpec{Name: "api", Image: "nginx", Replicas: replicas}}, nil
 }
 
-func (f *fakeClient) RolloutService(_ context.Context, id string, _ string) (types.Deployment, error) {
+func (f *fakeClient) RolloutService(_ context.Context, id string, image string, maxUnavailable int, maxSurge int) (types.Deployment, error) {
+	f.rolloutID = id
+	f.rolloutImage = image
+	f.rolloutMaxUnavailable = maxUnavailable
+	f.rolloutMaxSurge = maxSurge
 	return types.Deployment{ID: "00000000-0000-4000-8000-000000000030", ServiceID: types.ServiceID(id)}, nil
+}
+
+func (f *fakeClient) GetServiceRollout(_ context.Context, id string) (types.Deployment, error) {
+	f.rolloutStatusID = id
+	return types.Deployment{ID: "00000000-0000-4000-8000-000000000030", ServiceID: types.ServiceID(id), Status: types.DeploymentRunning}, nil
 }
 
 func (f *fakeClient) RollbackService(_ context.Context, id string) (types.Deployment, error) {

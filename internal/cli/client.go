@@ -106,9 +106,21 @@ func (c *APIClient) ScaleService(ctx context.Context, id string, replicas int) (
 	return out.Service, nil
 }
 
-func (c *APIClient) RolloutService(ctx context.Context, id string, image string) (types.Deployment, error) {
+func (c *APIClient) RolloutService(ctx context.Context, id string, image string, maxUnavailable int, maxSurge int) (types.Deployment, error) {
 	var out api.DeploymentResponse
-	if err := c.do(ctx, http.MethodPost, "/v1/services/"+id+"/rollout", api.RolloutServiceRequest{Image: image}, &out); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/v1/services/"+id+"/rollout", api.RolloutServiceRequest{
+		Image:          image,
+		MaxUnavailable: maxUnavailable,
+		MaxSurge:       maxSurge,
+	}, &out); err != nil {
+		return types.Deployment{}, err
+	}
+	return out.Deployment, nil
+}
+
+func (c *APIClient) GetServiceRollout(ctx context.Context, id string) (types.Deployment, error) {
+	var out api.DeploymentResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/services/"+id+"/rollout", nil, &out); err != nil {
 		return types.Deployment{}, err
 	}
 	return out.Deployment, nil
