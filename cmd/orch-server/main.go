@@ -12,6 +12,7 @@ import (
 
 	"github.com/alekpopovic/orch/internal/api"
 	"github.com/alekpopovic/orch/internal/config"
+	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/logging"
 )
 
@@ -34,7 +35,7 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewHandler(logger),
+		Handler:           api.NewHandler(logger, controlplane.NewMemoryService()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
