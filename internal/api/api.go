@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/store"
@@ -26,6 +27,9 @@ type Server struct {
 	logger         *slog.Logger
 	timeout        time.Duration
 	bootstrapToken string
+	jwtSecret      string
+	staticUsers    map[string]auth.Role
+	now            func() time.Time
 }
 
 type Option func(*Server)
@@ -39,6 +43,18 @@ func WithTimeout(timeout time.Duration) Option {
 func WithBootstrapToken(token string) Option {
 	return func(server *Server) {
 		server.bootstrapToken = token
+	}
+}
+
+func WithUserJWT(secret string) Option {
+	return func(server *Server) {
+		server.jwtSecret = secret
+	}
+}
+
+func WithStaticUsers(users map[string]auth.Role) Option {
+	return func(server *Server) {
+		server.staticUsers = users
 	}
 }
 
@@ -56,6 +72,7 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 		controlPlane: controlPlane,
 		logger:       logger,
 		timeout:      15 * time.Second,
+		now:          func() time.Time { return time.Now().UTC() },
 	}
 	for _, opt := range opts {
 		opt(server)
@@ -606,11 +623,75 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) middleware(next http.Handler) http.Handler {
-	return requestIDMiddleware(s.accessLogMiddleware(s.recoveryMiddleware(s.timeoutMiddleware(authPlaceholderMiddleware(next)))))
+	return requestIDMiddleware(s.accessLogMiddleware(s.recoveryMiddleware(s.timeoutMiddleware(s.userAuthMiddleware(next)))))
 }
 
-func authPlaceholderMiddleware(next http.Handler) http.Handler {
-	return next
+func (s *Server) userAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		required, ok := requiredRole(r)
+		if !ok || s.jwtSecret == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		token, err := auth.ParseBearer(r.Header.Get("Authorization"))
+		if err != nil {
+			s.writeAuthError(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
+			return
+		}
+		principal, err := auth.ValidateJWT(token, s.jwtSecret, s.now())
+		if err != nil {
+			s.writeAuthError(w, r, http.StatusUnauthorized, "unauthorized", "invalid bearer token")
+			return
+		}
+		if len(s.staticUsers) > 0 {
+			role, ok := s.staticUsers[principal.Subject]
+			if !ok {
+				s.writeAuthError(w, r, http.StatusUnauthorized, "unauthorized", "unknown user")
+				return
+			}
+			principal.Role = role
+		}
+		if !auth.HasRole(principal.Role, required) {
+			s.writeAuthError(w, r, http.StatusForbidden, "forbidden", "insufficient role")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
+	})
+}
+
+func requiredRole(r *http.Request) (auth.Role, bool) {
+	path := r.URL.Path
+	if path == "/healthz" || path == "/readyz" || strings.HasPrefix(path, "/v1/agent/") {
+		return "", false
+	}
+	if r.Method == http.MethodGet {
+		switch {
+		case path == "/v1/nodes" || strings.HasPrefix(path, "/v1/nodes/"):
+			return auth.RoleViewer, true
+		case path == "/v1/services" || strings.HasPrefix(path, "/v1/services/"):
+			return auth.RoleViewer, true
+		case path == "/v1/tasks" || strings.HasPrefix(path, "/v1/tasks/"):
+			return auth.RoleViewer, true
+		case path == "/v1/events":
+			return auth.RoleViewer, true
+		case path == "/v1/logs":
+			return auth.RoleViewer, true
+		case strings.HasPrefix(path, "/v1/rollouts/"):
+			return auth.RoleViewer, true
+		}
+	}
+	if r.Method == http.MethodPost {
+		switch {
+		case strings.HasSuffix(path, "/drain") || strings.HasSuffix(path, "/uncordon"):
+			return auth.RoleAdmin, true
+		case path == "/v1/services" || strings.Contains(path, "/scale") || strings.Contains(path, "/rollout") || strings.Contains(path, "/rollback"):
+			return auth.RoleOperator, true
+		}
+	}
+	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/services/") {
+		return auth.RoleOperator, true
+	}
+	return auth.RoleAdmin, true
 }
 
 func requestIDMiddleware(next http.Handler) http.Handler {
@@ -714,6 +795,16 @@ func (s *Server) authorizeAgent(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+func (s *Server) writeAuthError(w http.ResponseWriter, r *http.Request, status int, code string, message string) {
+	writeJSON(w, status, ErrorResponse{
+		Error: RequestError{
+			Code:      code,
+			Message:   message,
+			RequestID: requestID(r.Context()),
+		},
+	})
 }
 
 func (s *Server) pathNodeID(w http.ResponseWriter, r *http.Request) (types.NodeID, bool) {

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -288,6 +289,58 @@ func TestInvalidPathID(t *testing.T) {
 	}
 }
 
+func TestUserAuthMissingToken(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithUserJWT("test-secret"))
+	rec := doRequest(t, handler, http.MethodGet, "/v1/services", nil)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rec.Code)
+	}
+}
+
+func TestUserAuthInvalidToken(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithUserJWT("test-secret"))
+	rec := doAuthenticatedRequest(t, handler, http.MethodGet, "/v1/services", nil, "not-a-jwt")
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rec.Code)
+	}
+}
+
+func TestUserAuthInsufficientRole(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithUserJWT("test-secret"))
+	token := userToken(t, auth.RoleViewer)
+	rec := doAuthenticatedRequest(t, handler, http.MethodPost, "/v1/services", `{
+		"spec": {
+			"name": "api",
+			"image": "nginx:1.27",
+			"replicas": 1,
+			"resource_requirements": {"requests": {}, "limits": {}}
+		}
+	}`, token)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, rec.Code, rec.Body.String())
+	}
+}
+
+func TestUserAuthAllowedAccess(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithUserJWT("test-secret"))
+	token := userToken(t, auth.RoleOperator)
+	rec := doAuthenticatedRequest(t, handler, http.MethodPost, "/v1/services", `{
+		"spec": {
+			"name": "api",
+			"image": "nginx:1.27",
+			"replicas": 1,
+			"resource_requirements": {"requests": {}, "limits": {}}
+		}
+	}`, token)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+}
+
 func TestScaleService(t *testing.T) {
 	handler := newTestHandler()
 	create := doRequest(t, handler, http.MethodPost, "/v1/services", `{
@@ -431,6 +484,38 @@ func doRequest(t *testing.T, handler http.Handler, method string, path string, b
 	return rec
 }
 
+func doAuthenticatedRequest(t *testing.T, handler http.Handler, method string, path string, body any, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := requestWithHeaders(t, handler, method, path, body, map[string]string{"Authorization": "Bearer " + token})
+	return recorder
+}
+
+func requestWithHeaders(t *testing.T, handler http.Handler, method string, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader *strings.Reader
+	switch value := body.(type) {
+	case nil:
+		reader = strings.NewReader("")
+	case string:
+		reader = strings.NewReader(value)
+	default:
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		reader = strings.NewReader(string(data))
+	}
+	req := httptest.NewRequest(method, path, reader)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "test-request-id")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
 func doAgentRequest(t *testing.T, handler http.Handler, method string, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader *strings.Reader
@@ -452,6 +537,19 @@ func doAgentRequest(t *testing.T, handler http.Handler, method string, path stri
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func userToken(t *testing.T, role auth.Role) string {
+	t.Helper()
+	token, err := auth.SignJWT(auth.Claims{
+		Subject:   "user-1",
+		Role:      role,
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, "test-secret")
+	if err != nil {
+		t.Fatalf("sign JWT: %v", err)
+	}
+	return token
 }
 
 func registerTestNode(t *testing.T, handler http.Handler) AgentResponse {

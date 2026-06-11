@@ -13,6 +13,8 @@ type ServerConfig struct {
 	DatabaseURL         string
 	LogLevel            string
 	BootstrapToken      string
+	JWTSecret           string
+	Users               string
 	GracefulShutdownTTL time.Duration
 }
 
@@ -35,6 +37,8 @@ func LoadServer() ServerConfig {
 		DatabaseURL:         getenv("DATABASE_URL", "postgres://orch:orch@localhost:5432/orch?sslmode=disable"),
 		LogLevel:            getenv("ORCH_LOG_LEVEL", "info"),
 		BootstrapToken:      getenv("ORCH_BOOTSTRAP_TOKEN", "dev-bootstrap-token"),
+		JWTSecret:           getenv("ORCH_JWT_SECRET", ""),
+		Users:               getenv("ORCH_USERS", ""),
 		GracefulShutdownTTL: durationFromEnv("ORCH_SHUTDOWN_TIMEOUT", 10*time.Second),
 	}
 }

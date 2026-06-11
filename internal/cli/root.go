@@ -40,6 +40,7 @@ type Client interface {
 
 type Config struct {
 	ServerURL string `yaml:"server_url" json:"server_url"`
+	Token     string `yaml:"token" json:"token"`
 }
 
 type Options struct {
@@ -52,6 +53,7 @@ type Options struct {
 type app struct {
 	out        io.Writer
 	serverFlag string
+	tokenFlag  string
 	configPath string
 	output     string
 	newClient  func(serverURL string) (Client, error)
@@ -98,6 +100,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.SetOut(out)
 	root.SetErr(errOut)
 	root.PersistentFlags().StringVar(&a.serverFlag, "server", "", "control-plane server URL")
+	root.PersistentFlags().StringVar(&a.tokenFlag, "token", "", "user API JWT bearer token")
 	root.PersistentFlags().StringVar(&a.output, "output", "table", "output format: table or json")
 	root.PersistentFlags().StringVar(&a.configPath, "config", a.configPath, "CLI config file")
 
@@ -509,7 +512,14 @@ func (a *app) client() (Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return a.newClient(serverURL)
+	client, err := a.newClient(serverURL)
+	if err != nil {
+		return nil, err
+	}
+	if apiClient, ok := client.(*APIClient); ok {
+		apiClient.SetToken(a.token())
+	}
+	return client, nil
 }
 
 func (a *app) serverURL() (string, error) {
@@ -527,6 +537,20 @@ func (a *app) serverURL() (string, error) {
 		return strings.TrimSpace(cfg.ServerURL), nil
 	}
 	return "", fmt.Errorf("server URL is required; pass --server, set ORCH_SERVER_URL, or set server_url in %s", a.configPath)
+}
+
+func (a *app) token() string {
+	if strings.TrimSpace(a.tokenFlag) != "" {
+		return strings.TrimSpace(a.tokenFlag)
+	}
+	if env := strings.TrimSpace(os.Getenv("ORCH_TOKEN")); env != "" {
+		return env
+	}
+	cfg, err := readConfig(a.configPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Token)
 }
 
 func readConfig(path string) (Config, error) {

@@ -12,6 +12,8 @@ The control-plane API uses JSON request and response bodies. Errors use a stable
 }
 ```
 
+User-facing `/v1/*` endpoints require `Authorization: Bearer <jwt>` when `ORCH_JWT_SECRET` is configured. Agent endpoints use the separate bootstrap-token flow documented below.
+
 Clients may send `X-Request-ID`; otherwise the server generates one.
 
 ## Health

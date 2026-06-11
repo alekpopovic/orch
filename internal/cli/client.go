@@ -20,6 +20,7 @@ import (
 type APIClient struct {
 	baseURL    string
 	httpClient *http.Client
+	token      string
 }
 
 func NewAPIClient(serverURL string) (*APIClient, error) {
@@ -36,6 +37,10 @@ func NewAPIClient(serverURL string) (*APIClient, error) {
 			Timeout: 30 * time.Second,
 		},
 	}, nil
+}
+
+func (c *APIClient) SetToken(token string) {
+	c.token = strings.TrimSpace(token)
 }
 
 func (c *APIClient) ListNodes(ctx context.Context) ([]types.Node, error) {
@@ -209,6 +214,9 @@ func (c *APIClient) StreamLogs(ctx context.Context, serviceID string, taskID str
 	if err != nil {
 		return fmt.Errorf("create logs request: %w", err)
 	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request logs failed: %w", err)
@@ -241,6 +249,9 @@ func (c *APIClient) do(ctx context.Context, method string, path string, body any
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

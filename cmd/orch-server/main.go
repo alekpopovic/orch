@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alekpopovic/orch/internal/api"
+	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/config"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/logging"
@@ -33,6 +34,10 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	users, err := auth.ParseStaticUsers(cfg.Users)
+	if err != nil {
+		return err
+	}
 
 	controlPlane := controlplane.NewMemoryService()
 	rolloutController := rollout.NewController(controlPlane, logger)
@@ -44,7 +49,7 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewHandler(logger, controlPlane, api.WithBootstrapToken(cfg.BootstrapToken)),
+		Handler:           api.NewHandler(logger, controlPlane, api.WithBootstrapToken(cfg.BootstrapToken), api.WithUserJWT(cfg.JWTSecret), api.WithStaticUsers(users)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
