@@ -242,15 +242,16 @@ func (c *Controller) stopOldTasks(ctx context.Context, deployment types.Deployme
 }
 
 func (c *Controller) setStatus(ctx context.Context, deployment types.Deployment, status types.DeploymentStatus, message string, severity types.EventSeverity) (types.Deployment, error) {
-	if deployment.Status != status {
-		updated, err := c.store.UpdateDeploymentStatus(ctx, deployment.ID, status, deployment.UpdatedAt)
-		if err != nil {
-			return types.Deployment{}, fmt.Errorf("update rollout status: %w", err)
-		}
-		deployment = updated
-		if status == types.DeploymentFailed {
-			c.metrics.IncRolloutFailures()
-		}
+	if deployment.Status == status {
+		return deployment, nil
+	}
+	updated, err := c.store.UpdateDeploymentStatus(ctx, deployment.ID, status, deployment.UpdatedAt)
+	if err != nil {
+		return types.Deployment{}, fmt.Errorf("update rollout status: %w", err)
+	}
+	deployment = updated
+	if status == types.DeploymentFailed {
+		c.metrics.IncRolloutFailures()
 	}
 	_ = events.Emit(ctx, c.store, types.Event{
 		Type:              events.TypeRolloutStatusChanged,

@@ -263,6 +263,39 @@ func TestDeleteServiceWaitsWhenAgentOfflineAndFinalizesAfterReturn(t *testing.T)
 	}
 }
 
+func TestScaleServiceIgnoresTerminalTasksWhenReconcilingReplicas(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+	registered, created := createServiceWithAssignedTask(t, ctx, service)
+	tasks, err := service.ListAssignedTasks(ctx, registered.Node.ID)
+	if err != nil {
+		t.Fatalf("list assigned tasks: %v", err)
+	}
+	if _, err := service.ReportTaskStatus(ctx, TaskStatusReport{
+		TaskID:        tasks[0].Task.ID,
+		NodeID:        registered.Node.ID,
+		Status:        types.TaskFailed,
+		ContainerID:   "container-1",
+		FailureReason: "simulated failure",
+	}); err != nil {
+		t.Fatalf("report task failed: %v", err)
+	}
+
+	if _, err := service.ScaleService(ctx, created.ID, 1); err != nil {
+		t.Fatalf("scale service: %v", err)
+	}
+	assigned, err := service.ListAssignedTasks(ctx, registered.Node.ID)
+	if err != nil {
+		t.Fatalf("list assigned tasks after scale: %v", err)
+	}
+	if len(assigned) != 1 {
+		t.Fatalf("expected one replacement assigned task, got %#v", assigned)
+	}
+	if assigned[0].Task.ID == tasks[0].Task.ID {
+		t.Fatalf("expected terminal failed task to be replaced, got original task %s", assigned[0].Task.ID)
+	}
+}
+
 func TestRolloutStartsAsyncDeployment(t *testing.T) {
 	service := NewMemoryService()
 	ctx := context.Background()

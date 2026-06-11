@@ -275,6 +275,9 @@ func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.Node
 		if task.DesiredStatus == types.TaskRemoved || task.ActualStatus == types.TaskRemoved {
 			continue
 		}
+		if task.DesiredStatus == types.TaskRunning && !countsTowardDesiredReplicas(task) {
+			continue
+		}
 		service := s.services[task.ServiceID]
 		tasks = append(tasks, AgentTask{
 			Task:        task,
@@ -991,7 +994,7 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 		if task.ServiceID != service.ID {
 			continue
 		}
-		if task.DesiredStatus == types.TaskRemoved || task.DesiredStatus == types.TaskStopped {
+		if !countsTowardDesiredReplicas(task) {
 			continue
 		}
 		if task.Image != service.Spec.Image || task.Version != service.DeploymentVersion {
@@ -1041,6 +1044,26 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 			s.tasks[task.ID] = task
 			continue
 		}
+	}
+}
+
+func countsTowardDesiredReplicas(task types.Task) bool {
+	if task.DesiredStatus == types.TaskRemoved || task.DesiredStatus == types.TaskStopped {
+		return false
+	}
+	switch task.ActualStatus {
+	case types.TaskPending,
+		types.TaskAssigned,
+		types.TaskPulling,
+		types.TaskCreated,
+		types.TaskStarting,
+		types.TaskRunning,
+		types.TaskHealthy,
+		types.TaskUnhealthy,
+		types.TaskStopping:
+		return true
+	default:
+		return false
 	}
 }
 

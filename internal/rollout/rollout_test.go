@@ -47,6 +47,23 @@ func TestControllerFailsWhenNewTaskFails(t *testing.T) {
 	}
 }
 
+func TestControllerDoesNotEmitStatusEventWhenStatusUnchanged(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeStore(1, types.Deployment{
+		Status:         types.DeploymentRunning,
+		MaxUnavailable: 1,
+		MaxSurge:       1,
+	})
+	controller := NewController(fake, slog.Default())
+
+	if _, err := controller.setStatus(ctx, fake.deployment, types.DeploymentRunning, "rollout started", types.EventInfo); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	if len(fake.events) != 0 {
+		t.Fatalf("expected no status event for unchanged rollout status, got %#v", fake.events)
+	}
+}
+
 func TestControllerRespectsMaxUnavailable(t *testing.T) {
 	ctx := context.Background()
 	fake := newFakeStore(2, types.Deployment{MaxUnavailable: 0, MaxSurge: 1})

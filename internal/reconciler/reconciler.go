@@ -226,10 +226,13 @@ func (r *Reconciler) reconcileDeletingService(ctx context.Context, service types
 			continue
 		}
 		allRemoved = false
-		if err := r.stopTask(ctx, task, "service is deleting"); err != nil {
+		stopped, err := r.stopTask(ctx, task, "service is deleting")
+		if err != nil {
 			return result, err
 		}
-		result.StoppedTasks++
+		if stopped {
+			result.StoppedTasks++
+		}
 	}
 	if allRemoved {
 		updated, err := r.store.UpdateServiceStatus(ctx, service.ID, types.ServiceDeleted, service.UpdatedAt)
@@ -283,10 +286,13 @@ func (r *Reconciler) reconcileService(ctx context.Context, service types.Service
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		if err := r.stopTask(ctx, task, "task version is no longer current"); err != nil {
+		stopped, err := r.stopTask(ctx, task, "task version is no longer current")
+		if err != nil {
 			return result, err
 		}
-		result.StoppedTasks++
+		if stopped {
+			result.StoppedTasks++
+		}
 	}
 
 	effectiveCount := len(current) + nonRestartableFailed
@@ -310,10 +316,13 @@ func (r *Reconciler) reconcileService(ctx context.Context, service types.Service
 			if err := ctx.Err(); err != nil {
 				return result, err
 			}
-			if err := r.stopTask(ctx, task, "service replicas above desired count"); err != nil {
+			stopped, err := r.stopTask(ctx, task, "service replicas above desired count")
+			if err != nil {
 				return result, err
 			}
-			result.StoppedTasks++
+			if stopped {
+				result.StoppedTasks++
+			}
 		}
 	}
 	return result, nil
@@ -336,13 +345,16 @@ func (r *Reconciler) reconcileDeletedServices(ctx context.Context, activeService
 			if _, ok := activeServices[task.ServiceID]; ok {
 				continue
 			}
-			if err := r.stopTask(ctx, task, "service no longer exists"); err != nil {
+			stopped, err := r.stopTask(ctx, task, "service no longer exists")
+			if err != nil {
 				if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
 					continue
 				}
 				return result, err
 			}
-			result.StoppedTasks++
+			if stopped {
+				result.StoppedTasks++
+			}
 		}
 	}
 	return result, nil
@@ -372,13 +384,16 @@ func (r *Reconciler) createTask(ctx context.Context, service types.Service, reas
 	return nil
 }
 
-func (r *Reconciler) stopTask(ctx context.Context, task types.Task, reason string) error {
+func (r *Reconciler) stopTask(ctx context.Context, task types.Task, reason string) (bool, error) {
 	if task.DesiredStatus == types.TaskStopped || task.DesiredStatus == types.TaskRemoved {
-		return nil
+		return false, nil
 	}
 	stopped, err := r.store.StopTask(ctx, task.ID, task.UpdatedAt)
 	if err != nil {
-		return fmt.Errorf("stop task %s: %w", task.ID, err)
+		if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stop task %s: %w", task.ID, err)
 	}
 	_ = events.Emit(ctx, r.store, types.Event{
 		Type:              events.TypeReconcilerTaskStopped,
@@ -389,7 +404,7 @@ func (r *Reconciler) stopTask(ctx context.Context, task types.Task, reason strin
 		RelatedObjectID:   string(stopped.ID),
 		Timestamp:         r.now(),
 	}, events.WithLogger(r.logger))
-	return nil
+	return true, nil
 }
 
 func isNonTerminal(task types.Task) bool {

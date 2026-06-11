@@ -183,6 +183,31 @@ func TestReconcileDeletingServiceWithRunningTasks(t *testing.T) {
 	}
 }
 
+func TestReconcileDeletingServiceIsIdempotentForAlreadyStoppedTasks(t *testing.T) {
+	store := newFakeStore(
+		[]types.Service{serviceFixtureWithStatus("svc", 1, 1, types.RestartPolicy{}, types.ServiceDeleting)},
+		[]types.Task{taskFixture("task-a", "svc", 1, types.TaskStopped, types.TaskRunning)},
+	)
+	metrics := &fakeMetrics{}
+	reconciler := New(store, WithMetrics(metrics))
+
+	if err := reconciler.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if err := reconciler.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if len(store.stopped) != 0 {
+		t.Fatalf("expected no repeated stop operations, got %#v", store.stopped)
+	}
+	if metrics.stopped != 0 {
+		t.Fatalf("expected stopped metric to stay zero, got %d", metrics.stopped)
+	}
+	if len(store.events) != 0 {
+		t.Fatalf("expected no repeated stop events, got %#v", store.events)
+	}
+}
+
 func TestReconcileDeletingServiceFinalCleanupAfterAgentReturns(t *testing.T) {
 	store := newFakeStore(
 		[]types.Service{serviceFixtureWithStatus("svc", 1, 1, types.RestartPolicy{}, types.ServiceDeleting)},
