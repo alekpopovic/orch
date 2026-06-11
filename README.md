@@ -57,7 +57,7 @@ Apply migrations:
 ./scripts/migrate-up.sh
 ```
 
-The migrations prepare PostgreSQL for the store package and integration tests. The current local `orch-server` still uses in-memory state.
+The migration script is safe to rerun for the local initial schema. Migrations prepare PostgreSQL for the store package and integration tests; the current local `orch-server` still uses in-memory state.
 
 Point the CLI at the server:
 

@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/alekpopovic/orch/internal/config"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	orchdocker "github.com/alekpopovic/orch/internal/docker"
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -45,6 +48,8 @@ func runOrchestratorMVP(t *testing.T, runtime orchdocker.Runtime) {
 	handler := api.NewHandler(logger, controlPlane, api.WithBootstrapToken("e2e-registration-token"))
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
+	logServer := httptest.NewServer(agent.NewLogHandler(runtime, "e2e-registration-token", logger))
+	t.Cleanup(logServer.Close)
 
 	client, err := cli.NewAPIClient(server.URL)
 	if err != nil {
@@ -59,7 +64,7 @@ func runOrchestratorMVP(t *testing.T, runtime orchdocker.Runtime) {
 	t.Cleanup(cancel)
 	runner := agent.NewRunner(config.AgentConfig{
 		NodeName:            "e2e-node-1",
-		AdvertiseAddress:    "http://127.0.0.1:0",
+		AdvertiseAddress:    logServer.URL,
 		AgentAddr:           ":0",
 		Labels:              map[string]string{"role": "worker"},
 		ServerURL:           server.URL,
@@ -98,6 +103,10 @@ func runOrchestratorMVP(t *testing.T, runtime orchdocker.Runtime) {
 	if err != nil {
 		t.Fatalf("deploy service: %v", err)
 	}
+	waitFor(t, "service create event", func() bool {
+		items, err := client.ListEvents(context.Background(), events.Filter{ServiceID: service.ID, Type: events.TypeServiceCreated})
+		return err == nil && len(items) == 1
+	})
 
 	waitFor(t, "two tasks assigned", func() bool {
 		tasks := serviceTasks(t, client, service.ID)
@@ -114,6 +123,13 @@ func runOrchestratorMVP(t *testing.T, runtime orchdocker.Runtime) {
 	waitFor(t, "two tasks running", func() bool {
 		return countTasks(serviceTasks(t, client, service.ID), activeRunning) == 2
 	})
+	var logs bytes.Buffer
+	if err := client.StreamLogs(context.Background(), string(service.ID), "", false, "10", &logs); err != nil {
+		t.Fatalf("stream logs: %v", err)
+	}
+	if !strings.Contains(logs.String(), "started fake-container") {
+		t.Fatalf("expected task logs to include fake runtime start line, got %q", logs.String())
+	}
 
 	if _, err := client.ScaleService(context.Background(), string(service.ID), 3); err != nil {
 		t.Fatalf("scale service to 3: %v", err)
@@ -215,12 +231,14 @@ type fakeRuntime struct {
 	next       int
 	containers map[orchdocker.ContainerID]orchdocker.ContainerStatus
 	byTask     map[string]orchdocker.ContainerID
+	logs       map[orchdocker.ContainerID][]orchdocker.LogLine
 }
 
 func newFakeRuntime() *fakeRuntime {
 	return &fakeRuntime{
 		containers: make(map[orchdocker.ContainerID]orchdocker.ContainerStatus),
 		byTask:     make(map[string]orchdocker.ContainerID),
+		logs:       make(map[orchdocker.ContainerID][]orchdocker.LogLine),
 	}
 }
 
@@ -259,6 +277,7 @@ func (r *fakeRuntime) StartContainer(_ context.Context, id orchdocker.ContainerI
 	status.Running = true
 	status.StartedAt = time.Now().UTC()
 	r.containers[id] = status
+	r.logs[id] = append(r.logs[id], orchdocker.LogLine{Stream: "stdout", Line: "started " + string(id), Timestamp: status.StartedAt})
 	return nil
 }
 
@@ -311,11 +330,19 @@ func (r *fakeRuntime) ListManagedContainers(_ context.Context, labels map[string
 	return statuses, nil
 }
 
-func (r *fakeRuntime) StreamLogs(context.Context, orchdocker.ContainerID, orchdocker.LogOptions) (<-chan orchdocker.LogLine, <-chan error) {
+func (r *fakeRuntime) StreamLogs(_ context.Context, id orchdocker.ContainerID, _ orchdocker.LogOptions) (<-chan orchdocker.LogLine, <-chan error) {
 	lines := make(chan orchdocker.LogLine)
 	errs := make(chan error, 1)
-	close(lines)
-	close(errs)
+	r.mu.Lock()
+	logs := append([]orchdocker.LogLine(nil), r.logs[id]...)
+	r.mu.Unlock()
+	go func() {
+		defer close(lines)
+		defer close(errs)
+		for _, line := range logs {
+			lines <- line
+		}
+	}()
 	return lines, errs
 }
 
