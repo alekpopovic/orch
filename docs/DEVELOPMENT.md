@@ -49,6 +49,27 @@ ORCH_INTEGRATION_DATABASE_URL="postgres://orch:orch@localhost:5432/orch?sslmode=
 
 The store integration test reapplies the down and up migrations before running. Use a disposable local database.
 
+Docker runtime integration tests are skipped unless `ORCH_DOCKER_INTEGRATION=1` is set:
+
+```sh
+ORCH_DOCKER_INTEGRATION=1 go test ./internal/docker -run Integration
+```
+
+These tests talk to the Docker daemon configured by the standard Docker environment variables such as `DOCKER_HOST`, `DOCKER_TLS_VERIFY`, and `DOCKER_CERT_PATH`.
+
+## Docker Daemon Access
+
+The worker agent needs permission to call the Docker Engine API for image pulls, container create/start/stop/remove, inspect, list, and log streaming. In local development this usually means access to `/var/run/docker.sock` or a Docker context configured through environment variables.
+
+Docker daemon access is highly privileged. A process that can write to the Docker socket can usually start containers with host mounts, read host files, access container secrets, and affect other workloads on the node. Production deployments should:
+
+- Run `orch-agent` only on trusted worker nodes.
+- Scope Docker socket or TCP API access to the agent process.
+- Prefer TLS-protected Docker API endpoints when using TCP.
+- Avoid mounting the Docker socket into untrusted containers.
+- Treat registry credentials passed to image pull as secrets and never log them.
+- Rely on orchestrator labels such as `orch.managed=true` when listing or cleaning up containers.
+
 ## Migrations
 
 Migrations live in `migrations/` as paired `*.up.sql` and `*.down.sql` files.
