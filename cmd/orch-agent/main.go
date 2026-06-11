@@ -14,6 +14,7 @@ import (
 	"github.com/alekpopovic/orch/internal/config"
 	orchdocker "github.com/alekpopovic/orch/internal/docker"
 	"github.com/alekpopovic/orch/internal/logging"
+	"github.com/alekpopovic/orch/internal/metrics"
 )
 
 func main() {
@@ -33,10 +34,12 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.AgentConfig) error
 	if err != nil {
 		return err
 	}
-	runner := agent.NewRunner(cfg, nil, logger).WithRuntime(runtime)
+	agentMetrics := metrics.NewAgent()
+	instrumentedRuntime := orchdocker.WithMetrics(runtime, agentMetrics)
+	runner := agent.NewRunner(cfg, nil, logger).WithRuntime(instrumentedRuntime).WithMetrics(agentMetrics)
 	server := &http.Server{
 		Addr:              cfg.AgentAddr,
-		Handler:           agent.NewLogHandler(runtime, cfg.BootstrapToken, logger),
+		Handler:           agent.NewLogHandler(instrumentedRuntime, cfg.BootstrapToken, logger, agent.WithMetricsHandler(agentMetrics.Handler())),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

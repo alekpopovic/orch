@@ -22,20 +22,47 @@ type Store interface {
 }
 
 type Controller struct {
-	store  Store
-	logger *slog.Logger
-	now    func() time.Time
+	store   Store
+	metrics Metrics
+	logger  *slog.Logger
+	now     func() time.Time
 }
 
-func NewController(store Store, logger *slog.Logger) *Controller {
+type Metrics interface {
+	AddCreatedTasks(count int)
+	IncRolloutFailures()
+}
+
+type NoopMetrics struct{}
+
+func (NoopMetrics) AddCreatedTasks(int) {}
+
+func (NoopMetrics) IncRolloutFailures() {}
+
+type Option func(*Controller)
+
+func WithMetrics(metrics Metrics) Option {
+	return func(c *Controller) {
+		if metrics != nil {
+			c.metrics = metrics
+		}
+	}
+}
+
+func NewController(store Store, logger *slog.Logger, opts ...Option) *Controller {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Controller{
-		store:  store,
-		logger: logger,
-		now:    func() time.Time { return time.Now().UTC() },
+	c := &Controller{
+		store:   store,
+		metrics: NoopMetrics{},
+		logger:  logger,
+		now:     func() time.Time { return time.Now().UTC() },
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 func (c *Controller) Run(ctx context.Context, interval time.Duration) error {
@@ -124,6 +151,7 @@ func (c *Controller) reconcileDeployment(ctx context.Context, deployment types.D
 	if err != nil {
 		return err
 	}
+	c.metrics.AddCreatedTasks(created)
 	state.newActive += created
 	state.totalActive += created
 
@@ -220,6 +248,9 @@ func (c *Controller) setStatus(ctx context.Context, deployment types.Deployment,
 			return types.Deployment{}, fmt.Errorf("update rollout status: %w", err)
 		}
 		deployment = updated
+		if status == types.DeploymentFailed {
+			c.metrics.IncRolloutFailures()
+		}
 	}
 	_ = events.Emit(ctx, c.store, types.Event{
 		Type:              events.TypeRolloutStatusChanged,

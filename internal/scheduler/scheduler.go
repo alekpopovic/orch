@@ -32,39 +32,80 @@ type PlanInput struct {
 }
 
 type Scheduler struct {
-	store Store
-	now   func() time.Time
+	store   Store
+	metrics Metrics
+	now     func() time.Time
 }
 
-func New(store Store) *Scheduler {
-	return &Scheduler{
-		store: store,
-		now:   func() time.Time { return time.Now().UTC() },
+type Metrics interface {
+	IncSchedulerRuns()
+	IncSchedulerErrors()
+	ObserveSchedulerDuration(duration time.Duration)
+}
+
+type NoopMetrics struct{}
+
+func (NoopMetrics) IncSchedulerRuns() {}
+
+func (NoopMetrics) IncSchedulerErrors() {}
+
+func (NoopMetrics) ObserveSchedulerDuration(time.Duration) {}
+
+type Option func(*Scheduler)
+
+func WithMetrics(metrics Metrics) Option {
+	return func(s *Scheduler) {
+		if metrics != nil {
+			s.metrics = metrics
+		}
 	}
+}
+
+func New(store Store, opts ...Option) *Scheduler {
+	s := &Scheduler{
+		store:   store,
+		metrics: NoopMetrics{},
+		now:     func() time.Time { return time.Now().UTC() },
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *Scheduler) RunOnce(ctx context.Context) ([]Assignment, error) {
+	started := s.now()
+	s.metrics.IncSchedulerRuns()
+	defer func() {
+		s.metrics.ObserveSchedulerDuration(s.now().Sub(started))
+	}()
 	if s.store == nil {
+		s.metrics.IncSchedulerErrors()
 		return nil, fmt.Errorf("scheduler store is required")
 	}
 	if err := ctx.Err(); err != nil {
+		s.metrics.IncSchedulerErrors()
 		return nil, err
 	}
 
 	pending, err := s.store.ListTasksByStatus(ctx, types.TaskPending)
 	if err != nil {
+		s.metrics.IncSchedulerErrors()
 		return nil, fmt.Errorf("list pending tasks: %w", err)
 	}
 	nodes, err := s.store.ListNodesByStatus(ctx, types.NodeReady)
 	if err != nil {
+		s.metrics.IncSchedulerErrors()
 		return nil, fmt.Errorf("list ready nodes: %w", err)
 	}
 	running, err := s.loadRunningTasks(ctx, nodes)
 	if err != nil {
+		s.metrics.IncSchedulerErrors()
 		return nil, err
 	}
 	services, err := s.loadServices(ctx, pending, running)
 	if err != nil {
+		s.metrics.IncSchedulerErrors()
 		return nil, err
 	}
 
@@ -80,6 +121,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) ([]Assignment, error) {
 			continue
 		}
 		if _, err := s.store.AssignTask(ctx, assignment.TaskID, assignment.NodeID, task.UpdatedAt); err != nil {
+			s.metrics.IncSchedulerErrors()
 			return assignments, fmt.Errorf("assign task %s: %w", assignment.TaskID, err)
 		}
 		_ = events.Emit(ctx, s.store, types.Event{

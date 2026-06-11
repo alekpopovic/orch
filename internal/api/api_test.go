@@ -14,6 +14,7 @@ import (
 
 	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/controlplane"
+	"github.com/alekpopovic/orch/internal/metrics"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -25,6 +26,23 @@ func TestHealthz(t *testing.T) {
 	}
 	if rec.Header().Get("X-Request-ID") == "" {
 		t.Fatalf("expected request id header")
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	serverMetrics := metrics.NewServer()
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithRequestMetrics(serverMetrics), WithMetricsHandler(serverMetrics.Handler()))
+
+	health := doRequest(t, handler, http.MethodGet, "/healthz", nil)
+	if health.Code != http.StatusOK {
+		t.Fatalf("expected health status %d, got %d", http.StatusOK, health.Code)
+	}
+	rec := doRequest(t, handler, http.MethodGet, "/metrics", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected metrics status %d, got %d", http.StatusOK, rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "api_requests_total") {
+		t.Fatalf("expected API request metrics, got %s", rec.Body.String())
 	}
 }
 

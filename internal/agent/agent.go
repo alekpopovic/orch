@@ -34,10 +34,31 @@ type Runner struct {
 	client       Client
 	runtime      orchdocker.Runtime
 	health       health.Checker
+	metrics      Metrics
 	healthStates map[types.TaskID]healthState
 	logger       *slog.Logger
 	rand         *rand.Rand
 }
+
+type Metrics interface {
+	IncHeartbeatSuccess()
+	IncHeartbeatFailure()
+	IncTaskStateChange(status types.TaskStatus)
+	IncHealthcheckSuccess()
+	IncHealthcheckFailure()
+}
+
+type NoopMetrics struct{}
+
+func (NoopMetrics) IncHeartbeatSuccess() {}
+
+func (NoopMetrics) IncHeartbeatFailure() {}
+
+func (NoopMetrics) IncTaskStateChange(types.TaskStatus) {}
+
+func (NoopMetrics) IncHealthcheckSuccess() {}
+
+func (NoopMetrics) IncHealthcheckFailure() {}
 
 type healthState struct {
 	successes int
@@ -52,6 +73,7 @@ func NewRunner(cfg config.AgentConfig, client Client, logger *slog.Logger) *Runn
 		cfg:          cfg,
 		client:       client,
 		health:       health.NewChecker(),
+		metrics:      NoopMetrics{},
 		healthStates: make(map[types.TaskID]healthState),
 		logger:       logger,
 		rand:         rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -65,6 +87,13 @@ func (r *Runner) WithRuntime(runtime orchdocker.Runtime) *Runner {
 
 func (r *Runner) WithHealthChecker(checker health.Checker) *Runner {
 	r.health = checker
+	return r
+}
+
+func (r *Runner) WithMetrics(metrics Metrics) *Runner {
+	if metrics != nil {
+		r.metrics = metrics
+	}
 	return r
 }
 
@@ -148,10 +177,10 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 		}
 		if err == nil {
 			if err := r.runtime.StartContainer(ctx, status.ID); err != nil {
-				_, _ = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, ContainerID: string(status.ID), FailureReason: err.Error()})
+				_, _ = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, ContainerID: string(status.ID), FailureReason: err.Error()})
 				return err
 			}
-			_, err = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRunning, ContainerID: string(status.ID)})
+			_, err = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRunning, ContainerID: string(status.ID)})
 			if err != nil {
 				return err
 			}
@@ -160,11 +189,11 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 			return r.checkTaskHealth(ctx, nodeID, assigned, status)
 		}
 	}
-	if _, err := r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskPulling}); err != nil {
+	if _, err := r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskPulling}); err != nil {
 		return err
 	}
 	if err := r.runtime.PullImage(ctx, task.Image, nil); err != nil {
-		_, _ = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, FailureReason: err.Error()})
+		_, _ = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, FailureReason: err.Error()})
 		return err
 	}
 
@@ -177,18 +206,18 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 		Version:   task.Version,
 	})
 	if err != nil {
-		_, _ = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, FailureReason: err.Error()})
+		_, _ = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, FailureReason: err.Error()})
 		return err
 	}
-	if _, err := r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskCreated, ContainerID: string(containerID)}); err != nil {
+	if _, err := r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskCreated, ContainerID: string(containerID)}); err != nil {
 		return err
 	}
 
 	if err := r.runtime.StartContainer(ctx, containerID); err != nil {
-		_, _ = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, ContainerID: string(containerID), FailureReason: err.Error()})
+		_, _ = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, ContainerID: string(containerID), FailureReason: err.Error()})
 		return err
 	}
-	_, err = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRunning, ContainerID: string(containerID)})
+	_, err = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRunning, ContainerID: string(containerID)})
 	if err != nil {
 		return err
 	}
@@ -219,7 +248,7 @@ func (r *Runner) removeAssignedTask(ctx context.Context, nodeID types.NodeID, ta
 			return err
 		}
 	}
-	_, err := r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{
+	_, err := r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{
 		NodeID:      nodeID,
 		Status:      types.TaskRemoved,
 		ContainerID: string(containerID),
@@ -255,10 +284,12 @@ func (r *Runner) checkTaskHealth(ctx context.Context, nodeID types.NodeID, assig
 	}
 	result, err := r.health.Check(ctx, probe)
 	if err != nil {
+		r.metrics.IncHealthcheckFailure()
 		return err
 	}
 	state := r.healthStates[task.ID]
 	if result.Healthy {
+		r.metrics.IncHealthcheckSuccess()
 		state.successes++
 		state.failures = 0
 		r.healthStates[task.ID] = state
@@ -267,12 +298,13 @@ func (r *Runner) checkTaskHealth(ctx context.Context, nodeID types.NodeID, assig
 			threshold = 1
 		}
 		if state.successes >= threshold && task.ActualStatus != types.TaskHealthy {
-			_, err = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskHealthy, ContainerID: string(container.ID)})
+			_, err = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskHealthy, ContainerID: string(container.ID)})
 			return err
 		}
 		return nil
 	}
 
+	r.metrics.IncHealthcheckFailure()
 	state.failures++
 	state.successes = 0
 	r.healthStates[task.ID] = state
@@ -281,7 +313,7 @@ func (r *Runner) checkTaskHealth(ctx context.Context, nodeID types.NodeID, assig
 		threshold = 3
 	}
 	if state.failures >= threshold {
-		_, err = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{
+		_, err = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{
 			NodeID:        nodeID,
 			Status:        types.TaskUnhealthy,
 			ContainerID:   string(container.ID),
@@ -354,7 +386,7 @@ func (r *Runner) cleanupUnassigned(ctx context.Context, nodeID types.NodeID, ass
 			r.logger.Warn("failed to remove unassigned container", "container_id", container.ID, "task_id", taskID, "error", err)
 			continue
 		}
-		_, _ = r.client.ReportTaskStatus(ctx, taskID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRemoved, ContainerID: string(container.ID)})
+		_, _ = r.reportTaskStatus(ctx, taskID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRemoved, ContainerID: string(container.ID)})
 	}
 	return nil
 }
@@ -387,9 +419,22 @@ func (r *Runner) heartbeatWithRetry(ctx context.Context, nodeID types.NodeID, ca
 			Labels:      r.cfg.Labels,
 			Shutdown:    shutdown,
 		})
+		if err != nil {
+			r.metrics.IncHeartbeatFailure()
+			return err
+		}
+		r.metrics.IncHeartbeatSuccess()
 		return err
 	})
 	return response, err
+}
+
+func (r *Runner) reportTaskStatus(ctx context.Context, taskID types.TaskID, req api.AgentTaskStatusRequest) (types.Task, error) {
+	task, err := r.client.ReportTaskStatus(ctx, taskID, req)
+	if err == nil {
+		r.metrics.IncTaskStateChange(req.Status)
+	}
+	return task, err
 }
 
 func (r *Runner) notifyShutdown(nodeID types.NodeID, capacity types.Resources) error {

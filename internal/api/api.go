@@ -30,10 +30,22 @@ type Server struct {
 	jwtSecret      string
 	staticUsers    map[string]auth.Role
 	agentIssuer    auth.AgentCredentialIssuer
+	metrics        RequestMetrics
+	controlMetrics ControlMetrics
+	metricsHandler http.Handler
 	now            func() time.Time
 }
 
 type Option func(*Server)
+
+type RequestMetrics interface {
+	ObserveAPIRequest(method string, route string, status int, duration time.Duration)
+}
+
+type ControlMetrics interface {
+	IncTasksFailed()
+	IncRollouts()
+}
 
 func WithTimeout(timeout time.Duration) Option {
 	return func(server *Server) {
@@ -71,6 +83,24 @@ func WithAgentCredentialIssuer(issuer auth.AgentCredentialIssuer) Option {
 	}
 }
 
+func WithRequestMetrics(metrics RequestMetrics) Option {
+	return func(server *Server) {
+		server.metrics = metrics
+	}
+}
+
+func WithControlMetrics(metrics ControlMetrics) Option {
+	return func(server *Server) {
+		server.controlMetrics = metrics
+	}
+}
+
+func WithMetricsHandler(handler http.Handler) Option {
+	return func(server *Server) {
+		server.metricsHandler = handler
+	}
+}
+
 func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...Option) http.Handler {
 	if controlPlane == nil {
 		controlPlane = controlplane.NewMemoryService()
@@ -90,8 +120,12 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	if server.agentIssuer == nil {
 		server.agentIssuer = auth.NewTokenAgentCredentialIssuer(15 * time.Minute)
 	}
+	if server.metricsHandler == nil {
+		server.metricsHandler = http.NotFoundHandler()
+	}
 
 	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", server.metricsHandler)
 	mux.HandleFunc("GET /healthz", server.healthz)
 	mux.HandleFunc("GET /readyz", server.readyz)
 	mux.HandleFunc("POST /v1/agent/register", server.agentRegister)
@@ -342,6 +376,9 @@ func (s *Server) agentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	if req.Status == types.TaskFailed && s.controlMetrics != nil {
+		s.controlMetrics.IncTasksFailed()
+	}
 	writeJSON(w, http.StatusOK, TaskResponse{Task: task})
 }
 
@@ -522,6 +559,9 @@ func (s *Server) rolloutService(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	if s.controlMetrics != nil {
+		s.controlMetrics.IncRollouts()
+	}
 	writeJSON(w, http.StatusAccepted, DeploymentResponse{Deployment: deployment})
 }
 
@@ -561,6 +601,9 @@ func (s *Server) rollbackService(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeError(w, r, err)
 		return
+	}
+	if s.controlMetrics != nil {
+		s.controlMetrics.IncRollouts()
 	}
 	writeJSON(w, http.StatusAccepted, DeploymentResponse{Deployment: deployment})
 }
@@ -682,7 +725,7 @@ func (s *Server) userAuthMiddleware(next http.Handler) http.Handler {
 
 func requiredRole(r *http.Request) (auth.Role, bool) {
 	path := r.URL.Path
-	if path == "/healthz" || path == "/readyz" || strings.HasPrefix(path, "/v1/agent/") {
+	if path == "/healthz" || path == "/readyz" || path == "/metrics" || strings.HasPrefix(path, "/v1/agent/") {
 		return "", false
 	}
 	if r.Method == http.MethodGet {
@@ -760,6 +803,11 @@ func (s *Server) accessLogMiddleware(next http.Handler) http.Handler {
 		started := time.Now().UTC()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
+		if s.metrics != nil {
+			if route, ok := metricRoute(r.Method, r.URL.Path); ok {
+				s.metrics.ObserveAPIRequest(r.Method, route, rec.status, time.Since(started))
+			}
+		}
 		s.logger.Info("http request",
 			"request_id", requestID(r.Context()),
 			"method", r.Method,
@@ -768,6 +816,56 @@ func (s *Server) accessLogMiddleware(next http.Handler) http.Handler {
 			"duration_ms", time.Since(started).Milliseconds(),
 		)
 	})
+}
+
+func metricRoute(method string, path string) (string, bool) {
+	if path == "/metrics" {
+		return "", false
+	}
+	switch {
+	case path == "/healthz":
+		return "/healthz", true
+	case path == "/readyz":
+		return "/readyz", true
+	case path == "/v1/agent/register":
+		return "/v1/agent/register", true
+	case path == "/v1/agent/heartbeat":
+		return "/v1/agent/heartbeat", true
+	case path == "/v1/agent/tasks":
+		return "/v1/agent/tasks", true
+	case strings.HasPrefix(path, "/v1/agent/tasks/") && strings.HasSuffix(path, "/status"):
+		return "/v1/agent/tasks/{task_id}/status", true
+	case path == "/v1/nodes":
+		return "/v1/nodes", true
+	case strings.HasPrefix(path, "/v1/nodes/") && strings.HasSuffix(path, "/drain"):
+		return "/v1/nodes/{id}/drain", true
+	case strings.HasPrefix(path, "/v1/nodes/") && strings.HasSuffix(path, "/uncordon"):
+		return "/v1/nodes/{id}/uncordon", true
+	case strings.HasPrefix(path, "/v1/nodes/"):
+		return "/v1/nodes/{id}", true
+	case path == "/v1/services":
+		return "/v1/services", true
+	case strings.HasPrefix(path, "/v1/services/") && strings.HasSuffix(path, "/scale"):
+		return "/v1/services/{id}/scale", true
+	case strings.HasPrefix(path, "/v1/services/") && strings.HasSuffix(path, "/rollout"):
+		return "/v1/services/{id}/rollout", true
+	case strings.HasPrefix(path, "/v1/services/") && strings.HasSuffix(path, "/rollback"):
+		return "/v1/services/{id}/rollback", true
+	case strings.HasPrefix(path, "/v1/services/"):
+		return "/v1/services/{id}", true
+	case path == "/v1/tasks":
+		return "/v1/tasks", true
+	case strings.HasPrefix(path, "/v1/tasks/"):
+		return "/v1/tasks/{id}", true
+	case path == "/v1/events":
+		return "/v1/events", true
+	case path == "/v1/logs":
+		return "/v1/logs", true
+	case strings.HasPrefix(path, "/v1/rollouts/"):
+		return "/v1/rollouts/{id}", true
+	default:
+		return "unknown", true
+	}
 }
 
 type statusRecorder struct {

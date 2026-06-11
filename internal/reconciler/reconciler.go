@@ -32,6 +32,7 @@ type Lease interface {
 }
 
 type Metrics interface {
+	IncReconciliationRuns()
 	ObserveReconciliationDuration(duration time.Duration)
 	IncReconciliationErrors()
 	AddCreatedTasks(count int)
@@ -121,10 +122,13 @@ func (r *Reconciler) Run(ctx context.Context) error {
 }
 
 func (r *Reconciler) ReconcileOnce(ctx context.Context) error {
+	r.metrics.IncReconciliationRuns()
 	if r.store == nil {
+		r.metrics.IncReconciliationErrors()
 		return fmt.Errorf("reconciler store is required")
 	}
 	if err := ctx.Err(); err != nil {
+		r.metrics.IncReconciliationErrors()
 		return err
 	}
 
@@ -484,6 +488,8 @@ func (noopLease) Release(context.Context) error {
 }
 
 type NoopMetrics struct{}
+
+func (NoopMetrics) IncReconciliationRuns() {}
 
 func (NoopMetrics) ObserveReconciliationDuration(time.Duration) {}
 func (NoopMetrics) IncReconciliationErrors()                    {}

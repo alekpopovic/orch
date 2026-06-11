@@ -297,12 +297,14 @@ func (s *fakeStore) AppendEvent(_ context.Context, event types.Event) (types.Eve
 }
 
 type fakeMetrics struct {
+	runs      int
 	durations int
 	errors    int
 	created   int
 	stopped   int
 }
 
+func (m *fakeMetrics) IncReconciliationRuns()                      { m.runs++ }
 func (m *fakeMetrics) ObserveReconciliationDuration(time.Duration) { m.durations++ }
 func (m *fakeMetrics) IncReconciliationErrors()                    { m.errors++ }
 func (m *fakeMetrics) AddCreatedTasks(count int)                   { m.created += count }

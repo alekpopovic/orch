@@ -15,6 +15,7 @@ import (
 	"github.com/alekpopovic/orch/internal/config"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/logging"
+	"github.com/alekpopovic/orch/internal/metrics"
 	"github.com/alekpopovic/orch/internal/rollout"
 )
 
@@ -40,7 +41,8 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 	}
 
 	controlPlane := controlplane.NewMemoryService()
-	rolloutController := rollout.NewController(controlPlane, logger)
+	serverMetrics := metrics.NewServer()
+	rolloutController := rollout.NewController(controlPlane, logger, rollout.WithMetrics(serverMetrics))
 	go func() {
 		if err := rolloutController.Run(ctx, 5*time.Second); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Warn("rollout controller stopped", "error", err)
@@ -49,7 +51,7 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewHandler(logger, controlPlane, api.WithBootstrapToken(cfg.BootstrapToken), api.WithUserJWT(cfg.JWTSecret), api.WithStaticUsers(users)),
+		Handler:           api.NewHandler(logger, controlPlane, api.WithBootstrapToken(cfg.BootstrapToken), api.WithUserJWT(cfg.JWTSecret), api.WithStaticUsers(users), api.WithRequestMetrics(serverMetrics), api.WithControlMetrics(serverMetrics), api.WithMetricsHandler(serverMetrics.Handler())),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

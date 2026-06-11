@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/alekpopovic/orch/internal/config"
 	orchdocker "github.com/alekpopovic/orch/internal/docker"
 	"github.com/alekpopovic/orch/internal/health"
+	"github.com/alekpopovic/orch/internal/metrics"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -190,6 +192,22 @@ func TestLogHandlerStopsOnCancellation(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatalf("log handler did not stop after cancellation")
+	}
+}
+
+func TestLogHandlerExposesMetrics(t *testing.T) {
+	agentMetrics := metrics.NewAgent()
+	handler := NewLogHandler(&fakeRuntime{}, "secret", slog.New(slog.NewTextHandler(io.Discard, nil)), WithMetricsHandler(agentMetrics.Handler()))
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected metrics status %d, got %d", http.StatusOK, rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "heartbeat_success_total") {
+		t.Fatalf("expected agent metrics, got %s", rec.Body.String())
 	}
 }
 
