@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -104,15 +103,19 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 	if err := spec.Validate(); err != nil {
 		return types.ServiceSpec{}, fmt.Errorf("invalid deploy file: %w", err)
 	}
+	spec, err = types.NormalizeServiceSpec(spec, types.DefaultResourceDefaults())
+	if err != nil {
+		return types.ServiceSpec{}, fmt.Errorf("invalid deploy file: %w", err)
+	}
 	return spec, nil
 }
 
 func (r DeployResources) toRequests() (types.Resources, error) {
-	cpu, err := parseCPU(r.CPU)
+	cpu, err := types.ParseCPU(r.CPU)
 	if err != nil {
 		return types.Resources{}, err
 	}
-	memory, err := parseMemory(r.Memory)
+	memory, err := types.ParseMemory(r.Memory)
 	if err != nil {
 		return types.Resources{}, err
 	}
@@ -178,58 +181,4 @@ func parseOptionalDuration(value string) (time.Duration, error) {
 		return 0, nil
 	}
 	return time.ParseDuration(value)
-}
-
-func parseCPU(value string) (int64, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0, nil
-	}
-	if strings.HasSuffix(value, "m") {
-		raw := strings.TrimSuffix(value, "m")
-		parsed, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid CPU value %q", value)
-		}
-		return parsed, nil
-	}
-	parsed, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid CPU value %q", value)
-	}
-	return int64(parsed * 1000), nil
-}
-
-func parseMemory(value string) (int64, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0, nil
-	}
-
-	units := []struct {
-		suffix string
-		scale  int64
-	}{
-		{"Gi", 1024 * 1024 * 1024},
-		{"Mi", 1024 * 1024},
-		{"Ki", 1024},
-		{"G", 1000 * 1000 * 1000},
-		{"M", 1000 * 1000},
-		{"K", 1000},
-	}
-	for _, unit := range units {
-		if strings.HasSuffix(value, unit.suffix) {
-			raw := strings.TrimSuffix(value, unit.suffix)
-			parsed, err := strconv.ParseInt(raw, 10, 64)
-			if err != nil {
-				return 0, fmt.Errorf("invalid memory value %q", value)
-			}
-			return parsed * unit.scale, nil
-		}
-	}
-	parsed, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid memory value %q", value)
-	}
-	return parsed, nil
 }

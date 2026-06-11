@@ -376,6 +376,12 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeJSON(w, r, &req) {
 		return
 	}
+	normalized, err := types.NormalizeServiceSpec(req.Spec, types.DefaultResourceDefaults())
+	if err != nil {
+		s.writeError(w, r, fmt.Errorf("%w: %v", store.ErrInvalidState, err))
+		return
+	}
+	req.Spec = normalized
 	if err := req.Spec.Validate(); err != nil {
 		s.writeError(w, r, fmt.Errorf("%w: %v", store.ErrInvalidState, err))
 		return

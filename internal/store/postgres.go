@@ -173,6 +173,11 @@ func (s *PostgresStore) ListNodesByStatus(ctx context.Context, status types.Node
 }
 
 func (s *PostgresStore) CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error) {
+	normalized, err := types.NormalizeServiceSpec(spec, types.DefaultResourceDefaults())
+	if err != nil {
+		return types.Service{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
+	spec = normalized
 	if err := spec.Validate(); err != nil {
 		return types.Service{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
@@ -227,6 +232,11 @@ func (s *PostgresStore) ListServices(ctx context.Context) ([]types.Service, erro
 }
 
 func (s *PostgresStore) UpdateService(ctx context.Context, id types.ServiceID, spec types.ServiceSpec, expectedUpdatedAt time.Time) (types.Service, error) {
+	normalized, err := types.NormalizeServiceSpec(spec, types.DefaultResourceDefaults())
+	if err != nil {
+		return types.Service{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
+	spec = normalized
 	if err := spec.Validate(); err != nil {
 		return types.Service{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}

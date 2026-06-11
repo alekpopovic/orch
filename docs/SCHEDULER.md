@@ -18,7 +18,9 @@ For each pending task, the scheduler considers nodes in stable `node_id` order a
 - service placement constraints must match node labels.
 - free allocatable CPU and memory must be greater than or equal to the service resource requests.
 
-Free resources are calculated from node allocatable resources minus the resource requests of running tasks already on that node, plus any assignments planned earlier in the same scheduler pass.
+Free resources are calculated from node allocatable resources minus the resource requests of non-terminal tasks already assigned to that node, plus any assignments planned earlier in the same scheduler pass.
+
+See [RESOURCES.md](RESOURCES.md) for accepted CPU and memory formats and normalization rules.
 
 ## Scoring
 

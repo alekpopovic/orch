@@ -1,7 +1,10 @@
 package types
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,6 +31,63 @@ type Node struct {
 type Resources struct {
 	CPU    int64 `json:"cpu"`
 	Memory int64 `json:"memory"`
+}
+
+func (resources *Resources) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		CPU    json.RawMessage `json:"cpu"`
+		Memory json.RawMessage `json:"memory"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	cpu, err := parseCPUValue(raw.CPU)
+	if err != nil {
+		return err
+	}
+	memory, err := parseMemoryValue(raw.Memory)
+	if err != nil {
+		return err
+	}
+	resources.CPU = cpu
+	resources.Memory = memory
+	return nil
+}
+
+func parseCPUValue(raw json.RawMessage) (int64, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return ParseCPU(text)
+	}
+	var number float64
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return 0, fmt.Errorf("invalid CPU value")
+	}
+	if number <= 0 || math.Trunc(number) != number || math.IsNaN(number) || math.IsInf(number, 0) {
+		return 0, fmt.Errorf("invalid CPU value %v", number)
+	}
+	return int64(number), nil
+}
+
+func parseMemoryValue(raw json.RawMessage) (int64, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return ParseMemory(text)
+	}
+	var number int64
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return 0, fmt.Errorf("invalid memory value")
+	}
+	if number <= 0 {
+		return 0, fmt.Errorf("invalid memory value %d", number)
+	}
+	return number, nil
 }
 
 type NodeStatus string
@@ -175,6 +235,51 @@ type ResourceRequirements struct {
 	Limits   Resources `json:"limits"`
 }
 
+type ResourceDefaults struct {
+	Requests Resources
+	Limits   Resources
+}
+
+func DefaultResourceDefaults() ResourceDefaults {
+	return ResourceDefaults{
+		Requests: Resources{CPU: 100, Memory: 128 * 1024 * 1024},
+		Limits:   Resources{CPU: 100, Memory: 128 * 1024 * 1024},
+	}
+}
+
+func (requirements ResourceRequirements) WithDefaults(defaults ResourceDefaults) (ResourceRequirements, error) {
+	if defaults.Requests.CPU <= 0 || defaults.Requests.Memory <= 0 {
+		return ResourceRequirements{}, fmt.Errorf("default resource requests must be positive")
+	}
+	if defaults.Limits.CPU <= 0 || defaults.Limits.Memory <= 0 {
+		return ResourceRequirements{}, fmt.Errorf("default resource limits must be positive")
+	}
+	if defaults.Requests.CPU > defaults.Limits.CPU {
+		return ResourceRequirements{}, fmt.Errorf("default requested CPU cannot exceed CPU limit")
+	}
+	if defaults.Requests.Memory > defaults.Limits.Memory {
+		return ResourceRequirements{}, fmt.Errorf("default requested memory cannot exceed memory limit")
+	}
+
+	normalized := requirements
+	if normalized.Requests.CPU == 0 {
+		normalized.Requests.CPU = defaults.Requests.CPU
+	}
+	if normalized.Requests.Memory == 0 {
+		normalized.Requests.Memory = defaults.Requests.Memory
+	}
+	if normalized.Limits.CPU == 0 {
+		normalized.Limits.CPU = defaults.Limits.CPU
+	}
+	if normalized.Limits.Memory == 0 {
+		normalized.Limits.Memory = defaults.Limits.Memory
+	}
+	if err := normalized.ValidateStrict(); err != nil {
+		return ResourceRequirements{}, err
+	}
+	return normalized, nil
+}
+
 func (requirements ResourceRequirements) Validate() error {
 	if err := validateNonNegativeResources("resource requests", requirements.Requests); err != nil {
 		return err
@@ -189,6 +294,35 @@ func (requirements ResourceRequirements) Validate() error {
 		return fmt.Errorf("requested memory cannot exceed memory limit")
 	}
 	return nil
+}
+
+func (requirements ResourceRequirements) ValidateStrict() error {
+	if requirements.Requests.CPU <= 0 {
+		return fmt.Errorf("resource requests CPU must be positive")
+	}
+	if requirements.Requests.Memory <= 0 {
+		return fmt.Errorf("resource requests memory must be positive")
+	}
+	if requirements.Limits.CPU <= 0 {
+		return fmt.Errorf("resource limits CPU must be positive")
+	}
+	if requirements.Limits.Memory <= 0 {
+		return fmt.Errorf("resource limits memory must be positive")
+	}
+	return requirements.Validate()
+}
+
+func NormalizeServiceSpec(spec ServiceSpec, defaults ResourceDefaults) (ServiceSpec, error) {
+	normalized := spec
+	requirements, err := normalized.ResourceRequirements.WithDefaults(defaults)
+	if err != nil {
+		return ServiceSpec{}, err
+	}
+	normalized.ResourceRequirements = requirements
+	if err := normalized.Validate(); err != nil {
+		return ServiceSpec{}, err
+	}
+	return normalized, nil
 }
 
 type Healthcheck struct {
@@ -369,6 +503,60 @@ func validateNonNegativeResources(name string, resources Resources) error {
 		return fmt.Errorf("%s memory cannot be negative", name)
 	}
 	return nil
+}
+
+func ParseCPU(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	if strings.HasSuffix(value, "m") {
+		raw := strings.TrimSpace(strings.TrimSuffix(value, "m"))
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 {
+			return 0, fmt.Errorf("invalid CPU value %q", value)
+		}
+		return parsed, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed <= 0 || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, fmt.Errorf("invalid CPU value %q", value)
+	}
+	return int64(parsed * 1000), nil
+}
+
+func ParseMemory(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+
+	units := []struct {
+		suffix string
+		scale  int64
+	}{
+		{"Gi", 1024 * 1024 * 1024},
+		{"Mi", 1024 * 1024},
+		{"Ki", 1024},
+		{"G", 1000 * 1000 * 1000},
+		{"M", 1000 * 1000},
+		{"K", 1000},
+	}
+	for _, unit := range units {
+		if strings.HasSuffix(value, unit.suffix) {
+			raw := strings.TrimSpace(strings.TrimSuffix(value, unit.suffix))
+			parsed, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || parsed <= 0 {
+				return 0, fmt.Errorf("invalid memory value %q", value)
+			}
+			return parsed * unit.scale, nil
+		}
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("invalid memory value %q", value)
+	}
+	return parsed, nil
 }
 
 func validRestartCondition(condition RestartCondition) bool {

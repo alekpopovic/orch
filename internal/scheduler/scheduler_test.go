@@ -191,6 +191,40 @@ func TestRunOnceIgnoresEventEmissionFailure(t *testing.T) {
 	}
 }
 
+func TestRunOnceAccountsForNonTerminalAssignedTasks(t *testing.T) {
+	task := pendingTask("task-a", "svc")
+	task.UpdatedAt = time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	store := &fakeStore{
+		pending: []types.Task{task},
+		nodes: []types.Node{
+			nodeFixture("node-a", types.NodeReady, nil, types.Resources{CPU: 1000, Memory: 1024}),
+		},
+		byNode: map[types.NodeID][]types.Task{
+			"node-a": {
+				{
+					ID:            "existing",
+					ServiceID:     "other",
+					NodeID:        "node-a",
+					DesiredStatus: types.TaskRunning,
+					ActualStatus:  types.TaskAssigned,
+				},
+			},
+		},
+		services: map[types.ServiceID]types.Service{
+			"svc":   serviceFixture("svc", types.Resources{CPU: 400, Memory: 512}, nil),
+			"other": serviceFixture("other", types.Resources{CPU: 700, Memory: 512}, nil),
+		},
+	}
+
+	assignments, err := New(store).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run scheduler: %v", err)
+	}
+	if len(assignments) != 0 {
+		t.Fatalf("expected no assignment because assigned task consumes resources, got %#v", assignments)
+	}
+}
+
 type fakeStore struct {
 	pending    []types.Task
 	nodes      []types.Node

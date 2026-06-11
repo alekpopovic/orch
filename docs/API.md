@@ -72,6 +72,8 @@ curl http://localhost:8080/v1/services/{service_id}
 curl -X DELETE http://localhost:8080/v1/services/{service_id}
 ```
 
+Resource values are normalized as CPU millicores and memory bytes. The API also accepts string inputs such as `"500m"`, `"2.5"`, `"512Mi"`, and `"1Gi"` for resource fields.
+
 Delete is safe by default: it marks the service `deleting`, asks agents to stop and remove task containers, and only moves the service to `deleted` after all tasks report `removed`.
 
 Scale and rollout operations:

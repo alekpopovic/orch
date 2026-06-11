@@ -359,6 +359,11 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 	if err := ctx.Err(); err != nil {
 		return types.Service{}, err
 	}
+	normalized, err := types.NormalizeServiceSpec(spec, types.DefaultResourceDefaults())
+	if err != nil {
+		return types.Service{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	spec = normalized
 	if err := spec.Validate(); err != nil {
 		return types.Service{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
 	}
