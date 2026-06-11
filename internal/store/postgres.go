@@ -203,6 +203,27 @@ func (s *PostgresStore) GetService(ctx context.Context, id types.ServiceID) (typ
 	return service, nil
 }
 
+func (s *PostgresStore) ListServices(ctx context.Context) ([]types.Service, error) {
+	rows, err := s.pool.Query(ctx, serviceSelectSQL()+` ORDER BY name, id`)
+	if err != nil {
+		return nil, mapPostgresError(err)
+	}
+	defer rows.Close()
+
+	var services []types.Service
+	for rows.Next() {
+		service, err := scanService(rows)
+		if err != nil {
+			return nil, mapPostgresError(err)
+		}
+		services = append(services, service)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapPostgresError(err)
+	}
+	return services, nil
+}
+
 func (s *PostgresStore) UpdateService(ctx context.Context, id types.ServiceID, spec types.ServiceSpec, expectedUpdatedAt time.Time) (types.Service, error) {
 	if err := spec.Validate(); err != nil {
 		return types.Service{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
@@ -277,6 +298,29 @@ func (s *PostgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID 
 		string(id),
 		string(nodeID),
 		string(types.TaskAssigned),
+		expectedUpdatedAt.UTC(),
+	)
+	task, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return types.Task{}, ErrConflict
+		}
+		return types.Task{}, mapPostgresError(err)
+	}
+	return task, nil
+}
+
+func (s *PostgresStore) StopTask(ctx context.Context, id types.TaskID, expectedUpdatedAt time.Time) (types.Task, error) {
+	row := s.pool.QueryRow(ctx, `
+		UPDATE tasks
+		SET desired_status = $2,
+			updated_at = timezone('utc', now()),
+			row_version = row_version + 1
+		WHERE id = $1 AND updated_at = $3 AND desired_status <> $2
+		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
+			image, version, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+		string(id),
+		string(types.TaskStopped),
 		expectedUpdatedAt.UTC(),
 	)
 	task, err := scanTask(row)
