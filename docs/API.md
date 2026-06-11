@@ -114,7 +114,9 @@ curl -X POST http://localhost:8080/v1/agent/tasks/{task_id}/status \
   }'
 ```
 
-Agents may report `pulling`, `created`, `running`, `unhealthy`, `failed`, `stopped`, and `removed`.
+The task poll response includes each task plus service healthcheck metadata and ports so the agent can probe running containers.
+
+Agents may report `pulling`, `created`, `running`, `healthy`, `unhealthy`, `failed`, `stopped`, and `removed`.
 
 ## Events
 

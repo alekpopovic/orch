@@ -133,7 +133,7 @@ func TestAgentTaskAssignmentAndStatus(t *testing.T) {
 		t.Fatalf("expected one assigned task, got %d", len(tasks.Tasks))
 	}
 
-	report := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/tasks/"+string(tasks.Tasks[0].ID)+"/status", AgentTaskStatusRequest{
+	report := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/tasks/"+string(tasks.Tasks[0].Task.ID)+"/status", AgentTaskStatusRequest{
 		NodeID:      registered.Node.ID,
 		Status:      types.TaskRunning,
 		ContainerID: "container-1",

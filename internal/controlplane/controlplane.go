@@ -16,7 +16,7 @@ import (
 type Service interface {
 	RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error)
 	HeartbeatNode(ctx context.Context, heartbeat NodeHeartbeat) (NodeCommand, error)
-	ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]types.Task, error)
+	ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]AgentTask, error)
 	ReportTaskStatus(ctx context.Context, report TaskStatusReport) (types.Task, error)
 	ListNodes(ctx context.Context) ([]types.Node, error)
 	GetNode(ctx context.Context, id types.NodeID) (types.Node, error)
@@ -58,6 +58,12 @@ type NodeCommand struct {
 type AgentDirective struct {
 	Type    string `json:"type"`
 	Message string `json:"message,omitempty"`
+}
+
+type AgentTask struct {
+	Task        types.Task         `json:"task"`
+	Healthcheck *types.Healthcheck `json:"healthcheck,omitempty"`
+	Ports       []types.Port       `json:"ports,omitempty"`
 }
 
 type TaskStatusReport struct {
@@ -199,7 +205,7 @@ func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbe
 	return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
 }
 
-func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]types.Task, error) {
+func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]AgentTask, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -210,7 +216,7 @@ func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.Node
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	tasks := make([]types.Task, 0)
+	tasks := make([]AgentTask, 0)
 	for _, task := range s.tasks {
 		if task.NodeID != nodeID {
 			continue
@@ -218,13 +224,18 @@ func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.Node
 		if task.DesiredStatus == types.TaskRemoved || task.DesiredStatus == types.TaskStopped {
 			continue
 		}
-		tasks = append(tasks, task)
+		service := s.services[task.ServiceID]
+		tasks = append(tasks, AgentTask{
+			Task:        task,
+			Healthcheck: service.Spec.Healthcheck,
+			Ports:       service.Spec.Ports,
+		})
 	}
-	slices.SortFunc(tasks, func(a, b types.Task) int {
-		if a.ID < b.ID {
+	slices.SortFunc(tasks, func(a, b AgentTask) int {
+		if a.Task.ID < b.Task.ID {
 			return -1
 		}
-		if a.ID > b.ID {
+		if a.Task.ID > b.Task.ID {
 			return 1
 		}
 		return 0
@@ -256,18 +267,35 @@ func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusR
 	if task.NodeID != report.NodeID {
 		return types.Task{}, fmt.Errorf("%w: task is not assigned to node", store.ErrInvalidState)
 	}
-	task.ActualStatus = report.Status
+	status := report.Status
+	eventType := "task.status"
+	message := "task status reported"
+	if report.Status == types.TaskUnhealthy {
+		service := s.services[task.ServiceID]
+		if restartAllowed(service.Spec.RestartPolicy) {
+			status = types.TaskFailed
+			eventType = "task.health.failed"
+			message = "task failed healthcheck and needs replacement"
+			if report.FailureReason == "" {
+				report.FailureReason = "healthcheck unhealthy threshold exceeded"
+			}
+		} else {
+			eventType = "task.health.unhealthy"
+			message = "task failed healthcheck"
+		}
+	}
+	task.ActualStatus = status
 	task.ContainerID = report.ContainerID
 	task.FailureReason = report.FailureReason
 	task.UpdatedAt = s.now()
-	if report.Status == types.TaskRunning && task.StartedAt.IsZero() {
+	if (status == types.TaskRunning || status == types.TaskHealthy) && task.StartedAt.IsZero() {
 		task.StartedAt = task.UpdatedAt
 	}
-	if report.Status == types.TaskStopped || report.Status == types.TaskFailed || report.Status == types.TaskRemoved {
+	if status == types.TaskStopped || status == types.TaskFailed || status == types.TaskRemoved {
 		task.FinishedAt = task.UpdatedAt
 	}
 	s.tasks[task.ID] = task
-	s.appendEventLocked("task.status", types.EventInfo, "agent", "task status reported", "task", string(task.ID), task.UpdatedAt)
+	s.appendEventLocked(eventType, types.EventInfo, "agent", message, "task", string(task.ID), task.UpdatedAt)
 	return task, nil
 }
 
@@ -720,10 +748,20 @@ func validAgentTaskStatus(status types.TaskStatus) bool {
 	case types.TaskPulling,
 		types.TaskCreated,
 		types.TaskRunning,
+		types.TaskHealthy,
 		types.TaskUnhealthy,
 		types.TaskFailed,
 		types.TaskStopped,
 		types.TaskRemoved:
+		return true
+	default:
+		return false
+	}
+}
+
+func restartAllowed(policy types.RestartPolicy) bool {
+	switch policy.Condition {
+	case "", types.RestartAlways, types.RestartOnFailure:
 		return true
 	default:
 		return false

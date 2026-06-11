@@ -10,6 +10,7 @@ import (
 	"github.com/alekpopovic/orch/internal/api"
 	"github.com/alekpopovic/orch/internal/config"
 	orchdocker "github.com/alekpopovic/orch/internal/docker"
+	"github.com/alekpopovic/orch/internal/health"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -17,14 +18,16 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
 	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
 	client := &fakeAgentClient{
-		tasks: []types.Task{{
-			ID:            taskID,
-			ServiceID:     types.ServiceID("00000000-0000-4000-8000-000000000003"),
-			NodeID:        nodeID,
-			DesiredStatus: types.TaskRunning,
-			ActualStatus:  types.TaskAssigned,
-			Image:         "nginx:1.27",
-			Version:       1,
+		tasks: []api.AgentTask{{
+			Task: types.Task{
+				ID:            taskID,
+				ServiceID:     types.ServiceID("00000000-0000-4000-8000-000000000003"),
+				NodeID:        nodeID,
+				DesiredStatus: types.TaskRunning,
+				ActualStatus:  types.TaskAssigned,
+				Image:         "nginx:1.27",
+				Version:       1,
+			},
 		}},
 	}
 	runtime := &fakeRuntime{createdID: orchdocker.ContainerID("container-1")}
@@ -73,8 +76,58 @@ func TestReconcileRemovesUnassignedManagedContainers(t *testing.T) {
 	}
 }
 
+func TestReconcileAssignedTaskReportsHealthAfterThresholds(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
+	task := api.AgentTask{
+		Task: types.Task{
+			ID:            taskID,
+			ServiceID:     types.ServiceID("00000000-0000-4000-8000-000000000003"),
+			NodeID:        nodeID,
+			ContainerID:   "container-1",
+			DesiredStatus: types.TaskRunning,
+			ActualStatus:  types.TaskRunning,
+			Image:         "nginx:1.27",
+			Version:       1,
+		},
+		Healthcheck: &types.Healthcheck{
+			Type:               types.HealthcheckHTTP,
+			Path:               "/health",
+			Port:               8080,
+			HealthyThreshold:   2,
+			UnhealthyThreshold: 2,
+		},
+	}
+	client := &fakeAgentClient{tasks: []api.AgentTask{task}}
+	runtime := &fakeRuntime{inspect: map[orchdocker.ContainerID]orchdocker.ContainerStatus{
+		"container-1": {ID: "container-1", Running: true},
+	}}
+	checker := &fakeHealthChecker{results: []bool{true, true, false, false}}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).
+		WithRuntime(runtime).
+		WithHealthChecker(checker)
+
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("third reconcile: %v", err)
+	}
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("fourth reconcile: %v", err)
+	}
+
+	wantStatuses := []types.TaskStatus{types.TaskHealthy, types.TaskUnhealthy}
+	if !equalStatuses(client.statuses, wantStatuses) {
+		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+}
+
 type fakeAgentClient struct {
-	tasks    []types.Task
+	tasks    []api.AgentTask
 	statuses []types.TaskStatus
 }
 
@@ -86,7 +139,7 @@ func (c *fakeAgentClient) Heartbeat(context.Context, api.AgentHeartbeatRequest) 
 	return api.AgentResponse{}, nil
 }
 
-func (c *fakeAgentClient) ListAssignedTasks(context.Context, types.NodeID) ([]types.Task, error) {
+func (c *fakeAgentClient) ListAssignedTasks(context.Context, types.NodeID) ([]api.AgentTask, error) {
 	return c.tasks, nil
 }
 
@@ -162,6 +215,20 @@ type errFakeNotFound struct{}
 
 func (errFakeNotFound) Error() string {
 	return "not found"
+}
+
+type fakeHealthChecker struct {
+	results []bool
+	calls   int
+}
+
+func (c *fakeHealthChecker) Check(context.Context, health.Check) (health.Result, error) {
+	result := false
+	if c.calls < len(c.results) {
+		result = c.results[c.calls]
+	}
+	c.calls++
+	return health.Result{Healthy: result, CheckedAt: time.Now().UTC(), Message: "fake health result"}, nil
 }
 
 func equalStrings(left, right []string) bool {

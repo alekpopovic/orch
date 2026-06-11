@@ -18,22 +18,30 @@ import (
 	"github.com/alekpopovic/orch/internal/api"
 	"github.com/alekpopovic/orch/internal/config"
 	orchdocker "github.com/alekpopovic/orch/internal/docker"
+	"github.com/alekpopovic/orch/internal/health"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
 type Client interface {
 	Register(ctx context.Context, req api.AgentRegisterRequest) (api.AgentResponse, error)
 	Heartbeat(ctx context.Context, req api.AgentHeartbeatRequest) (api.AgentResponse, error)
-	ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]types.Task, error)
+	ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]api.AgentTask, error)
 	ReportTaskStatus(ctx context.Context, taskID types.TaskID, req api.AgentTaskStatusRequest) (types.Task, error)
 }
 
 type Runner struct {
-	cfg     config.AgentConfig
-	client  Client
-	runtime orchdocker.Runtime
-	logger  *slog.Logger
-	rand    *rand.Rand
+	cfg          config.AgentConfig
+	client       Client
+	runtime      orchdocker.Runtime
+	health       health.Checker
+	healthStates map[types.TaskID]healthState
+	logger       *slog.Logger
+	rand         *rand.Rand
+}
+
+type healthState struct {
+	successes int
+	failures  int
 }
 
 func NewRunner(cfg config.AgentConfig, client Client, logger *slog.Logger) *Runner {
@@ -41,15 +49,22 @@ func NewRunner(cfg config.AgentConfig, client Client, logger *slog.Logger) *Runn
 		logger = slog.Default()
 	}
 	return &Runner{
-		cfg:    cfg,
-		client: client,
-		logger: logger,
-		rand:   rand.New(rand.NewSource(time.Now().UnixNano())),
+		cfg:          cfg,
+		client:       client,
+		health:       health.NewChecker(),
+		healthStates: make(map[types.TaskID]healthState),
+		logger:       logger,
+		rand:         rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
 func (r *Runner) WithRuntime(runtime orchdocker.Runtime) *Runner {
 	r.runtime = runtime
+	return r
+}
+
+func (r *Runner) WithHealthChecker(checker health.Checker) *Runner {
+	r.health = checker
 	return r
 }
 
@@ -108,23 +123,25 @@ func (r *Runner) reconcileAssignedTasks(ctx context.Context, nodeID types.NodeID
 		return err
 	}
 	assigned := make(map[types.TaskID]types.Task, len(tasks))
-	for _, task := range tasks {
+	for _, assignedTask := range tasks {
+		task := assignedTask.Task
 		assigned[task.ID] = task
-		if err := r.ensureTask(ctx, nodeID, task); err != nil {
+		if err := r.ensureTask(ctx, nodeID, assignedTask); err != nil {
 			r.logger.Warn("task execution failed", "task_id", task.ID, "error", err)
 		}
 	}
 	return r.cleanupUnassigned(ctx, nodeID, assigned)
 }
 
-func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, task types.Task) error {
+func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned api.AgentTask) error {
+	task := assigned.Task
 	if task.DesiredStatus != types.TaskRunning {
 		return nil
 	}
 	if task.ContainerID != "" {
 		status, err := r.runtime.InspectContainer(ctx, orchdocker.ContainerID(task.ContainerID))
 		if err == nil && status.Running {
-			return nil
+			return r.checkTaskHealth(ctx, nodeID, assigned, status)
 		}
 		if err == nil {
 			if err := r.runtime.StartContainer(ctx, status.ID); err != nil {
@@ -132,7 +149,12 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, task types
 				return err
 			}
 			_, err = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRunning, ContainerID: string(status.ID)})
-			return err
+			if err != nil {
+				return err
+			}
+			assigned.Task.ActualStatus = types.TaskRunning
+			assigned.Task.ContainerID = string(status.ID)
+			return r.checkTaskHealth(ctx, nodeID, assigned, status)
 		}
 	}
 	if _, err := r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskPulling}); err != nil {
@@ -164,7 +186,118 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, task types
 		return err
 	}
 	_, err = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRunning, ContainerID: string(containerID)})
-	return err
+	if err != nil {
+		return err
+	}
+	assigned.Task.ContainerID = string(containerID)
+	assigned.Task.ActualStatus = types.TaskRunning
+	return r.checkTaskHealth(ctx, nodeID, assigned, orchdocker.ContainerStatus{ID: containerID, Running: true})
+}
+
+func (r *Runner) checkTaskHealth(ctx context.Context, nodeID types.NodeID, assigned api.AgentTask, container orchdocker.ContainerStatus) error {
+	task := assigned.Task
+	check := assigned.Healthcheck
+	if check == nil || check.Type == "" || check.Type == types.HealthcheckNone {
+		return nil
+	}
+	if task.ActualStatus != types.TaskRunning && task.ActualStatus != types.TaskHealthy && task.ActualStatus != types.TaskUnhealthy {
+		return nil
+	}
+	if r.health == nil {
+		r.health = health.NewChecker()
+	}
+	if delay := r.healthJitter(check.Interval); delay > 0 {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	probe, ok := healthProbe(*check, assigned.Ports)
+	if !ok {
+		return nil
+	}
+	result, err := r.health.Check(ctx, probe)
+	if err != nil {
+		return err
+	}
+	state := r.healthStates[task.ID]
+	if result.Healthy {
+		state.successes++
+		state.failures = 0
+		r.healthStates[task.ID] = state
+		threshold := check.HealthyThreshold
+		if threshold <= 0 {
+			threshold = 1
+		}
+		if state.successes >= threshold && task.ActualStatus != types.TaskHealthy {
+			_, err = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskHealthy, ContainerID: string(container.ID)})
+			return err
+		}
+		return nil
+	}
+
+	state.failures++
+	state.successes = 0
+	r.healthStates[task.ID] = state
+	threshold := check.UnhealthyThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	if state.failures >= threshold {
+		_, err = r.client.ReportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{
+			NodeID:        nodeID,
+			Status:        types.TaskUnhealthy,
+			ContainerID:   string(container.ID),
+			FailureReason: result.Message,
+		})
+		return err
+	}
+	return nil
+}
+
+func (r *Runner) healthJitter(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return 0
+	}
+	max := interval / 5
+	if max <= 0 {
+		return 0
+	}
+	return time.Duration(r.rand.Int63n(int64(max)))
+}
+
+func healthProbe(check types.Healthcheck, ports []types.Port) (health.Check, bool) {
+	port := check.Port
+	if port == 0 && len(ports) > 0 {
+		port = ports[0].PublishedPort
+		if port == 0 {
+			port = ports[0].ContainerPort
+		}
+	}
+	if port == 0 {
+		return health.Check{}, false
+	}
+	timeout := check.Timeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	target := "127.0.0.1:" + strconv.Itoa(port)
+	switch check.Type {
+	case types.HealthcheckHTTP:
+		path := check.Path
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		return health.Check{Type: health.HTTPProbe, Target: "http://" + target + path, Timeout: timeout}, true
+	case types.HealthcheckTCP:
+		return health.Check{Type: health.TCPProbe, Target: target, Timeout: timeout}, true
+	default:
+		return health.Check{}, false
+	}
 }
 
 func (r *Runner) cleanupUnassigned(ctx context.Context, nodeID types.NodeID, assigned map[types.TaskID]types.Task) error {
@@ -332,7 +465,7 @@ func (c *HTTPClient) Heartbeat(ctx context.Context, req api.AgentHeartbeatReques
 	return out, nil
 }
 
-func (c *HTTPClient) ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]types.Task, error) {
+func (c *HTTPClient) ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]api.AgentTask, error) {
 	var out api.AgentTasksResponse
 	path := "/v1/agent/tasks?node_id=" + url.QueryEscape(string(nodeID))
 	if err := c.doMethod(ctx, http.MethodGet, path, nil, &out); err != nil {

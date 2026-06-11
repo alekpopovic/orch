@@ -344,6 +344,7 @@ func isNonTerminal(task types.Task) bool {
 		types.TaskCreated,
 		types.TaskStarting,
 		types.TaskRunning,
+		types.TaskHealthy,
 		types.TaskUnhealthy,
 		types.TaskStopping:
 		return true
@@ -360,6 +361,7 @@ func nonTerminalStatuses() []types.TaskStatus {
 		types.TaskCreated,
 		types.TaskStarting,
 		types.TaskRunning,
+		types.TaskHealthy,
 		types.TaskUnhealthy,
 		types.TaskStopping,
 	}
@@ -397,7 +399,7 @@ func stopPriority(task types.Task) int {
 		return 2
 	case types.TaskUnhealthy:
 		return 3
-	case types.TaskRunning:
+	case types.TaskRunning, types.TaskHealthy:
 		return 4
 	case types.TaskStopping:
 		return 5

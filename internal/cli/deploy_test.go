@@ -24,6 +24,8 @@ healthcheck:
   path: /health
   interval: 10s
   timeout: 2s
+  healthyThreshold: 2
+  unhealthyThreshold: 4
 restart:
   policy: always
 placement:
@@ -51,6 +53,9 @@ placement:
 	}
 	if spec.Healthcheck == nil || spec.Healthcheck.Port != 8080 || spec.Healthcheck.Path != "/health" {
 		t.Fatalf("unexpected healthcheck %#v", spec.Healthcheck)
+	}
+	if spec.Healthcheck.HealthyThreshold != 2 || spec.Healthcheck.UnhealthyThreshold != 4 {
+		t.Fatalf("unexpected healthcheck thresholds %#v", spec.Healthcheck)
 	}
 	if spec.RestartPolicy.Condition != types.RestartAlways {
 		t.Fatalf("unexpected restart policy %q", spec.RestartPolicy.Condition)

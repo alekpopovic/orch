@@ -193,6 +193,9 @@ type Healthcheck struct {
 }
 
 func (check Healthcheck) Validate() error {
+	if check.Type == HealthcheckNone {
+		return nil
+	}
 	if check.Type != HealthcheckHTTP && check.Type != HealthcheckTCP {
 		return fmt.Errorf("healthcheck type %q is invalid", check.Type)
 	}
@@ -220,6 +223,7 @@ func (check Healthcheck) Validate() error {
 type HealthcheckType string
 
 const (
+	HealthcheckNone HealthcheckType = "none"
 	HealthcheckHTTP HealthcheckType = "http"
 	HealthcheckTCP  HealthcheckType = "tcp"
 )
@@ -286,6 +290,7 @@ const (
 	TaskCreated   TaskStatus = "created"
 	TaskStarting  TaskStatus = "starting"
 	TaskRunning   TaskStatus = "running"
+	TaskHealthy   TaskStatus = "healthy"
 	TaskUnhealthy TaskStatus = "unhealthy"
 	TaskStopping  TaskStatus = "stopping"
 	TaskStopped   TaskStatus = "stopped"

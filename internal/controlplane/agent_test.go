@@ -78,6 +78,7 @@ func TestAgentTaskStatusTransitions(t *testing.T) {
 		Image:                "ghcr.io/example/api:1.0.0",
 		Replicas:             1,
 		ResourceRequirements: types.ResourceRequirements{},
+		RestartPolicy:        types.RestartPolicy{Condition: types.RestartNever},
 	})
 	if err != nil {
 		t.Fatalf("create service: %v", err)
@@ -89,8 +90,8 @@ func TestAgentTaskStatusTransitions(t *testing.T) {
 	if len(tasks) != 1 {
 		t.Fatalf("expected one assigned task, got %d", len(tasks))
 	}
-	if tasks[0].ServiceID != created.ID {
-		t.Fatalf("expected task for service %q, got %q", created.ID, tasks[0].ServiceID)
+	if tasks[0].Task.ServiceID != created.ID {
+		t.Fatalf("expected task for service %q, got %q", created.ID, tasks[0].Task.ServiceID)
 	}
 
 	tests := []struct {
@@ -103,6 +104,7 @@ func TestAgentTaskStatusTransitions(t *testing.T) {
 		{name: "pulling", status: types.TaskPulling},
 		{name: "created", status: types.TaskCreated, containerID: "container-1"},
 		{name: "running", status: types.TaskRunning, containerID: "container-1"},
+		{name: "healthy", status: types.TaskHealthy, containerID: "container-1"},
 		{name: "unhealthy", status: types.TaskUnhealthy, containerID: "container-1"},
 		{name: "failed", status: types.TaskFailed, containerID: "container-1", failureReason: "exit 1", wantFinished: true},
 		{name: "stopped", status: types.TaskStopped, containerID: "container-1", wantFinished: true},
@@ -112,7 +114,7 @@ func TestAgentTaskStatusTransitions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			task, err := service.ReportTaskStatus(ctx, TaskStatusReport{
-				TaskID:        tasks[0].ID,
+				TaskID:        tasks[0].Task.ID,
 				NodeID:        registered.Node.ID,
 				Status:        tt.status,
 				ContainerID:   tt.containerID,
@@ -133,7 +135,7 @@ func TestAgentTaskStatusTransitions(t *testing.T) {
 			if tt.wantFinished && task.FinishedAt.IsZero() {
 				t.Fatalf("expected finished timestamp")
 			}
-			if tt.status == types.TaskRunning && task.StartedAt.IsZero() {
+			if (tt.status == types.TaskRunning || tt.status == types.TaskHealthy) && task.StartedAt.IsZero() {
 				t.Fatalf("expected started timestamp")
 			}
 		})
@@ -170,8 +172,8 @@ func TestTaskAssignmentReconcilesWhenNodeRegistersAfterService(t *testing.T) {
 	if len(tasks) != 1 {
 		t.Fatalf("expected one assigned task, got %d", len(tasks))
 	}
-	if tasks[0].ServiceID != created.ID {
-		t.Fatalf("expected task for service %q, got %q", created.ID, tasks[0].ServiceID)
+	if tasks[0].Task.ServiceID != created.ID {
+		t.Fatalf("expected task for service %q, got %q", created.ID, tasks[0].Task.ServiceID)
 	}
 }
 
@@ -215,11 +217,11 @@ func TestRolloutCreatesReplacementTasks(t *testing.T) {
 	if len(after) != 1 {
 		t.Fatalf("expected one active task after rollout, got %d", len(after))
 	}
-	if after[0].ID == before[0].ID {
-		t.Fatalf("expected replacement task id, got same task %q", after[0].ID)
+	if after[0].Task.ID == before[0].Task.ID {
+		t.Fatalf("expected replacement task id, got same task %q", after[0].Task.ID)
 	}
-	if after[0].Image != "ghcr.io/example/api:2.0.0" {
-		t.Fatalf("expected rollout image, got %q", after[0].Image)
+	if after[0].Task.Image != "ghcr.io/example/api:2.0.0" {
+		t.Fatalf("expected rollout image, got %q", after[0].Task.Image)
 	}
 
 	allTasks, err := service.ListTasks(ctx, TaskFilter{ServiceID: created.ID})
@@ -228,5 +230,49 @@ func TestRolloutCreatesReplacementTasks(t *testing.T) {
 	}
 	if len(allTasks) != 2 {
 		t.Fatalf("expected old and replacement tasks, got %d", len(allTasks))
+	}
+}
+
+func TestUnhealthyRestartableTaskIsMarkedFailed(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+
+	registered, err := service.RegisterNode(ctx, NodeRegistration{
+		Name:             "node-a",
+		AdvertiseAddress: "10.0.0.10",
+		Capacity:         types.Resources{CPU: 4000, Memory: 1024},
+		Allocatable:      types.Resources{CPU: 3000, Memory: 512},
+	})
+	if err != nil {
+		t.Fatalf("register node: %v", err)
+	}
+	if _, err := service.CreateService(ctx, types.ServiceSpec{
+		Name:                 "api",
+		Image:                "ghcr.io/example/api:1.0.0",
+		Replicas:             1,
+		ResourceRequirements: types.ResourceRequirements{},
+		RestartPolicy:        types.RestartPolicy{Condition: types.RestartOnFailure},
+	}); err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+	tasks, err := service.ListAssignedTasks(ctx, registered.Node.ID)
+	if err != nil {
+		t.Fatalf("list assigned tasks: %v", err)
+	}
+
+	task, err := service.ReportTaskStatus(ctx, TaskStatusReport{
+		TaskID:        tasks[0].Task.ID,
+		NodeID:        registered.Node.ID,
+		Status:        types.TaskUnhealthy,
+		FailureReason: "healthcheck failed",
+	})
+	if err != nil {
+		t.Fatalf("report unhealthy task: %v", err)
+	}
+	if task.ActualStatus != types.TaskFailed {
+		t.Fatalf("expected unhealthy restartable task to become failed, got %q", task.ActualStatus)
+	}
+	if task.FinishedAt.IsZero() {
+		t.Fatalf("expected failed task to have finished timestamp")
 	}
 }

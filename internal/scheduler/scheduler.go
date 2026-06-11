@@ -104,7 +104,7 @@ func (s *Scheduler) loadRunningTasks(ctx context.Context, nodes []types.Node) ([
 			return nil, fmt.Errorf("list tasks for node %s: %w", node.ID, err)
 		}
 		for _, task := range tasks {
-			if task.ActualStatus == types.TaskRunning {
+			if task.ActualStatus == types.TaskRunning || task.ActualStatus == types.TaskHealthy {
 				running = append(running, task)
 			}
 		}

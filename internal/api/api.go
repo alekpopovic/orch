@@ -120,8 +120,10 @@ type AgentResponse struct {
 	Directives []controlplane.AgentDirective `json:"directives,omitempty"`
 }
 
+type AgentTask = controlplane.AgentTask
+
 type AgentTasksResponse struct {
-	Tasks []types.Task `json:"tasks"`
+	Tasks []AgentTask `json:"tasks"`
 }
 
 type AgentTaskStatusRequest struct {
@@ -294,6 +296,7 @@ func validAgentTaskStatus(status types.TaskStatus) bool {
 	case types.TaskPulling,
 		types.TaskCreated,
 		types.TaskRunning,
+		types.TaskHealthy,
 		types.TaskUnhealthy,
 		types.TaskFailed,
 		types.TaskStopped,
@@ -754,6 +757,7 @@ func validTaskStatus(status types.TaskStatus) bool {
 		types.TaskCreated,
 		types.TaskStarting,
 		types.TaskRunning,
+		types.TaskHealthy,
 		types.TaskUnhealthy,
 		types.TaskStopping,
 		types.TaskStopped,

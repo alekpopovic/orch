@@ -34,10 +34,12 @@ type DeployResources struct {
 }
 
 type DeployHealthcheck struct {
-	Type     string `yaml:"type"`
-	Path     string `yaml:"path"`
-	Interval string `yaml:"interval"`
-	Timeout  string `yaml:"timeout"`
+	Type               string `yaml:"type"`
+	Path               string `yaml:"path"`
+	Interval           string `yaml:"interval"`
+	Timeout            string `yaml:"timeout"`
+	HealthyThreshold   int    `yaml:"healthyThreshold"`
+	UnhealthyThreshold int    `yaml:"unhealthyThreshold"`
 }
 
 type DeployRestart struct {
@@ -134,6 +136,12 @@ func (h DeployHealthcheck) toDomain() (types.Healthcheck, error) {
 		Timeout:            timeout,
 		HealthyThreshold:   1,
 		UnhealthyThreshold: 3,
+	}
+	if h.HealthyThreshold > 0 {
+		check.HealthyThreshold = h.HealthyThreshold
+	}
+	if h.UnhealthyThreshold > 0 {
+		check.UnhealthyThreshold = h.UnhealthyThreshold
 	}
 	return check, nil
 }
