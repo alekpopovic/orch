@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -170,6 +171,31 @@ func TestLogsCommandStreamsResolvedService(t *testing.T) {
 	}
 }
 
+func TestEventsCommandFiltersByServiceName(t *testing.T) {
+	client := &fakeClient{
+		services: []types.Service{{
+			ID:                "00000000-0000-4000-8000-000000000010",
+			Spec:              types.ServiceSpec{Name: "api", Image: "nginx", Replicas: 1},
+			DeploymentVersion: 1,
+		}},
+	}
+	cmd := NewRootCommand(Options{
+		Out: &bytes.Buffer{},
+		Err: &bytes.Buffer{},
+		NewClient: func(string) (Client, error) {
+			return client, nil
+		},
+	})
+	cmd.SetArgs([]string{"--server", "http://server.example", "events", "--service", "api"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute events: %v", err)
+	}
+	if client.eventFilter.ServiceID != "00000000-0000-4000-8000-000000000010" {
+		t.Fatalf("expected service event filter, got %#v", client.eventFilter)
+	}
+}
+
 type fakeClient struct {
 	services       []types.Service
 	created        types.Service
@@ -179,6 +205,7 @@ type fakeClient struct {
 	logTaskID      string
 	logFollow      bool
 	logTail        string
+	eventFilter    events.Filter
 }
 
 func (f *fakeClient) ListNodes(context.Context) ([]types.Node, error) {
@@ -247,7 +274,8 @@ func (f *fakeClient) GetTask(_ context.Context, id string) (types.Task, error) {
 	return types.Task{ID: types.TaskID(id)}, nil
 }
 
-func (f *fakeClient) ListEvents(context.Context) ([]types.Event, error) {
+func (f *fakeClient) ListEvents(_ context.Context, filter events.Filter) ([]types.Event, error) {
+	f.eventFilter = filter
 	return nil, nil
 }
 

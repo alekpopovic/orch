@@ -122,7 +122,10 @@ Agents may report `pulling`, `created`, `running`, `healthy`, `unhealthy`, `fail
 
 ```sh
 curl http://localhost:8080/v1/events
-curl 'http://localhost:8080/v1/events?related_object_type=service&related_object_id={service_id}&limit=50'
+curl 'http://localhost:8080/v1/events?service_id={service_id}&limit=50'
+curl 'http://localhost:8080/v1/events?task_id={task_id}&type=task.status'
+curl 'http://localhost:8080/v1/events?node_id={node_id}&severity=warning'
+curl 'http://localhost:8080/v1/events?since=2026-06-11T10:00:00Z'
 ```
 
 ## Logs

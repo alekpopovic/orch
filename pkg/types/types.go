@@ -346,10 +346,10 @@ type Event struct {
 type EventSeverity string
 
 const (
-	EventDebug EventSeverity = "debug"
-	EventInfo  EventSeverity = "info"
-	EventWarn  EventSeverity = "warn"
-	EventError EventSeverity = "error"
+	EventInfo    EventSeverity = "info"
+	EventWarning EventSeverity = "warning"
+	EventWarn    EventSeverity = EventWarning
+	EventError   EventSeverity = "error"
 )
 
 func validateNonNegativeResources(name string, resources Resources) error {

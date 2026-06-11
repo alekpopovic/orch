@@ -315,7 +315,7 @@ func TestScaleService(t *testing.T) {
 
 func TestListEvents(t *testing.T) {
 	handler := newTestHandler()
-	_ = doRequest(t, handler, http.MethodPost, "/v1/services", `{
+	create := doRequest(t, handler, http.MethodPost, "/v1/services", `{
 		"spec": {
 			"name": "events",
 			"image": "nginx:1.27",
@@ -323,8 +323,10 @@ func TestListEvents(t *testing.T) {
 			"resource_requirements": {"requests": {}, "limits": {}}
 		}
 	}`)
+	var created ServiceResponse
+	decodeResponse(t, create, &created)
 
-	rec := doRequest(t, handler, http.MethodGet, "/v1/events?limit=10", nil)
+	rec := doRequest(t, handler, http.MethodGet, "/v1/events?service_id="+string(created.Service.ID)+"&type=service.created&severity=info&limit=10", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
 	}
@@ -333,6 +335,24 @@ func TestListEvents(t *testing.T) {
 	decodeResponse(t, rec, &body)
 	if len(body.Events) == 0 {
 		t.Fatalf("expected at least one event")
+	}
+	if body.Events[0].Type != "service.created" {
+		t.Fatalf("expected service.created event, got %q", body.Events[0].Type)
+	}
+}
+
+func TestListEventsInvalidFilters(t *testing.T) {
+	tests := []string{
+		"/v1/events?severity=warn",
+		"/v1/events?since=not-a-time",
+	}
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			rec := doRequest(t, newTestHandler(), http.MethodGet, path, nil)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

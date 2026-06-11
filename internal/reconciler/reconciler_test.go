@@ -2,12 +2,15 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/alekpopovic/orch/pkg/types"
 )
+
+var errFakeEvent = errors.New("event failed")
 
 func TestReconcileOnceServiceReplicas(t *testing.T) {
 	tests := []struct {
@@ -149,13 +152,28 @@ func TestReconcileOnceUsesLeaderLock(t *testing.T) {
 	}
 }
 
+func TestReconcileOnceIgnoresEventEmissionFailure(t *testing.T) {
+	store := newFakeStore(
+		[]types.Service{serviceFixture("svc", 1, 1, types.RestartPolicy{})},
+		nil,
+	)
+	store.failEvents = true
+	if err := New(store).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcile once: %v", err)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("expected task to be created despite event failure")
+	}
+}
+
 type fakeStore struct {
-	services map[types.ServiceID]types.Service
-	tasks    map[types.TaskID]types.Task
-	created  []types.Task
-	stopped  []types.TaskID
-	events   []types.Event
-	nextID   int
+	services   map[types.ServiceID]types.Service
+	tasks      map[types.TaskID]types.Task
+	created    []types.Task
+	stopped    []types.TaskID
+	events     []types.Event
+	nextID     int
+	failEvents bool
 }
 
 func newFakeStore(services []types.Service, tasks []types.Task) *fakeStore {
@@ -221,6 +239,9 @@ func (s *fakeStore) StopTask(_ context.Context, id types.TaskID, _ time.Time) (t
 }
 
 func (s *fakeStore) AppendEvent(_ context.Context, event types.Event) (types.Event, error) {
+	if s.failEvents {
+		return types.Event{}, errFakeEvent
+	}
 	s.events = append(s.events, event)
 	return event, nil
 }

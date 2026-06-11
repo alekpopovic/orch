@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -31,7 +32,7 @@ type Service interface {
 	RollbackService(ctx context.Context, id types.ServiceID) (types.Deployment, error)
 	ListTasks(ctx context.Context, filter TaskFilter) ([]types.Task, error)
 	GetTask(ctx context.Context, id types.TaskID) (types.Task, error)
-	ListEvents(ctx context.Context, filter EventFilter) ([]types.Event, error)
+	ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error)
 }
 
 type NodeRegistration struct {
@@ -78,12 +79,6 @@ type TaskFilter struct {
 	ServiceID types.ServiceID
 	NodeID    types.NodeID
 	Status    types.TaskStatus
-}
-
-type EventFilter struct {
-	RelatedObjectType string
-	RelatedObjectID   string
-	Limit             int
 }
 
 type MemoryService struct {
@@ -139,7 +134,7 @@ func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegis
 			node.UpdatedAt = now
 			s.nodes[id] = node
 			s.reconcileAllServicesLocked(now)
-			s.appendEventLocked("node.registered", types.EventInfo, "controlplane", "node registered", "node", string(id), now)
+			s.appendEventLocked(events.TypeNodeRegistered, types.EventInfo, "controlplane", "node registered", "node", string(id), now)
 			return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
 		}
 	}
@@ -159,7 +154,7 @@ func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegis
 	}
 	s.nodes[id] = node
 	s.reconcileAllServicesLocked(now)
-	s.appendEventLocked("node.registered", types.EventInfo, "controlplane", "node registered", "node", string(id), now)
+	s.appendEventLocked(events.TypeNodeRegistered, types.EventInfo, "controlplane", "node registered", "node", string(id), now)
 	return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
 }
 
@@ -195,10 +190,10 @@ func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbe
 	node.UpdatedAt = now
 	s.nodes[node.ID] = node
 
-	eventType := "node.heartbeat"
+	eventType := events.TypeNodeHeartbeat
 	message := "node heartbeat"
 	if heartbeat.Shutdown {
-		eventType = "node.shutdown"
+		eventType = events.TypeNodeShutdown
 		message = "node graceful shutdown"
 	}
 	s.appendEventLocked(eventType, types.EventInfo, "controlplane", message, "node", string(node.ID), now)
@@ -268,19 +263,21 @@ func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusR
 		return types.Task{}, fmt.Errorf("%w: task is not assigned to node", store.ErrInvalidState)
 	}
 	status := report.Status
-	eventType := "task.status"
+	eventType := events.TypeTaskStatus
+	severity := types.EventInfo
 	message := "task status reported"
 	if report.Status == types.TaskUnhealthy {
+		severity = types.EventWarning
 		service := s.services[task.ServiceID]
 		if restartAllowed(service.Spec.RestartPolicy) {
 			status = types.TaskFailed
-			eventType = "task.health.failed"
+			eventType = events.TypeTaskHealthFailed
 			message = "task failed healthcheck and needs replacement"
 			if report.FailureReason == "" {
 				report.FailureReason = "healthcheck unhealthy threshold exceeded"
 			}
 		} else {
-			eventType = "task.health.unhealthy"
+			eventType = events.TypeTaskHealthUnhealthy
 			message = "task failed healthcheck"
 		}
 	}
@@ -295,7 +292,7 @@ func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusR
 		task.FinishedAt = task.UpdatedAt
 	}
 	s.tasks[task.ID] = task
-	s.appendEventLocked(eventType, types.EventInfo, "agent", message, "task", string(task.ID), task.UpdatedAt)
+	s.appendEventLocked(eventType, severity, "agent", message, "task", string(task.ID), task.UpdatedAt)
 	return task, nil
 }
 
@@ -371,7 +368,7 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 	}
 	s.services[service.ID] = service
 	s.reconcileServiceTasksLocked(service, now)
-	s.appendEventLocked("service.created", types.EventInfo, "controlplane", "service created", "service", string(service.ID), now)
+	s.appendEventLocked(events.TypeServiceCreated, types.EventInfo, "controlplane", "service created", "service", string(service.ID), now)
 	return service, nil
 }
 
@@ -428,7 +425,7 @@ func (s *MemoryService) DeleteService(ctx context.Context, id types.ServiceID) e
 			delete(s.tasks, taskID)
 		}
 	}
-	s.appendEventLocked("service.deleted", types.EventInfo, "controlplane", "service deleted", "service", string(id), s.now())
+	s.appendEventLocked(events.TypeServiceDeleted, types.EventInfo, "controlplane", "service deleted", "service", string(id), s.now())
 	return nil
 }
 
@@ -451,7 +448,7 @@ func (s *MemoryService) ScaleService(ctx context.Context, id types.ServiceID, re
 	service.UpdatedAt = s.now()
 	s.services[id] = service
 	s.reconcileServiceTasksLocked(service, service.UpdatedAt)
-	s.appendEventLocked("service.scaled", types.EventInfo, "controlplane", "service scaled", "service", string(id), service.UpdatedAt)
+	s.appendEventLocked(events.TypeServiceScaled, types.EventInfo, "controlplane", "service scaled", "service", string(id), service.UpdatedAt)
 	return service, nil
 }
 
@@ -491,7 +488,7 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 		UpdatedAt:      now,
 	}
 	s.deployments[deployment.ID] = deployment
-	s.appendEventLocked("service.rollout.started", types.EventInfo, "controlplane", "service rollout started", "service", string(id), now)
+	s.appendEventLocked(events.TypeRolloutStarted, types.EventInfo, "controlplane", "service rollout started", "service", string(id), now)
 	return deployment, nil
 }
 
@@ -530,7 +527,7 @@ func (s *MemoryService) RollbackService(ctx context.Context, id types.ServiceID)
 		UpdatedAt:      now,
 	}
 	s.deployments[deployment.ID] = deployment
-	s.appendEventLocked("service.rollback.started", types.EventInfo, "controlplane", "service rollback started", "service", string(id), now)
+	s.appendEventLocked(events.TypeRollbackStarted, types.EventInfo, "controlplane", "service rollback started", "service", string(id), now)
 	return deployment, nil
 }
 
@@ -571,7 +568,7 @@ func (s *MemoryService) GetTask(ctx context.Context, id types.TaskID) (types.Tas
 	return task, nil
 }
 
-func (s *MemoryService) ListEvents(ctx context.Context, filter EventFilter) ([]types.Event, error) {
+func (s *MemoryService) ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -586,10 +583,22 @@ func (s *MemoryService) ListEvents(ctx context.Context, filter EventFilter) ([]t
 	events := make([]types.Event, 0, len(s.events))
 	for i := len(s.events) - 1; i >= 0; i-- {
 		event := s.events[i]
-		if filter.RelatedObjectType != "" && event.RelatedObjectType != filter.RelatedObjectType {
+		if filter.ServiceID != "" && (event.RelatedObjectType != "service" || event.RelatedObjectID != string(filter.ServiceID)) {
 			continue
 		}
-		if filter.RelatedObjectID != "" && event.RelatedObjectID != filter.RelatedObjectID {
+		if filter.TaskID != "" && (event.RelatedObjectType != "task" || event.RelatedObjectID != string(filter.TaskID)) {
+			continue
+		}
+		if filter.NodeID != "" && (event.RelatedObjectType != "node" || event.RelatedObjectID != string(filter.NodeID)) {
+			continue
+		}
+		if filter.Type != "" && event.Type != filter.Type {
+			continue
+		}
+		if filter.Severity != "" && event.Severity != filter.Severity {
+			continue
+		}
+		if !filter.Since.IsZero() && event.Timestamp.Before(filter.Since) {
 			continue
 		}
 		events = append(events, event)
@@ -618,7 +627,7 @@ func (s *MemoryService) setNodeStatus(ctx context.Context, id types.NodeID, stat
 	if status == types.NodeReady {
 		s.reconcileAllServicesLocked(node.UpdatedAt)
 	}
-	s.appendEventLocked("node.status.changed", types.EventInfo, "controlplane", "node status changed", "node", string(id), node.UpdatedAt)
+	s.appendEventLocked(events.TypeNodeStatusChanged, types.EventInfo, "controlplane", "node status changed", "node", string(id), node.UpdatedAt)
 	return node, nil
 }
 

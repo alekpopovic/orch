@@ -2,11 +2,14 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/alekpopovic/orch/pkg/types"
 )
+
+var errFakeEvent = errors.New("event failed")
 
 func TestPlanAssignments(t *testing.T) {
 	service := serviceFixture("svc", types.Resources{CPU: 500, Memory: 512}, nil)
@@ -165,13 +168,37 @@ func TestRunOnceAssignsTasksAndEmitsEvents(t *testing.T) {
 	}
 }
 
+func TestRunOnceIgnoresEventEmissionFailure(t *testing.T) {
+	task := pendingTask("task-a", "svc")
+	task.UpdatedAt = time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	store := &fakeStore{
+		pending: []types.Task{task},
+		nodes: []types.Node{
+			nodeFixture("node-a", types.NodeReady, nil, types.Resources{CPU: 2000, Memory: 2048}),
+		},
+		services: map[types.ServiceID]types.Service{
+			"svc": serviceFixture("svc", types.Resources{CPU: 500, Memory: 512}, nil),
+		},
+		failEvents: true,
+	}
+
+	assignments, err := New(store).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run scheduler: %v", err)
+	}
+	if !assignmentsEqual(assignments, []Assignment{{TaskID: "task-a", NodeID: "node-a"}}) {
+		t.Fatalf("unexpected assignments %#v", assignments)
+	}
+}
+
 type fakeStore struct {
-	pending  []types.Task
-	nodes    []types.Node
-	byNode   map[types.NodeID][]types.Task
-	services map[types.ServiceID]types.Service
-	assigned []Assignment
-	events   []types.Event
+	pending    []types.Task
+	nodes      []types.Node
+	byNode     map[types.NodeID][]types.Task
+	services   map[types.ServiceID]types.Service
+	assigned   []Assignment
+	events     []types.Event
+	failEvents bool
 }
 
 func (s *fakeStore) ListTasksByStatus(_ context.Context, status types.TaskStatus) ([]types.Task, error) {
@@ -205,6 +232,9 @@ func (s *fakeStore) AssignTask(_ context.Context, id types.TaskID, nodeID types.
 }
 
 func (s *fakeStore) AppendEvent(_ context.Context, event types.Event) (types.Event, error) {
+	if s.failEvents {
+		return types.Event{}, errFakeEvent
+	}
 	s.events = append(s.events, event)
 	return event, nil
 }

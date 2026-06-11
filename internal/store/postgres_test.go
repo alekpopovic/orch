@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -160,12 +161,12 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append event: %v", err)
 	}
-	events, err := store.ListEventsForObject(ctx, "task", string(task.ID), 10)
+	listedEvents, err := store.ListEvents(ctx, events.Filter{TaskID: task.ID, Limit: 10})
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected one event, got %d", len(events))
+	if len(listedEvents) != 1 {
+		t.Fatalf("expected one event, got %d", len(listedEvents))
 	}
 }
 

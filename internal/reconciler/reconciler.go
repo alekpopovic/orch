@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -297,17 +298,15 @@ func (r *Reconciler) createTask(ctx context.Context, service types.Service, reas
 	if err != nil {
 		return fmt.Errorf("create task for service %s: %w", service.ID, err)
 	}
-	if _, err := r.store.AppendEvent(ctx, types.Event{
-		Type:              "reconciler.task.created",
+	_ = events.Emit(ctx, r.store, types.Event{
+		Type:              events.TypeReconcilerTaskCreated,
 		Severity:          types.EventInfo,
 		Source:            "reconciler",
 		Message:           reason,
 		RelatedObjectType: "task",
 		RelatedObjectID:   string(created.ID),
 		Timestamp:         r.now(),
-	}); err != nil {
-		return fmt.Errorf("append task created event: %w", err)
-	}
+	}, events.WithLogger(r.logger))
 	return nil
 }
 
@@ -319,17 +318,15 @@ func (r *Reconciler) stopTask(ctx context.Context, task types.Task, reason strin
 	if err != nil {
 		return fmt.Errorf("stop task %s: %w", task.ID, err)
 	}
-	if _, err := r.store.AppendEvent(ctx, types.Event{
-		Type:              "reconciler.task.stopped",
+	_ = events.Emit(ctx, r.store, types.Event{
+		Type:              events.TypeReconcilerTaskStopped,
 		Severity:          types.EventInfo,
 		Source:            "reconciler",
 		Message:           reason,
 		RelatedObjectType: "task",
 		RelatedObjectID:   string(stopped.ID),
 		Timestamp:         r.now(),
-	}); err != nil {
-		return fmt.Errorf("append task stopped event: %w", err)
-	}
+	}, events.WithLogger(r.logger))
 	return nil
 }
 

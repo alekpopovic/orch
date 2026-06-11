@@ -102,3 +102,5 @@ CREATE TABLE events (
 
 CREATE INDEX idx_events_related_object_created_at
     ON events (related_object_type, related_object_id, created_at DESC);
+CREATE INDEX idx_events_type_created_at ON events (type, created_at DESC);
+CREATE INDEX idx_events_severity_created_at ON events (severity, created_at DESC);

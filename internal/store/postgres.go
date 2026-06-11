@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -475,20 +477,46 @@ func (s *PostgresStore) AppendEvent(ctx context.Context, event types.Event) (typ
 	return created, nil
 }
 
-func (s *PostgresStore) ListEventsForObject(ctx context.Context, objectType string, objectID string, limit int) ([]types.Event, error) {
-	if limit <= 0 {
+func (s *PostgresStore) ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.pool.Query(ctx, `
+
+	sql := `
 		SELECT id, type, severity, source, message, related_object_type, related_object_id, created_at
-		FROM events
-		WHERE related_object_type = $1 AND related_object_id = $2
-		ORDER BY created_at DESC
-		LIMIT $3`,
-		objectType,
-		objectID,
-		limit,
-	)
+		FROM events`
+	args := make([]any, 0, 8)
+	conditions := make([]string, 0, 8)
+	add := func(condition string, value any) {
+		args = append(args, value)
+		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
+	}
+	if filter.ServiceID != "" {
+		add("(related_object_type = 'service' AND related_object_id = $%d)", string(filter.ServiceID))
+	}
+	if filter.TaskID != "" {
+		add("(related_object_type = 'task' AND related_object_id = $%d)", string(filter.TaskID))
+	}
+	if filter.NodeID != "" {
+		add("(related_object_type = 'node' AND related_object_id = $%d)", string(filter.NodeID))
+	}
+	if filter.Type != "" {
+		add("type = $%d", filter.Type)
+	}
+	if filter.Severity != "" {
+		add("severity = $%d", string(filter.Severity))
+	}
+	if !filter.Since.IsZero() {
+		add("created_at >= $%d", filter.Since.UTC())
+	}
+	if len(conditions) > 0 {
+		sql += " WHERE " + joinConditions(conditions)
+	}
+	args = append(args, limit)
+	sql += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args))
+
+	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, mapPostgresError(err)
 	}
@@ -616,6 +644,10 @@ func taskSelectSQL() string {
 func deploymentSelectSQL() string {
 	return `SELECT id, service_id, from_version, to_version, strategy, status,
 		max_unavailable, max_surge, created_at, updated_at, started_at, completed_at FROM deployments`
+}
+
+func joinConditions(conditions []string) string {
+	return strings.Join(conditions, " AND ")
 }
 
 func scanNode(row pgx.Row) (types.Node, error) {

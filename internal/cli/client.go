@@ -8,10 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/alekpopovic/orch/internal/api"
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -140,12 +142,42 @@ func (c *APIClient) GetTask(ctx context.Context, id string) (types.Task, error) 
 	return out.Task, nil
 }
 
-func (c *APIClient) ListEvents(ctx context.Context) ([]types.Event, error) {
+func (c *APIClient) ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error) {
 	var out api.ListEventsResponse
-	if err := c.do(ctx, http.MethodGet, "/v1/events", nil, &out); err != nil {
+	path := "/v1/events"
+	if query := eventQuery(filter).Encode(); query != "" {
+		path += "?" + query
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
 	return out.Events, nil
+}
+
+func eventQuery(filter events.Filter) url.Values {
+	values := url.Values{}
+	if filter.ServiceID != "" {
+		values.Set("service_id", string(filter.ServiceID))
+	}
+	if filter.TaskID != "" {
+		values.Set("task_id", string(filter.TaskID))
+	}
+	if filter.NodeID != "" {
+		values.Set("node_id", string(filter.NodeID))
+	}
+	if filter.Type != "" {
+		values.Set("type", filter.Type)
+	}
+	if filter.Severity != "" {
+		values.Set("severity", string(filter.Severity))
+	}
+	if !filter.Since.IsZero() {
+		values.Set("since", filter.Since.UTC().Format(time.RFC3339Nano))
+	}
+	if filter.Limit > 0 {
+		values.Set("limit", strconv.Itoa(filter.Limit))
+	}
+	return values
 }
 
 func (c *APIClient) StreamLogs(ctx context.Context, serviceID string, taskID string, follow bool, tail string, out io.Writer) error {

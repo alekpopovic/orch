@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -31,7 +33,7 @@ type Client interface {
 	RollbackService(ctx context.Context, id string) (types.Deployment, error)
 	ListTasks(ctx context.Context, query url.Values) ([]types.Task, error)
 	GetTask(ctx context.Context, id string) (types.Task, error)
-	ListEvents(ctx context.Context) ([]types.Event, error)
+	ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error)
 	StreamLogs(ctx context.Context, serviceID string, taskID string, follow bool, tail string, out io.Writer) error
 }
 
@@ -362,7 +364,11 @@ func (a *app) deleteCommand() *cobra.Command {
 }
 
 func (a *app) eventsCommand() *cobra.Command {
-	return &cobra.Command{
+	var serviceRef string
+	var follow bool
+	var eventType string
+	var severity string
+	cmd := &cobra.Command{
 		Use:   "events",
 		Short: "List events",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -370,12 +376,51 @@ func (a *app) eventsCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			events, err := client.ListEvents(cmd.Context())
-			if err != nil {
-				return err
+			filter := events.Filter{Type: strings.TrimSpace(eventType)}
+			if severity != "" {
+				filter.Severity = types.EventSeverity(strings.TrimSpace(severity))
 			}
-			return writeEvents(a.out, a.output, events)
+			if serviceRef != "" {
+				service, err := a.resolveService(cmd.Context(), client, serviceRef)
+				if err != nil {
+					return err
+				}
+				filter.ServiceID = service.ID
+			}
+			return a.writeEventStream(cmd.Context(), client, filter, follow)
 		},
+	}
+	cmd.Flags().StringVar(&serviceRef, "service", "", "filter by service name or ID")
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "follow events")
+	cmd.Flags().StringVar(&eventType, "type", "", "filter by event type")
+	cmd.Flags().StringVar(&severity, "severity", "", "filter by severity: info, warning, error")
+	return cmd
+}
+
+func (a *app) writeEventStream(ctx context.Context, client Client, filter events.Filter, follow bool) error {
+	for {
+		items, err := client.ListEvents(ctx, filter)
+		if err != nil {
+			return err
+		}
+		if err := writeEvents(a.out, a.output, items); err != nil {
+			return err
+		}
+		if !follow {
+			return nil
+		}
+		for _, event := range items {
+			if event.Timestamp.After(filter.Since) {
+				filter.Since = event.Timestamp
+			}
+		}
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alekpopovic/orch/internal/controlplane"
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -716,27 +717,57 @@ func (s *Server) taskFilter(w http.ResponseWriter, r *http.Request) (controlplan
 	return filter, true
 }
 
-func (s *Server) eventFilter(w http.ResponseWriter, r *http.Request) (controlplane.EventFilter, bool) {
+func (s *Server) eventFilter(w http.ResponseWriter, r *http.Request) (events.Filter, bool) {
 	query := r.URL.Query()
 	limit := 100
 	if rawLimit := strings.TrimSpace(query.Get("limit")); rawLimit != "" {
 		parsed, err := strconv.Atoi(rawLimit)
 		if err != nil || parsed < 1 || parsed > 500 {
 			s.writeError(w, r, fmt.Errorf("%w: limit must be between 1 and 500", store.ErrInvalidState))
-			return controlplane.EventFilter{}, false
+			return events.Filter{}, false
 		}
 		limit = parsed
 	}
-	objectID := strings.TrimSpace(query.Get("related_object_id"))
-	if objectID != "" && !validUUID(objectID) {
-		s.writeError(w, r, fmt.Errorf("%w: related_object_id must be a UUID", store.ErrInvalidState))
-		return controlplane.EventFilter{}, false
+	var filter events.Filter
+	filter.Limit = limit
+	if serviceID := strings.TrimSpace(query.Get("service_id")); serviceID != "" {
+		if !validUUID(serviceID) {
+			s.writeError(w, r, fmt.Errorf("%w: service_id must be a UUID", store.ErrInvalidState))
+			return events.Filter{}, false
+		}
+		filter.ServiceID = types.ServiceID(serviceID)
 	}
-	return controlplane.EventFilter{
-		RelatedObjectType: strings.TrimSpace(query.Get("related_object_type")),
-		RelatedObjectID:   objectID,
-		Limit:             limit,
-	}, true
+	if taskID := strings.TrimSpace(query.Get("task_id")); taskID != "" {
+		if !validUUID(taskID) {
+			s.writeError(w, r, fmt.Errorf("%w: task_id must be a UUID", store.ErrInvalidState))
+			return events.Filter{}, false
+		}
+		filter.TaskID = types.TaskID(taskID)
+	}
+	if nodeID := strings.TrimSpace(query.Get("node_id")); nodeID != "" {
+		if !validUUID(nodeID) {
+			s.writeError(w, r, fmt.Errorf("%w: node_id must be a UUID", store.ErrInvalidState))
+			return events.Filter{}, false
+		}
+		filter.NodeID = types.NodeID(nodeID)
+	}
+	filter.Type = strings.TrimSpace(query.Get("type"))
+	if severity := strings.TrimSpace(query.Get("severity")); severity != "" {
+		if !validEventSeverity(types.EventSeverity(severity)) {
+			s.writeError(w, r, fmt.Errorf("%w: severity is invalid", store.ErrInvalidState))
+			return events.Filter{}, false
+		}
+		filter.Severity = types.EventSeverity(severity)
+	}
+	if since := strings.TrimSpace(query.Get("since")); since != "" {
+		parsed, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			s.writeError(w, r, fmt.Errorf("%w: since must be RFC3339", store.ErrInvalidState))
+			return events.Filter{}, false
+		}
+		filter.Since = parsed.UTC()
+	}
+	return filter, true
 }
 
 func (s *Server) logTask(r *http.Request) (types.Task, error) {
@@ -848,6 +879,15 @@ func validTaskStatus(status types.TaskStatus) bool {
 		types.TaskStopped,
 		types.TaskRemoved,
 		types.TaskFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func validEventSeverity(severity types.EventSeverity) bool {
+	switch severity {
+	case types.EventInfo, types.EventWarning, types.EventError:
 		return true
 	default:
 		return false

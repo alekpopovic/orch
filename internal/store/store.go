@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -40,7 +41,7 @@ type DeploymentStore interface {
 
 type EventStore interface {
 	AppendEvent(ctx context.Context, event types.Event) (types.Event, error)
-	ListEventsForObject(ctx context.Context, objectType string, objectID string, limit int) ([]types.Event, error)
+	ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error)
 }
 
 type Store interface {

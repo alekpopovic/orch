@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -81,17 +82,15 @@ func (s *Scheduler) RunOnce(ctx context.Context) ([]Assignment, error) {
 		if _, err := s.store.AssignTask(ctx, assignment.TaskID, assignment.NodeID, task.UpdatedAt); err != nil {
 			return assignments, fmt.Errorf("assign task %s: %w", assignment.TaskID, err)
 		}
-		if _, err := s.store.AppendEvent(ctx, types.Event{
-			Type:              "task.assigned",
+		_ = events.Emit(ctx, s.store, types.Event{
+			Type:              events.TypeTaskAssigned,
 			Severity:          types.EventInfo,
 			Source:            "scheduler",
 			Message:           "task assigned to node",
 			RelatedObjectType: "task",
 			RelatedObjectID:   string(assignment.TaskID),
 			Timestamp:         s.now(),
-		}); err != nil {
-			return assignments, fmt.Errorf("append task assignment event: %w", err)
-		}
+		})
 	}
 	return assignments, nil
 }
