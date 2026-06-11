@@ -34,6 +34,16 @@ PostgreSQL stores durable desired state, observed state, deployment history, eve
 7. Health checks, events, logs, and metrics update observed state and deployment progress.
 8. The rollout manager advances, pauses, or rolls back deployments based on health and policy.
 
+## Service, Task, And Container Lifecycle
+
+A service is the durable desired-state object submitted by an operator. Its spec defines the image, replica count, environment, secret references, ports, resource requests and limits, restart policy, health check, placement constraints, and deployment version.
+
+When a service is created or updated, the control plane records a deployment version and the scheduler turns the service's replica intent into task assignments. Each task is an immutable unit of work for a specific service version and target node. Tasks carry both desired status and observed status so the control plane can reason about convergence without treating Docker as the source of truth.
+
+On each worker, the agent reconciler reads assigned tasks and asks the runtime adapter to create, update, stop, or remove the corresponding Docker container. The container ID is observed runtime state attached back to the task. Docker operations must be idempotent: repeating reconciliation should converge the same task to the same container state without creating duplicates.
+
+Health checks, restart policy, and container exit state update the task's actual status, restart count, failure reason, and timestamps. Rollouts advance only when the expected tasks for the new service version become healthy; failed health checks or runtime failures can pause the deployment or trigger rollback to the previous version.
+
 ## Design Principles
 
 - Keep domain logic independent from Docker, PostgreSQL, clocks, and network probes.
