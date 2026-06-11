@@ -321,6 +321,12 @@ func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusR
 	if task.NodeID != report.NodeID {
 		return types.Task{}, fmt.Errorf("%w: task is not assigned to node", store.ErrInvalidState)
 	}
+	if !taskCanAcceptAgentStatus(task, report.Status) {
+		return types.Task{}, fmt.Errorf("%w: task %s with desired=%q actual=%q cannot accept agent status %q", store.ErrInvalidState, task.ID, task.DesiredStatus, task.ActualStatus, report.Status)
+	}
+	if isTerminalTaskStatus(task.ActualStatus) && task.ActualStatus == report.Status {
+		return task, nil
+	}
 	status := report.Status
 	eventType := events.TypeTaskStatus
 	severity := types.EventInfo
@@ -1181,6 +1187,37 @@ func validAgentTaskStatus(status types.TaskStatus) bool {
 		types.TaskFailed,
 		types.TaskStopped,
 		types.TaskRemoved:
+		return true
+	default:
+		return false
+	}
+}
+
+func taskCanAcceptAgentStatus(task types.Task, status types.TaskStatus) bool {
+	if task.ActualStatus == types.TaskRemoved {
+		return status == types.TaskRemoved
+	}
+	if task.DesiredStatus == types.TaskStopped || task.DesiredStatus == types.TaskRemoved {
+		return isStoppingOrTerminalAgentStatus(status)
+	}
+	if isTerminalTaskStatus(task.ActualStatus) {
+		return task.ActualStatus == status
+	}
+	return true
+}
+
+func isStoppingOrTerminalAgentStatus(status types.TaskStatus) bool {
+	switch status {
+	case types.TaskStopping, types.TaskStopped, types.TaskRemoved, types.TaskFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func isTerminalTaskStatus(status types.TaskStatus) bool {
+	switch status {
+	case types.TaskStopped, types.TaskRemoved, types.TaskFailed:
 		return true
 	default:
 		return false

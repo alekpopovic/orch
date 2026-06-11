@@ -130,8 +130,31 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := store.UpdateTaskStatus(ctx, task.ID, types.TaskRunning, types.TaskRunning, "container-1", "", task.UpdatedAt); err != nil {
+	assigned, err := store.AssignTask(ctx, task.ID, updatedNode.ID, task.UpdatedAt)
+	if err != nil {
+		t.Fatalf("assign task: %v", err)
+	}
+	assignedAgain, err := store.AssignTask(ctx, task.ID, updatedNode.ID, task.UpdatedAt)
+	if err != nil {
+		t.Fatalf("idempotent assign task: %v", err)
+	}
+	if assignedAgain.ID != assigned.ID || assignedAgain.NodeID != updatedNode.ID {
+		t.Fatalf("expected idempotent assignment to return existing task, got %#v", assignedAgain)
+	}
+	running, err := store.UpdateTaskStatus(ctx, task.ID, types.TaskRunning, types.TaskRunning, "container-1", "", assigned.UpdatedAt)
+	if err != nil {
 		t.Fatalf("update task status: %v", err)
+	}
+	stopped, err := store.StopTask(ctx, task.ID, running.UpdatedAt)
+	if err != nil {
+		t.Fatalf("stop task: %v", err)
+	}
+	stoppedAgain, err := store.StopTask(ctx, task.ID, running.UpdatedAt)
+	if err != nil {
+		t.Fatalf("idempotent stop task: %v", err)
+	}
+	if stoppedAgain.DesiredStatus != types.TaskStopped || stoppedAgain.ID != stopped.ID {
+		t.Fatalf("expected idempotent stop to return stopped task, got %#v", stoppedAgain)
 	}
 
 	deployment, err := store.CreateDeployment(ctx, types.Deployment{

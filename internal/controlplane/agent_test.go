@@ -94,38 +94,7 @@ func TestAgentReturnsReadyAfterOfflineRegistration(t *testing.T) {
 }
 
 func TestAgentTaskStatusTransitions(t *testing.T) {
-	service := NewMemoryService()
 	ctx := context.Background()
-
-	registered, err := service.RegisterNode(ctx, NodeRegistration{
-		Name:             "node-a",
-		AdvertiseAddress: "10.0.0.10",
-		Capacity:         types.Resources{CPU: 4000, Memory: 8 * 1024 * 1024 * 1024},
-		Allocatable:      types.Resources{CPU: 3500, Memory: 7 * 1024 * 1024 * 1024},
-	})
-	if err != nil {
-		t.Fatalf("register node: %v", err)
-	}
-	created, err := service.CreateService(ctx, types.ServiceSpec{
-		Name:                 "api",
-		Image:                "ghcr.io/example/api:1.0.0",
-		Replicas:             1,
-		ResourceRequirements: types.ResourceRequirements{},
-		RestartPolicy:        types.RestartPolicy{Condition: types.RestartNever},
-	})
-	if err != nil {
-		t.Fatalf("create service: %v", err)
-	}
-	tasks, err := service.ListAssignedTasks(ctx, registered.Node.ID)
-	if err != nil {
-		t.Fatalf("list assigned tasks: %v", err)
-	}
-	if len(tasks) != 1 {
-		t.Fatalf("expected one assigned task, got %d", len(tasks))
-	}
-	if tasks[0].Task.ServiceID != created.ID {
-		t.Fatalf("expected task for service %q, got %q", created.ID, tasks[0].Task.ServiceID)
-	}
 
 	tests := []struct {
 		name          string
@@ -146,6 +115,18 @@ func TestAgentTaskStatusTransitions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			service := NewMemoryService()
+			registered, created := createServiceWithAssignedTaskAndPolicy(t, ctx, service, types.RestartPolicy{Condition: types.RestartNever})
+			tasks, err := service.ListAssignedTasks(ctx, registered.Node.ID)
+			if err != nil {
+				t.Fatalf("list assigned tasks: %v", err)
+			}
+			if len(tasks) != 1 {
+				t.Fatalf("expected one assigned task, got %d", len(tasks))
+			}
+			if tasks[0].Task.ServiceID != created.ID {
+				t.Fatalf("expected task for service %q, got %q", created.ID, tasks[0].Task.ServiceID)
+			}
 			task, err := service.ReportTaskStatus(ctx, TaskStatusReport{
 				TaskID:        tasks[0].Task.ID,
 				NodeID:        registered.Node.ID,
@@ -172,6 +153,123 @@ func TestAgentTaskStatusTransitions(t *testing.T) {
 				t.Fatalf("expected started timestamp")
 			}
 		})
+	}
+}
+
+func TestAgentTaskStatusCannotResurrectStoppedTask(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+	registered, created := createServiceWithAssignedTask(t, ctx, service)
+	if err := service.DeleteService(ctx, created.ID); err != nil {
+		t.Fatalf("delete service: %v", err)
+	}
+	tasks, err := service.ListAssignedTasks(ctx, registered.Node.ID)
+	if err != nil {
+		t.Fatalf("list assigned tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Task.DesiredStatus != types.TaskStopped {
+		t.Fatalf("expected stopped task directive, got %#v", tasks)
+	}
+
+	if _, err := service.ReportTaskStatus(ctx, TaskStatusReport{
+		TaskID:      tasks[0].Task.ID,
+		NodeID:      registered.Node.ID,
+		Status:      types.TaskRunning,
+		ContainerID: "container-1",
+	}); err == nil {
+		t.Fatalf("expected stale running report for stopped task to fail")
+	}
+	task, err := service.GetTask(ctx, tasks[0].Task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if task.ActualStatus == types.TaskRunning {
+		t.Fatalf("stale status report resurrected stopped task")
+	}
+}
+
+func TestAgentTaskStatusAllowsFailedTaskRemovalDuringDeletion(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+	registered, created := createServiceWithAssignedTask(t, ctx, service)
+	tasks, err := service.ListAssignedTasks(ctx, registered.Node.ID)
+	if err != nil {
+		t.Fatalf("list assigned tasks: %v", err)
+	}
+	if _, err := service.ReportTaskStatus(ctx, TaskStatusReport{
+		TaskID:        tasks[0].Task.ID,
+		NodeID:        registered.Node.ID,
+		Status:        types.TaskFailed,
+		ContainerID:   "container-1",
+		FailureReason: "exit 1",
+	}); err != nil {
+		t.Fatalf("report failed task: %v", err)
+	}
+	if err := service.DeleteService(ctx, created.ID); err != nil {
+		t.Fatalf("delete service: %v", err)
+	}
+	removed, err := service.ReportTaskStatus(ctx, TaskStatusReport{
+		TaskID:      tasks[0].Task.ID,
+		NodeID:      registered.Node.ID,
+		Status:      types.TaskRemoved,
+		ContainerID: "container-1",
+	})
+	if err != nil {
+		t.Fatalf("report removed failed task: %v", err)
+	}
+	if removed.ActualStatus != types.TaskRemoved {
+		t.Fatalf("expected removed task, got %q", removed.ActualStatus)
+	}
+	deleted, err := service.GetService(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get service: %v", err)
+	}
+	if deleted.Status != types.ServiceDeleted {
+		t.Fatalf("expected service deleted after failed task removal, got %q", deleted.Status)
+	}
+}
+
+func TestAgentTaskStatusTerminalDuplicateIsIdempotent(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+	registered, _ := createServiceWithAssignedTask(t, ctx, service)
+	tasks, err := service.ListAssignedTasks(ctx, registered.Node.ID)
+	if err != nil {
+		t.Fatalf("list assigned tasks: %v", err)
+	}
+	failed, err := service.ReportTaskStatus(ctx, TaskStatusReport{
+		TaskID:        tasks[0].Task.ID,
+		NodeID:        registered.Node.ID,
+		Status:        types.TaskFailed,
+		ContainerID:   "container-1",
+		FailureReason: "exit 1",
+	})
+	if err != nil {
+		t.Fatalf("report failed task: %v", err)
+	}
+	eventsBefore, err := service.ListEvents(ctx, events.Filter{TaskID: tasks[0].Task.ID, Type: events.TypeTaskFailed})
+	if err != nil {
+		t.Fatalf("list events before duplicate: %v", err)
+	}
+	again, err := service.ReportTaskStatus(ctx, TaskStatusReport{
+		TaskID:        tasks[0].Task.ID,
+		NodeID:        registered.Node.ID,
+		Status:        types.TaskFailed,
+		ContainerID:   "container-1",
+		FailureReason: "exit 1",
+	})
+	if err != nil {
+		t.Fatalf("duplicate failed report: %v", err)
+	}
+	if again.UpdatedAt != failed.UpdatedAt {
+		t.Fatalf("expected duplicate terminal report not to update timestamp")
+	}
+	eventsAfter, err := service.ListEvents(ctx, events.Filter{TaskID: tasks[0].Task.ID, Type: events.TypeTaskFailed})
+	if err != nil {
+		t.Fatalf("list events after duplicate: %v", err)
+	}
+	if len(eventsAfter) != len(eventsBefore) {
+		t.Fatalf("expected duplicate terminal report not to emit another event, before=%d after=%d", len(eventsBefore), len(eventsAfter))
 	}
 }
 
@@ -475,6 +573,11 @@ func TestUnhealthyRestartableTaskIsMarkedFailed(t *testing.T) {
 
 func createServiceWithAssignedTask(t *testing.T, ctx context.Context, service *MemoryService) (NodeCommand, types.Service) {
 	t.Helper()
+	return createServiceWithAssignedTaskAndPolicy(t, ctx, service, types.RestartPolicy{})
+}
+
+func createServiceWithAssignedTaskAndPolicy(t *testing.T, ctx context.Context, service *MemoryService, policy types.RestartPolicy) (NodeCommand, types.Service) {
+	t.Helper()
 	registered, err := service.RegisterNode(ctx, NodeRegistration{
 		Name:             "node-a",
 		AdvertiseAddress: "10.0.0.10",
@@ -489,6 +592,7 @@ func createServiceWithAssignedTask(t *testing.T, ctx context.Context, service *M
 		Image:                "ghcr.io/example/api:1.0.0",
 		Replicas:             1,
 		ResourceRequirements: types.ResourceRequirements{},
+		RestartPolicy:        policy,
 	})
 	if err != nil {
 		t.Fatalf("create service: %v", err)

@@ -2,11 +2,13 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -109,21 +111,26 @@ func (s *Scheduler) RunOnce(ctx context.Context) ([]Assignment, error) {
 		return nil, err
 	}
 
-	assignments := Plan(PlanInput{
+	planned := Plan(PlanInput{
 		PendingTasks: pending,
 		Nodes:        nodes,
 		RunningTasks: running,
 		Services:     services,
 	})
-	for _, assignment := range assignments {
+	assignments := make([]Assignment, 0, len(planned))
+	for _, assignment := range planned {
 		task, ok := taskByID(pending, assignment.TaskID)
 		if !ok {
 			continue
 		}
 		if _, err := s.store.AssignTask(ctx, assignment.TaskID, assignment.NodeID, task.UpdatedAt); err != nil {
+			if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
+				continue
+			}
 			s.metrics.IncSchedulerErrors()
 			return assignments, fmt.Errorf("assign task %s: %w", assignment.TaskID, err)
 		}
+		assignments = append(assignments, assignment)
 		_ = events.Emit(ctx, s.store, types.Event{
 			Type:              events.TypeTaskAssigned,
 			Severity:          types.EventInfo,

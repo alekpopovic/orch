@@ -7,6 +7,8 @@ Every controller and agent operation should be safe to retry after a timeout, pr
 - API create/update handlers validate input before mutating state. Mutating handlers should return the existing in-progress object when the requested operation is already underway.
 - Reconciler passes must derive work from current service and task state. A second pass must not create extra tasks, repeat stop events, or inflate metrics for tasks that already have a stop/remove desired state.
 - Scheduler assignment must use optimistic concurrency on the task row. If another scheduler assigned the task first, the retry should reload state rather than assign a different node blindly.
+- A scheduler pass returns and emits events only for assignments it actually persisted. Assignment conflicts and missing tasks are treated as benign races; the next pass recomputes from fresh state.
+- Agent task status reports must not resurrect a task after the control plane has requested stop/remove or after the task is terminal. Exact duplicate terminal reports are idempotent and do not emit another event.
 - Agent task execution must treat Docker operations as idempotent. Existing task containers are reused, stopped containers are safe to stop again, and missing containers are safe to remove again.
 - Docker-created containers must carry `orch.managed=true` plus service, task, node, and version labels. Cleanup only targets managed containers for the current node.
 - Rollout controllers must compute progress from task versions and terminal states. Repeated passes must not create more new-version tasks than `replicas + maxSurge`, stop more old tasks than allowed by `maxUnavailable`, or emit status-change events when the status did not change.
@@ -15,7 +17,9 @@ Every controller and agent operation should be safe to retry after a timeout, pr
 ## Current Audit Notes
 
 - The memory control plane ignores terminal tasks when reconciling service replicas, so retries after failed or removed tasks create replacements instead of counting dead tasks as active.
+- The control plane rejects stale active agent reports for tasks whose desired state is stopped or removed.
 - The reconciler treats already-stopped tasks as no-ops and only records stop metrics/events when it actually changes desired task state.
+- PostgreSQL task assignment and stop operations return the existing task when a retry observes the requested state already applied.
 - The rollout status helper emits events only on real status transitions.
 - The Docker runtime wrapper already handles create conflicts by looking up the existing managed task container and treats stop/remove of already stopped or missing containers as success.
 

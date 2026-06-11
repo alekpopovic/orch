@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -191,6 +192,32 @@ func TestRunOnceIgnoresEventEmissionFailure(t *testing.T) {
 	}
 }
 
+func TestRunOnceSkipsAssignmentConflict(t *testing.T) {
+	task := pendingTask("task-a", "svc")
+	task.UpdatedAt = time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	fake := &fakeStore{
+		pending: []types.Task{task},
+		nodes: []types.Node{
+			nodeFixture("node-a", types.NodeReady, nil, types.Resources{CPU: 2000, Memory: 2048}),
+		},
+		services: map[types.ServiceID]types.Service{
+			"svc": serviceFixture("svc", types.Resources{CPU: 500, Memory: 512}, nil),
+		},
+		assignErr: store.ErrConflict,
+	}
+
+	assignments, err := New(fake).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run scheduler: %v", err)
+	}
+	if len(assignments) != 0 {
+		t.Fatalf("expected conflicted assignment not to be returned, got %#v", assignments)
+	}
+	if len(fake.events) != 0 {
+		t.Fatalf("expected no assignment event for conflicted task, got %#v", fake.events)
+	}
+}
+
 func TestRunOnceAccountsForNonTerminalAssignedTasks(t *testing.T) {
 	task := pendingTask("task-a", "svc")
 	task.UpdatedAt = time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
@@ -233,6 +260,7 @@ type fakeStore struct {
 	assigned   []Assignment
 	events     []types.Event
 	failEvents bool
+	assignErr  error
 }
 
 func (s *fakeStore) ListTasksByStatus(_ context.Context, status types.TaskStatus) ([]types.Task, error) {
@@ -261,6 +289,9 @@ func (s *fakeStore) GetService(_ context.Context, id types.ServiceID) (types.Ser
 }
 
 func (s *fakeStore) AssignTask(_ context.Context, id types.TaskID, nodeID types.NodeID, _ time.Time) (types.Task, error) {
+	if s.assignErr != nil {
+		return types.Task{}, s.assignErr
+	}
 	s.assigned = append(s.assigned, Assignment{TaskID: id, NodeID: nodeID})
 	return types.Task{ID: id, NodeID: nodeID, ActualStatus: types.TaskAssigned}, nil
 }

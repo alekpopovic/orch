@@ -346,6 +346,13 @@ func (s *PostgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID 
 	task, err := scanTask(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			current, getErr := s.GetTask(ctx, id)
+			if getErr != nil {
+				return types.Task{}, getErr
+			}
+			if current.NodeID == nodeID && current.ActualStatus == types.TaskAssigned {
+				return current, nil
+			}
 			return types.Task{}, ErrConflict
 		}
 		return types.Task{}, mapPostgresError(err)
@@ -369,6 +376,13 @@ func (s *PostgresStore) StopTask(ctx context.Context, id types.TaskID, expectedU
 	task, err := scanTask(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			current, getErr := s.GetTask(ctx, id)
+			if getErr != nil {
+				return types.Task{}, getErr
+			}
+			if current.DesiredStatus == types.TaskStopped || current.DesiredStatus == types.TaskRemoved {
+				return current, nil
+			}
 			return types.Task{}, ErrConflict
 		}
 		return types.Task{}, mapPostgresError(err)
