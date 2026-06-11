@@ -21,6 +21,7 @@ import (
 
 type Server struct {
 	controlPlane   controlplane.Service
+	logStreamer    LogStreamer
 	logger         *slog.Logger
 	timeout        time.Duration
 	bootstrapToken string
@@ -40,6 +41,12 @@ func WithBootstrapToken(token string) Option {
 	}
 }
 
+func WithLogStreamer(streamer LogStreamer) Option {
+	return func(server *Server) {
+		server.logStreamer = streamer
+	}
+}
+
 func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...Option) http.Handler {
 	if controlPlane == nil {
 		controlPlane = controlplane.NewMemoryService()
@@ -51,6 +58,9 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	}
 	for _, opt := range opts {
 		opt(server)
+	}
+	if server.logStreamer == nil {
+		server.logStreamer = &AgentHTTPLogStreamer{}
 	}
 
 	mux := http.NewServeMux()
@@ -74,6 +84,7 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux.HandleFunc("GET /v1/tasks", server.listTasks)
 	mux.HandleFunc("GET /v1/tasks/{id}", server.getTask)
 	mux.HandleFunc("GET /v1/events", server.listEvents)
+	mux.HandleFunc("GET /v1/logs", server.streamLogs)
 
 	return server.middleware(mux)
 }
@@ -501,6 +512,45 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ListEventsResponse{Events: events})
 }
 
+func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
+	task, err := s.logTask(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if task.NodeID == "" {
+		s.writeError(w, r, fmt.Errorf("%w: task is not assigned to a node", store.ErrInvalidState))
+		return
+	}
+	if task.ContainerID == "" {
+		s.writeError(w, r, fmt.Errorf("%w: task has no container yet", store.ErrInvalidState))
+		return
+	}
+	node, err := s.controlPlane.GetNode(r.Context(), task.NodeID)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if node.Status == types.NodeOffline || node.Status == types.NodeUnknown {
+		s.writeError(w, r, fmt.Errorf("%w: node %s is %s", store.ErrInvalidState, node.ID, node.Status))
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	if err := s.logStreamer.StreamLogs(r.Context(), LogStreamRequest{
+		AgentURL: node.AdvertiseAddress,
+		TaskID:   string(task.ID),
+		Follow:   r.URL.Query().Get("follow") == "true",
+		Tail:     strings.TrimSpace(r.URL.Query().Get("tail")),
+		Token:    s.bootstrapToken,
+	}, w); err != nil && !errors.Is(err, context.Canceled) {
+		s.logger.Warn("log stream failed", "task_id", task.ID, "error", err)
+	}
+}
+
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return requestIDMiddleware(s.accessLogMiddleware(s.recoveryMiddleware(s.timeoutMiddleware(authPlaceholderMiddleware(next)))))
 }
@@ -523,6 +573,10 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) timeoutMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/logs" && r.URL.Query().Get("follow") == "true" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
 		defer cancel()
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -683,6 +737,37 @@ func (s *Server) eventFilter(w http.ResponseWriter, r *http.Request) (controlpla
 		RelatedObjectID:   objectID,
 		Limit:             limit,
 	}, true
+}
+
+func (s *Server) logTask(r *http.Request) (types.Task, error) {
+	query := r.URL.Query()
+	taskID := strings.TrimSpace(query.Get("task_id"))
+	serviceID := strings.TrimSpace(query.Get("service_id"))
+	if taskID == "" && serviceID == "" {
+		return types.Task{}, fmt.Errorf("%w: service_id or task_id is required", store.ErrInvalidState)
+	}
+	if taskID != "" {
+		if !validUUID(taskID) {
+			return types.Task{}, fmt.Errorf("%w: task_id must be a UUID", store.ErrInvalidState)
+		}
+		return s.controlPlane.GetTask(r.Context(), types.TaskID(taskID))
+	}
+	if !validUUID(serviceID) {
+		return types.Task{}, fmt.Errorf("%w: service_id must be a UUID", store.ErrInvalidState)
+	}
+	tasks, err := s.controlPlane.ListTasks(r.Context(), controlplane.TaskFilter{ServiceID: types.ServiceID(serviceID)})
+	if err != nil {
+		return types.Task{}, err
+	}
+	for _, task := range tasks {
+		if task.ContainerID == "" || task.NodeID == "" {
+			continue
+		}
+		if task.ActualStatus == types.TaskRunning || task.ActualStatus == types.TaskHealthy || task.ActualStatus == types.TaskUnhealthy {
+			return task, nil
+		}
+	}
+	return types.Task{}, store.ErrNotFound
 }
 
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {

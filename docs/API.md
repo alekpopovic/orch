@@ -124,3 +124,13 @@ Agents may report `pulling`, `created`, `running`, `healthy`, `unhealthy`, `fail
 curl http://localhost:8080/v1/events
 curl 'http://localhost:8080/v1/events?related_object_type=service&related_object_id={service_id}&limit=50'
 ```
+
+## Logs
+
+```sh
+curl 'http://localhost:8080/v1/logs?service_id={service_id}&tail=100'
+curl 'http://localhost:8080/v1/logs?service_id={service_id}&follow=true'
+curl 'http://localhost:8080/v1/logs?service_id={service_id}&task_id={task_id}'
+```
+
+The MVP response is newline-delimited text proxied from a worker agent.

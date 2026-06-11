@@ -101,10 +101,10 @@ orch scale api --replicas 5
 orch rollout api --image ghcr.io/example/api:1.0.1
 orch rollback api
 orch events
+orch logs api --tail 100
+orch logs api --follow
 orch delete api
 ```
-
-`orch logs <service-name-or-id>` is present, but the server-side logs endpoint has not been implemented yet.
 
 ## Development
 

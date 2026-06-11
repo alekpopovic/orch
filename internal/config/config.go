@@ -19,6 +19,7 @@ type ServerConfig struct {
 type AgentConfig struct {
 	NodeName            string
 	AdvertiseAddress    string
+	AgentAddr           string
 	Labels              map[string]string
 	ServerURL           string
 	BootstrapToken      string
@@ -41,7 +42,8 @@ func LoadServer() ServerConfig {
 func LoadAgent() AgentConfig {
 	return AgentConfig{
 		NodeName:            getenv("ORCH_NODE_NAME", getenv("ORCH_NODE_ID", "local-node")),
-		AdvertiseAddress:    getenv("ORCH_ADVERTISE_ADDRESS", "127.0.0.1"),
+		AdvertiseAddress:    getenv("ORCH_ADVERTISE_ADDRESS", "http://127.0.0.1:8081"),
+		AgentAddr:           getenv("ORCH_AGENT_ADDR", ":8081"),
 		Labels:              labelsFromEnv("ORCH_NODE_LABELS"),
 		ServerURL:           getenv("ORCH_SERVER_URL", "http://localhost:8080"),
 		BootstrapToken:      getenv("ORCH_BOOTSTRAP_TOKEN", "dev-bootstrap-token"),
@@ -117,6 +119,9 @@ func (cfg AgentConfig) Validate() error {
 	}
 	if cfg.AdvertiseAddress == "" {
 		return fmt.Errorf("advertise address is required")
+	}
+	if cfg.AgentAddr == "" {
+		return fmt.Errorf("agent address is required")
 	}
 	if cfg.ServerURL == "" {
 		return fmt.Errorf("server URL is required")

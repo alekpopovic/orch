@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -141,11 +142,43 @@ func TestScaleCommandResolvesServiceByName(t *testing.T) {
 	}
 }
 
+func TestLogsCommandStreamsResolvedService(t *testing.T) {
+	client := &fakeClient{
+		services: []types.Service{{
+			ID:                "00000000-0000-4000-8000-000000000010",
+			Spec:              types.ServiceSpec{Name: "api", Image: "nginx", Replicas: 1},
+			DeploymentVersion: 1,
+		}},
+	}
+	cmd := NewRootCommand(Options{
+		Out: &bytes.Buffer{},
+		Err: &bytes.Buffer{},
+		NewClient: func(string) (Client, error) {
+			return client, nil
+		},
+	})
+	cmd.SetArgs([]string{"--server", "http://server.example", "logs", "api", "--follow", "--task", "00000000-0000-4000-8000-000000000011", "--tail", "100"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute logs: %v", err)
+	}
+	if client.logServiceID != "00000000-0000-4000-8000-000000000010" || client.logTaskID != "00000000-0000-4000-8000-000000000011" {
+		t.Fatalf("unexpected log target service=%q task=%q", client.logServiceID, client.logTaskID)
+	}
+	if !client.logFollow || client.logTail != "100" {
+		t.Fatalf("unexpected log flags follow=%v tail=%q", client.logFollow, client.logTail)
+	}
+}
+
 type fakeClient struct {
 	services       []types.Service
 	created        types.Service
 	scaledID       string
 	scaledReplicas int
+	logServiceID   string
+	logTaskID      string
+	logFollow      bool
+	logTail        string
 }
 
 func (f *fakeClient) ListNodes(context.Context) ([]types.Node, error) {
@@ -216,4 +249,12 @@ func (f *fakeClient) GetTask(_ context.Context, id string) (types.Task, error) {
 
 func (f *fakeClient) ListEvents(context.Context) ([]types.Event, error) {
 	return nil, nil
+}
+
+func (f *fakeClient) StreamLogs(_ context.Context, serviceID string, taskID string, follow bool, tail string, _ io.Writer) error {
+	f.logServiceID = serviceID
+	f.logTaskID = taskID
+	f.logFollow = follow
+	f.logTail = tail
+	return nil
 }

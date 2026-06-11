@@ -32,6 +32,7 @@ type Client interface {
 	ListTasks(ctx context.Context, query url.Values) ([]types.Task, error)
 	GetTask(ctx context.Context, id string) (types.Task, error)
 	ListEvents(ctx context.Context) ([]types.Event, error)
+	StreamLogs(ctx context.Context, serviceID string, taskID string, follow bool, tail string, out io.Writer) error
 }
 
 type Config struct {
@@ -379,14 +380,25 @@ func (a *app) eventsCommand() *cobra.Command {
 }
 
 func (a *app) logsCommand() *cobra.Command {
-	return &cobra.Command{
+	var follow bool
+	var taskID string
+	var tail string
+	cmd := &cobra.Command{
 		Use:   "logs <service-name-or-id>",
 		Short: "Fetch service logs",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("logs are not available yet: the control-plane API does not expose a logs endpoint")
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, service, err := a.clientAndService(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return client.StreamLogs(cmd.Context(), string(service.ID), taskID, follow, tail, a.out)
 		},
 	}
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "follow log output")
+	cmd.Flags().StringVar(&taskID, "task", "", "specific task ID")
+	cmd.Flags().StringVar(&tail, "tail", "", "number of lines to show from the end")
+	return cmd
 }
 
 func (a *app) clientAndService(ctx context.Context, ref string) (Client, types.Service, error) {

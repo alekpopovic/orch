@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -126,6 +128,37 @@ func TestReconcileAssignedTaskReportsHealthAfterThresholds(t *testing.T) {
 	}
 }
 
+func TestLogHandlerStopsOnCancellation(t *testing.T) {
+	runtime := &fakeRuntime{
+		managed: []orchdocker.ContainerStatus{{
+			ID: "container-1",
+			Labels: map[string]string{
+				orchdocker.TaskIDLabel: "task-1",
+			},
+		}},
+		logStarted: make(chan struct{}),
+		logBlock:   true,
+	}
+	handler := NewLogHandler(runtime, "secret", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/v1/agent/logs?task_id=task-1&follow=true", nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	<-runtime.logStarted
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("log handler did not stop after cancellation")
+	}
+}
+
 type fakeAgentClient struct {
 	tasks    []api.AgentTask
 	statuses []types.TaskStatus
@@ -155,10 +188,12 @@ func (c *fakeAgentClient) ReportTaskStatus(_ context.Context, taskID types.TaskI
 }
 
 type fakeRuntime struct {
-	calls     []string
-	createdID orchdocker.ContainerID
-	managed   []orchdocker.ContainerStatus
-	inspect   map[orchdocker.ContainerID]orchdocker.ContainerStatus
+	calls      []string
+	createdID  orchdocker.ContainerID
+	managed    []orchdocker.ContainerStatus
+	inspect    map[orchdocker.ContainerID]orchdocker.ContainerStatus
+	logStarted chan struct{}
+	logBlock   bool
 }
 
 func (r *fakeRuntime) PullImage(_ context.Context, image string, _ *orchdocker.RegistryAuth) error {
@@ -206,6 +241,12 @@ func (r *fakeRuntime) ListManagedContainers(_ context.Context, _ map[string]stri
 func (r *fakeRuntime) StreamLogs(context.Context, orchdocker.ContainerID, orchdocker.LogOptions) (<-chan orchdocker.LogLine, <-chan error) {
 	lines := make(chan orchdocker.LogLine)
 	errs := make(chan error)
+	if r.logStarted != nil {
+		close(r.logStarted)
+	}
+	if r.logBlock {
+		return lines, errs
+	}
 	close(lines)
 	close(errs)
 	return lines, errs

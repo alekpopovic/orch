@@ -148,6 +148,37 @@ func (c *APIClient) ListEvents(ctx context.Context) ([]types.Event, error) {
 	return out.Events, nil
 }
 
+func (c *APIClient) StreamLogs(ctx context.Context, serviceID string, taskID string, follow bool, tail string, out io.Writer) error {
+	values := url.Values{}
+	if strings.TrimSpace(taskID) != "" {
+		values.Set("task_id", strings.TrimSpace(taskID))
+	} else {
+		values.Set("service_id", serviceID)
+	}
+	if follow {
+		values.Set("follow", "true")
+	}
+	if strings.TrimSpace(tail) != "" {
+		values.Set("tail", strings.TrimSpace(tail))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/logs?"+values.Encode(), nil)
+	if err != nil {
+		return fmt.Errorf("create logs request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request logs failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return decodeAPIError(resp)
+	}
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return fmt.Errorf("stream logs: %w", err)
+	}
+	return nil
+}
+
 func (c *APIClient) do(ctx context.Context, method string, path string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {

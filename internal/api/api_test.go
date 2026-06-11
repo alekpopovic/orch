@@ -2,12 +2,15 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -148,6 +151,65 @@ func TestAgentTaskAssignmentAndStatus(t *testing.T) {
 	}
 	if body.Task.ContainerID != "container-1" {
 		t.Fatalf("expected container id to be recorded, got %q", body.Task.ContainerID)
+	}
+}
+
+func TestStreamLogsCancellation(t *testing.T) {
+	streamer := &blockingLogStreamer{started: make(chan struct{}), done: make(chan struct{})}
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithBootstrapToken("secret"), WithLogStreamer(streamer))
+	registered := registerTestNode(t, handler)
+	created := createLogTestService(t, handler)
+	tasks := listAgentTasks(t, handler, registered.Node.ID)
+	report := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/tasks/"+string(tasks.Tasks[0].Task.ID)+"/status", AgentTaskStatusRequest{
+		NodeID:      registered.Node.ID,
+		Status:      types.TaskRunning,
+		ContainerID: "container-1",
+	})
+	if report.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, report.Code, report.Body.String())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/v1/logs?service_id="+string(created.Service.ID)+"&follow=true", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	go func() {
+		handler.ServeHTTP(rec, req)
+		close(streamer.done)
+	}()
+	<-streamer.started
+	cancel()
+
+	select {
+	case <-streamer.done:
+	case <-time.After(time.Second):
+		t.Fatalf("log stream did not stop after cancellation")
+	}
+}
+
+func TestStreamLogsRejectsOfflineNode(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithBootstrapToken("secret"))
+	registered := registerTestNode(t, handler)
+	created := createLogTestService(t, handler)
+	tasks := listAgentTasks(t, handler, registered.Node.ID)
+	report := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/tasks/"+string(tasks.Tasks[0].Task.ID)+"/status", AgentTaskStatusRequest{
+		NodeID:      registered.Node.ID,
+		Status:      types.TaskRunning,
+		ContainerID: "container-1",
+	})
+	if report.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, report.Code, report.Body.String())
+	}
+	heartbeat := doAgentRequest(t, handler, http.MethodPost, "/v1/agent/heartbeat", `{
+		"node_id": "`+string(registered.Node.ID)+`",
+		"shutdown": true
+	}`)
+	if heartbeat.Code != http.StatusOK {
+		t.Fatalf("expected heartbeat status %d, got %d: %s", http.StatusOK, heartbeat.Code, heartbeat.Body.String())
+	}
+
+	rec := doRequest(t, handler, http.MethodGet, "/v1/logs?service_id="+string(created.Service.ID), nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
 }
 
@@ -341,6 +403,49 @@ func registerTestNode(t *testing.T, handler http.Handler) AgentResponse {
 	var registered AgentResponse
 	decodeResponse(t, rec, &registered)
 	return registered
+}
+
+func createLogTestService(t *testing.T, handler http.Handler) ServiceResponse {
+	t.Helper()
+	create := doRequest(t, handler, http.MethodPost, "/v1/services", `{
+		"spec": {
+			"name": "logs-api",
+			"image": "nginx:1.27",
+			"replicas": 1,
+			"resource_requirements": {"requests": {}, "limits": {}}
+		}
+	}`)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d: %s", http.StatusCreated, create.Code, create.Body.String())
+	}
+	var created ServiceResponse
+	decodeResponse(t, create, &created)
+	return created
+}
+
+func listAgentTasks(t *testing.T, handler http.Handler, nodeID types.NodeID) AgentTasksResponse {
+	t.Helper()
+	list := doAgentRequest(t, handler, http.MethodGet, "/v1/agent/tasks?node_id="+string(nodeID), nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected tasks status %d, got %d: %s", http.StatusOK, list.Code, list.Body.String())
+	}
+	var tasks AgentTasksResponse
+	decodeResponse(t, list, &tasks)
+	if len(tasks.Tasks) == 0 {
+		t.Fatalf("expected assigned tasks")
+	}
+	return tasks
+}
+
+type blockingLogStreamer struct {
+	started chan struct{}
+	done    chan struct{}
+}
+
+func (s *blockingLogStreamer) StreamLogs(ctx context.Context, _ LogStreamRequest, _ io.Writer) error {
+	close(s.started)
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func decodeResponse(t *testing.T, rec *httptest.ResponseRecorder, target any) {
