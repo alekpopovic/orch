@@ -30,6 +30,12 @@ Start local PostgreSQL:
 docker compose up postgres
 ```
 
+Apply the initial schema:
+
+```sh
+psql "postgres://orch:orch@localhost:5432/orch?sslmode=disable" -f migrations/000001_initial_schema.up.sql
+```
+
 Start PostgreSQL plus optional local orchestrator services:
 
 ```sh
