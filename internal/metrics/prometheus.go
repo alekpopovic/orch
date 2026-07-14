@@ -32,6 +32,8 @@ type Server struct {
 	autoscalerDecisions *prometheus.CounterVec
 	autoscalerErrors    prometheus.Counter
 	autoscalerRecommend *prometheus.GaugeVec
+	leaderStatus        *prometheus.GaugeVec
+	leaderFailures      *prometheus.CounterVec
 }
 
 func NewServer() *Server {
@@ -116,6 +118,14 @@ func NewServer() *Server {
 			Name: "autoscaler_recommendation_replicas",
 			Help: "Latest autoscaler replica recommendation by service.",
 		}, []string{"service_id"}),
+		leaderStatus: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "controller_leader_status",
+			Help: "Controller leader status by controller name; 1 when this process is leader.",
+		}, []string{"controller"}),
+		leaderFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "controller_leader_acquisition_failures_total",
+			Help: "Total controller leader lock acquisition failures by controller name.",
+		}, []string{"controller"}),
 	}
 	m.registry.MustRegister(
 		m.apiRequests,
@@ -137,6 +147,8 @@ func NewServer() *Server {
 		m.autoscalerDecisions,
 		m.autoscalerErrors,
 		m.autoscalerRecommend,
+		m.leaderStatus,
+		m.leaderFailures,
 	)
 	return m
 }
@@ -219,6 +231,18 @@ func (m *Server) IncAutoscalerErrors() {
 
 func (m *Server) SetAutoscalerRecommendation(serviceID string, replicas int) {
 	m.autoscalerRecommend.WithLabelValues(serviceID).Set(float64(replicas))
+}
+
+func (m *Server) SetLeaderStatus(controller string, leader bool) {
+	value := 0.0
+	if leader {
+		value = 1
+	}
+	m.leaderStatus.WithLabelValues(controller).Set(value)
+}
+
+func (m *Server) IncLeaderAcquisitionFailure(controller string) {
+	m.leaderFailures.WithLabelValues(controller).Inc()
 }
 
 func (m *Server) add(counter prometheus.Counter, count int) {

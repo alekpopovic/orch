@@ -151,3 +151,15 @@ Integration tests:
 ## MVP Recommendation
 
 Use PostgreSQL advisory locks with one lock per controller. Keep the API active-active and controllers active-passive. Do not introduce etcd yet.
+
+## Implemented MVP
+
+The repository includes `internal/leadership`:
+
+- `LeaderElector` and `Lease` interfaces;
+- a local in-memory elector for deterministic unit tests;
+- a PostgreSQL advisory-lock elector using `pg_try_advisory_lock`;
+- `RunWithLeadership`, which runs a controller only while a lease is held and cancels the controller context when the lease is lost;
+- Prometheus metrics for `controller_leader_status` and `controller_leader_acquisition_failures_total`.
+
+Production wiring should use the PostgreSQL elector with one lock name per controller: `scheduler`, `reconciler`, `rollout`, `node-monitor`, and `autoscaler`.

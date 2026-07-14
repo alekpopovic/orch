@@ -255,3 +255,17 @@ Until server state is wired to PostgreSQL, backups do not preserve live orchestr
 - Roll server and agents separately.
 - Avoid running multiple scheduler/reconciler instances without leader election.
 - Run migrations before deploying binaries that depend on schema changes.
+
+## Controller Leadership
+
+HA deployments should run API servers active-active, but background controllers must be active-passive per controller name. Use the `internal/leadership` PostgreSQL advisory-lock elector when wiring production controllers.
+
+Recommended lock names:
+
+- `scheduler`
+- `reconciler`
+- `rollout`
+- `node-monitor`
+- `autoscaler`
+
+Monitor `controller_leader_status` and `controller_leader_acquisition_failures_total` to confirm exactly one controller leader is active and to detect lock contention or database connectivity issues.

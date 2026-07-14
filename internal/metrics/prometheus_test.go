@@ -31,6 +31,8 @@ func TestServerMetricsExposeExpectedCollectors(t *testing.T) {
 	metrics.IncAutoscalerDecision("scale_up")
 	metrics.IncAutoscalerErrors()
 	metrics.SetAutoscalerRecommendation("svc-1", 4)
+	metrics.SetLeaderStatus("scheduler", true)
+	metrics.IncLeaderAcquisitionFailure("scheduler")
 
 	body := scrape(t, metrics.Handler())
 	for _, want := range []string{
@@ -53,6 +55,8 @@ func TestServerMetricsExposeExpectedCollectors(t *testing.T) {
 		`autoscaler_decisions_total{decision="scale_up"} 1`,
 		"autoscaler_errors_total 1",
 		`autoscaler_recommendation_replicas{service_id="svc-1"} 4`,
+		`controller_leader_status{controller="scheduler"} 1`,
+		`controller_leader_acquisition_failures_total{controller="scheduler"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected scrape to contain %q\n%s", want, body)
