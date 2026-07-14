@@ -419,6 +419,7 @@ type Task struct {
 	ActualStatus  TaskStatus `json:"actual_status"`
 	Image         string     `json:"image"`
 	Version       int64      `json:"version"`
+	Ports         []Port     `json:"ports,omitempty"`
 	RestartCount  int        `json:"restart_count"`
 	FailureReason string     `json:"failure_reason,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`

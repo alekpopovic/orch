@@ -349,14 +349,18 @@ func (s *postgresStore) CreateTask(ctx context.Context, task types.Task) (types.
 	if !types.ValidTaskStatus(task.DesiredStatus) || !types.ValidTaskStatus(task.ActualStatus) {
 		return types.Task{}, fmt.Errorf("%w: task status is invalid", ErrInvalidState)
 	}
+	ports, err := jsonBytes(defaultSlice(task.Ports))
+	if err != nil {
+		return types.Task{}, err
+	}
 	row := s.db.QueryRow(ctx, `
 		INSERT INTO tasks (
 			service_id, node_id, container_id, desired_status, actual_status,
-			image, version, restart_count, failure_reason, started_at, finished_at
+			image, version, ports, restart_count, failure_reason, started_at, finished_at
 		)
-		VALUES ($1, nullif($2, '')::uuid, nullif($3, ''), $4, $5, $6, $7, $8, nullif($9, ''), $10, $11)
+		VALUES ($1, nullif($2, '')::uuid, nullif($3, ''), $4, $5, $6, $7, $8, $9, nullif($10, ''), $11, $12)
 		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, version, ports, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(task.ServiceID),
 		string(task.NodeID),
 		task.ContainerID,
@@ -364,6 +368,7 @@ func (s *postgresStore) CreateTask(ctx context.Context, task types.Task) (types.
 		string(task.ActualStatus),
 		task.Image,
 		task.Version,
+		ports,
 		task.RestartCount,
 		task.FailureReason,
 		nilTime(task.StartedAt),
@@ -393,7 +398,7 @@ func (s *postgresStore) getTask(ctx context.Context, id types.TaskID, forUpdate 
 	return task, nil
 }
 
-func (s *postgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID types.NodeID, expectedUpdatedAt time.Time) (types.Task, error) {
+func (s *postgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID types.NodeID, ports []types.Port, expectedUpdatedAt time.Time) (types.Task, error) {
 	current, err := s.getTask(ctx, id, s.begin == nil)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) && s.begin == nil {
@@ -409,18 +414,24 @@ func (s *postgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID 
 	if err := types.ValidateTaskTransition(current.ActualStatus, types.TaskAssigned); err != nil {
 		return types.Task{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
+	portBytes, err := jsonBytes(defaultSlice(ports))
+	if err != nil {
+		return types.Task{}, err
+	}
 	row := s.db.QueryRow(ctx, `
 		UPDATE tasks
 		SET node_id = $2,
 			actual_status = $3,
+			ports = $4,
 			updated_at = timezone('utc', now()),
 			row_version = row_version + 1
-		WHERE id = $1 AND updated_at = $4 AND actual_status = 'pending'
+		WHERE id = $1 AND updated_at = $5 AND actual_status = 'pending'
 		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, version, ports, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(nodeID),
 		string(types.TaskAssigned),
+		portBytes,
 		expectedUpdatedAt.UTC(),
 	)
 	task, err := scanTask(row)
@@ -451,7 +462,7 @@ func (s *postgresStore) StopTask(ctx context.Context, id types.TaskID, expectedU
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $3 AND desired_status <> $2
 		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, version, ports, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(types.TaskStopped),
 		expectedUpdatedAt.UTC(),
@@ -494,7 +505,7 @@ func (s *postgresStore) UpdateTaskStatus(ctx context.Context, id types.TaskID, d
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $6
 		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, version, ports, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(desired),
 		string(actual),
@@ -816,7 +827,7 @@ func serviceSelectSQL() string {
 
 func taskSelectSQL() string {
 	return `SELECT id, service_id, node_id, container_id, desired_status, actual_status,
-		image, version, restart_count, failure_reason, created_at, updated_at, started_at, finished_at FROM tasks`
+		image, version, ports, restart_count, failure_reason, created_at, updated_at, started_at, finished_at FROM tasks`
 }
 
 func deploymentSelectSQL() string {
@@ -911,6 +922,7 @@ func scanTask(row pgx.Row) (types.Task, error) {
 	var task types.Task
 	var id, serviceID string
 	var nodeID, containerID, failureReason *string
+	var ports []byte
 	var startedAt, finishedAt *time.Time
 	err := row.Scan(
 		&id,
@@ -921,6 +933,7 @@ func scanTask(row pgx.Row) (types.Task, error) {
 		&task.ActualStatus,
 		&task.Image,
 		&task.Version,
+		&ports,
 		&task.RestartCount,
 		&failureReason,
 		&task.CreatedAt,
@@ -941,6 +954,11 @@ func scanTask(row pgx.Row) (types.Task, error) {
 	}
 	if failureReason != nil {
 		task.FailureReason = *failureReason
+	}
+	if len(ports) > 0 {
+		if err := json.Unmarshal(ports, &task.Ports); err != nil {
+			return types.Task{}, err
+		}
 	}
 	task.CreatedAt = task.CreatedAt.UTC()
 	task.UpdatedAt = task.UpdatedAt.UTC()

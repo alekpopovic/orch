@@ -22,6 +22,7 @@ type FakeRuntime struct {
 	byTask             map[string]ContainerID
 	logs               map[ContainerID][]LogLine
 	operations         []FakeOperation
+	createdSpecs       []ContainerSpec
 	pullErr            error
 	createErr          error
 	startErr           error
@@ -143,6 +144,7 @@ func (r *FakeRuntime) CreateContainer(ctx context.Context, spec ContainerSpec) (
 	if id := r.byTask[spec.TaskID]; id != "" {
 		return id, nil
 	}
+	r.createdSpecs = append(r.createdSpecs, cloneContainerSpec(spec))
 	id := r.nextContainerIDLocked()
 	now := time.Now().UTC()
 	labels := fakeManagedLabels(spec)
@@ -361,6 +363,16 @@ func (r *FakeRuntime) OperationStrings() []string {
 	return values
 }
 
+func (r *FakeRuntime) CreatedSpecs() []ContainerSpec {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	specs := make([]ContainerSpec, len(r.createdSpecs))
+	for i, spec := range r.createdSpecs {
+		specs[i] = cloneContainerSpec(spec)
+	}
+	return specs
+}
+
 func (op FakeOperation) String() string {
 	switch op.Name {
 	case "pull":
@@ -423,6 +435,14 @@ func cloneMap(values map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func cloneContainerSpec(spec ContainerSpec) ContainerSpec {
+	spec.Env = cloneMap(spec.Env)
+	spec.Labels = cloneMap(spec.Labels)
+	spec.Ports = append([]PortBinding(nil), spec.Ports...)
+	spec.Command = append([]string(nil), spec.Command...)
+	return spec
 }
 
 var _ Runtime = (*FakeRuntime)(nil)

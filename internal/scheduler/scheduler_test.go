@@ -158,6 +158,79 @@ func TestPlanAssignments(t *testing.T) {
 			},
 			want: []Assignment{{TaskID: "task-a", NodeID: "node-b"}},
 		},
+		{
+			name:  "reject node with fixed host port collision",
+			tasks: []types.Task{pendingTask("task-a", "svc")},
+			nodes: []types.Node{
+				nodeFixture("node-a", types.NodeReady, nil, types.Resources{CPU: 2000, Memory: 2048}),
+				nodeFixture("node-b", types.NodeReady, nil, types.Resources{CPU: 2000, Memory: 2048}),
+			},
+			running: []types.Task{
+				taskWithPorts(runningTask("running-a", "other", "node-a"), []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}}),
+			},
+			services: map[types.ServiceID]types.Service{
+				"svc":   serviceWithPorts("svc", []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}}),
+				"other": serviceFixture("other", types.Resources{CPU: 100, Memory: 128}, nil),
+			},
+			want: []Assignment{{
+				TaskID: "task-a",
+				NodeID: "node-b",
+				Ports:  []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}},
+			}},
+		},
+		{
+			name:  "allow same fixed host port on different nodes",
+			tasks: []types.Task{pendingTask("task-a", "svc")},
+			nodes: []types.Node{
+				nodeFixture("node-a", types.NodeReady, nil, types.Resources{CPU: 2000, Memory: 4096}),
+				nodeFixture("node-b", types.NodeReady, nil, types.Resources{CPU: 2000, Memory: 2048}),
+			},
+			running: []types.Task{
+				taskWithPorts(runningTask("running-a", "other", "node-b"), []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}}),
+			},
+			services: map[types.ServiceID]types.Service{
+				"svc":   serviceWithPorts("svc", []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}}),
+				"other": serviceFixture("other", types.Resources{CPU: 100, Memory: 128}, nil),
+			},
+			want: []Assignment{{
+				TaskID: "task-a",
+				NodeID: "node-a",
+				Ports:  []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}},
+			}},
+		},
+		{
+			name:  "assign dynamic host ports deterministically",
+			tasks: []types.Task{pendingTask("task-a", "svc"), pendingTask("task-b", "svc")},
+			nodes: []types.Node{
+				nodeFixture("node-a", types.NodeReady, nil, types.Resources{CPU: 4000, Memory: 4096}),
+			},
+			services: map[types.ServiceID]types.Service{
+				"svc": serviceWithPorts("svc", []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080}}),
+			},
+			want: []Assignment{
+				{TaskID: "task-a", NodeID: "node-a", Ports: []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: dynamicPortStart}}},
+				{TaskID: "task-b", NodeID: "node-a", Ports: []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: dynamicPortStart + 1}}},
+			},
+		},
+		{
+			name:  "avoid node with previous port allocation failure",
+			tasks: []types.Task{pendingTask("task-a", "svc")},
+			nodes: []types.Node{
+				nodeFixture("node-a", types.NodeReady, nil, types.Resources{CPU: 2000, Memory: 4096}),
+				nodeFixture("node-b", types.NodeReady, nil, types.Resources{CPU: 2000, Memory: 2048}),
+			},
+			running: []types.Task{
+				taskWithPorts(failedPortTask("failed-a", "svc", "node-a"), []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}}),
+			},
+			services: map[types.ServiceID]types.Service{
+				"svc": serviceWithPorts("svc", []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}}),
+			},
+			want: []Assignment{{
+				TaskID: "task-a",
+				NodeID: "node-b",
+				Ports:  []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}},
+			}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -570,7 +643,7 @@ func (s *concurrentAssignmentStore) GetService(context.Context, types.ServiceID)
 	return s.service, nil
 }
 
-func (s *concurrentAssignmentStore) AssignTask(_ context.Context, id types.TaskID, nodeID types.NodeID, expectedUpdatedAt time.Time) (types.Task, error) {
+func (s *concurrentAssignmentStore) AssignTask(_ context.Context, id types.TaskID, nodeID types.NodeID, ports []types.Port, expectedUpdatedAt time.Time) (types.Task, error) {
 	if s.task.ID != id {
 		return types.Task{}, store.ErrNotFound
 	}
@@ -578,6 +651,7 @@ func (s *concurrentAssignmentStore) AssignTask(_ context.Context, id types.TaskI
 		return types.Task{}, store.ErrConflict
 	}
 	s.task.NodeID = nodeID
+	s.task.Ports = ports
 	s.task.ActualStatus = types.TaskAssigned
 	s.task.UpdatedAt = s.task.UpdatedAt.Add(time.Second)
 	return s.task, nil
@@ -613,16 +687,17 @@ func (s *fakeStore) GetService(_ context.Context, id types.ServiceID) (types.Ser
 	return s.services[id], nil
 }
 
-func (s *fakeStore) AssignTask(_ context.Context, id types.TaskID, nodeID types.NodeID, expectedUpdatedAt time.Time) (types.Task, error) {
+func (s *fakeStore) AssignTask(_ context.Context, id types.TaskID, nodeID types.NodeID, ports []types.Port, expectedUpdatedAt time.Time) (types.Task, error) {
 	if s.assignErr != nil {
 		return types.Task{}, s.assignErr
 	}
 	s.assigned = append(s.assigned, Assignment{
 		TaskID:            id,
 		NodeID:            nodeID,
+		Ports:             ports,
 		ExpectedUpdatedAt: expectedUpdatedAt.UTC(),
 	})
-	return types.Task{ID: id, NodeID: nodeID, ActualStatus: types.TaskAssigned}, nil
+	return types.Task{ID: id, NodeID: nodeID, Ports: ports, ActualStatus: types.TaskAssigned}, nil
 }
 
 func (s *fakeStore) AppendEvent(_ context.Context, event types.Event) (types.Event, error) {
@@ -651,6 +726,19 @@ func runningTask(id types.TaskID, serviceID types.ServiceID, nodeID types.NodeID
 	return task
 }
 
+func failedPortTask(id types.TaskID, serviceID types.ServiceID, nodeID types.NodeID) types.Task {
+	task := pendingTask(id, serviceID)
+	task.NodeID = nodeID
+	task.ActualStatus = types.TaskFailed
+	task.FailureReason = "port allocation failed: port is already allocated"
+	return task
+}
+
+func taskWithPorts(task types.Task, ports []types.Port) types.Task {
+	task.Ports = ports
+	return task
+}
+
 func nodeFixture(id types.NodeID, status types.NodeStatus, labels map[string]string, allocatable types.Resources) types.Node {
 	return types.Node{
 		ID:          id,
@@ -675,7 +763,29 @@ func serviceFixture(id types.ServiceID, requests types.Resources, constraints []
 	}
 }
 
+func serviceWithPorts(id types.ServiceID, ports []types.Port) types.Service {
+	service := serviceFixture(id, types.Resources{CPU: 100, Memory: 128}, nil)
+	service.Spec.Ports = ports
+	return service
+}
+
 func assignmentsEqual(left, right []Assignment) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].TaskID != right[i].TaskID ||
+			left[i].NodeID != right[i].NodeID ||
+			!left[i].AssignedAt.Equal(right[i].AssignedAt) ||
+			!left[i].ExpectedUpdatedAt.Equal(right[i].ExpectedUpdatedAt) ||
+			!portsEqual(left[i].Ports, right[i].Ports) {
+			return false
+		}
+	}
+	return true
+}
+
+func portsEqual(left, right []types.Port) bool {
 	if len(left) != len(right) {
 		return false
 	}

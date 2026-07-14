@@ -288,7 +288,7 @@ func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.Node
 		tasks = append(tasks, AgentTask{
 			Task:        task,
 			Healthcheck: service.Spec.Healthcheck,
-			Ports:       service.Spec.Ports,
+			Ports:       taskPortsForAgent(task, service),
 		})
 	}
 	slices.SortFunc(tasks, func(a, b AgentTask) int {
@@ -301,6 +301,13 @@ func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.Node
 		return 0
 	})
 	return tasks, nil
+}
+
+func taskPortsForAgent(task types.Task, service types.Service) []types.Port {
+	if len(task.Ports) > 0 {
+		return append([]types.Port(nil), task.Ports...)
+	}
+	return append([]types.Port(nil), service.Spec.Ports...)
 }
 
 func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusReport) (types.Task, error) {
@@ -1071,6 +1078,7 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 			ActualStatus:  types.TaskAssigned,
 			Image:         service.Spec.Image,
 			Version:       service.DeploymentVersion,
+			Ports:         s.assignPortsForNodeLocked(service.Spec.Ports, node.ID),
 			CreatedAt:     timestamp,
 			UpdatedAt:     timestamp,
 		}
@@ -1093,6 +1101,64 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 
 func countsTowardDesiredReplicas(task types.Task) bool {
 	return types.IsActiveTask(task)
+}
+
+const (
+	memoryDynamicPortStart = 30000
+	memoryDynamicPortEnd   = 32767
+)
+
+func (s *MemoryService) assignPortsForNodeLocked(ports []types.Port, nodeID types.NodeID) []types.Port {
+	if len(ports) == 0 {
+		return nil
+	}
+	assigned := make([]types.Port, 0, len(ports))
+	reserved := s.reservedPortsForNodeLocked(nodeID)
+	for _, port := range ports {
+		candidate := port
+		if candidate.Protocol == "" {
+			candidate.Protocol = types.PortTCP
+		}
+		if candidate.PublishedPort <= 0 {
+			candidate.PublishedPort = firstFreeMemoryPort(candidate.Protocol, reserved)
+		}
+		if candidate.PublishedPort > 0 {
+			reserved[memoryPortKey{protocol: candidate.Protocol, port: candidate.PublishedPort}] = struct{}{}
+		}
+		assigned = append(assigned, candidate)
+	}
+	return assigned
+}
+
+func (s *MemoryService) reservedPortsForNodeLocked(nodeID types.NodeID) map[memoryPortKey]struct{} {
+	reserved := make(map[memoryPortKey]struct{})
+	for _, task := range s.tasks {
+		if task.NodeID != nodeID || !types.IsActiveTask(task) {
+			continue
+		}
+		service := s.services[task.ServiceID]
+		for _, port := range taskPortsForAgent(task, service) {
+			if port.PublishedPort <= 0 {
+				continue
+			}
+			reserved[memoryPortKey{protocol: port.Protocol, port: port.PublishedPort}] = struct{}{}
+		}
+	}
+	return reserved
+}
+
+func firstFreeMemoryPort(protocol types.PortProtocol, reserved map[memoryPortKey]struct{}) int {
+	for port := memoryDynamicPortStart; port <= memoryDynamicPortEnd; port++ {
+		if _, ok := reserved[memoryPortKey{protocol: protocol, port: port}]; !ok {
+			return port
+		}
+	}
+	return 0
+}
+
+type memoryPortKey struct {
+	protocol types.PortProtocol
+	port     int
 }
 
 func (s *MemoryService) hasActiveDeploymentLocked(serviceID types.ServiceID) bool {

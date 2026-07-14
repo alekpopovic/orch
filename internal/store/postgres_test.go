@@ -126,15 +126,20 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		ActualStatus:  types.TaskPending,
 		Image:         service.Spec.Image,
 		Version:       service.DeploymentVersion,
+		Ports:         []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080}},
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	assigned, err := store.AssignTask(ctx, task.ID, updatedNode.ID, task.UpdatedAt)
+	assignedPorts := []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}}
+	assigned, err := store.AssignTask(ctx, task.ID, updatedNode.ID, assignedPorts, task.UpdatedAt)
 	if err != nil {
 		t.Fatalf("assign task: %v", err)
 	}
-	if _, err := store.AssignTask(ctx, task.ID, updatedNode.ID, task.UpdatedAt); !errors.Is(err, ErrConflict) {
+	if !portsEqual(assigned.Ports, assignedPorts) {
+		t.Fatalf("expected assigned ports %#v, got %#v", assignedPorts, assigned.Ports)
+	}
+	if _, err := store.AssignTask(ctx, task.ID, updatedNode.ID, assignedPorts, task.UpdatedAt); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected stale duplicate assignment to conflict, got %v", err)
 	}
 	running, err := store.UpdateTaskStatus(ctx, task.ID, types.TaskRunning, types.TaskRunning, "container-1", "", assigned.UpdatedAt)
@@ -285,7 +290,7 @@ func TestPostgresStoreConcurrentAssignTaskOnce(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		go func() {
 			results <- WithTx(ctx, durable, func(txCtx context.Context, tx Store) error {
-				assigned, err := tx.AssignTask(txCtx, task.ID, node.ID, task.UpdatedAt)
+				assigned, err := tx.AssignTask(txCtx, task.ID, node.ID, nil, task.UpdatedAt)
 				if err != nil {
 					return err
 				}
@@ -372,8 +377,10 @@ func migrate(t *testing.T, ctx context.Context, pool execer) {
 	t.Helper()
 
 	for _, file := range []string{
+		"000002_task_ports.down.sql",
 		"000001_initial_schema.down.sql",
 		"000001_initial_schema.up.sql",
+		"000002_task_ports.up.sql",
 	} {
 		sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", file))
 		if err != nil {
@@ -383,6 +390,18 @@ func migrate(t *testing.T, ctx context.Context, pool execer) {
 			t.Fatalf("apply migration %s: %v", file, err)
 		}
 	}
+}
+
+func portsEqual(left, right []types.Port) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type execer interface {

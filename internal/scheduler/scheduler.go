@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/alekpopovic/orch/internal/events"
@@ -17,13 +18,14 @@ type Store interface {
 	ListNodesByStatus(ctx context.Context, status types.NodeStatus) ([]types.Node, error)
 	ListTasksByNode(ctx context.Context, nodeID types.NodeID) ([]types.Task, error)
 	GetService(ctx context.Context, id types.ServiceID) (types.Service, error)
-	AssignTask(ctx context.Context, id types.TaskID, nodeID types.NodeID, expectedUpdatedAt time.Time) (types.Task, error)
+	AssignTask(ctx context.Context, id types.TaskID, nodeID types.NodeID, ports []types.Port, expectedUpdatedAt time.Time) (types.Task, error)
 	AppendEvent(ctx context.Context, event types.Event) (types.Event, error)
 }
 
 type Assignment struct {
 	TaskID            types.TaskID `json:"task_id"`
 	NodeID            types.NodeID `json:"node_id"`
+	Ports             []types.Port `json:"ports,omitempty"`
 	AssignedAt        time.Time    `json:"assigned_at,omitempty"`
 	ExpectedUpdatedAt time.Time    `json:"expected_updated_at,omitempty"`
 }
@@ -52,6 +54,11 @@ type Metrics interface {
 }
 
 type NoopMetrics struct{}
+
+const (
+	dynamicPortStart = 30000
+	dynamicPortEnd   = 32767
+)
 
 func (NoopMetrics) IncSchedulerRuns() {}
 
@@ -161,7 +168,7 @@ func (s *Scheduler) persistAssignment(ctx context.Context, task types.Task, assi
 	}
 	assigned := false
 	err := store.WithTx(ctx, s.store, func(txCtx context.Context, tx Store) error {
-		assignedTask, err := tx.AssignTask(txCtx, assignment.TaskID, assignment.NodeID, assignment.ExpectedUpdatedAt)
+		assignedTask, err := tx.AssignTask(txCtx, assignment.TaskID, assignment.NodeID, assignment.Ports, assignment.ExpectedUpdatedAt)
 		if err != nil {
 			return err
 		}
@@ -226,7 +233,7 @@ func consumesResources(task types.Task) bool {
 	if task.NodeID == "" {
 		return false
 	}
-	return types.IsActiveTask(task)
+	return types.IsActiveTask(task) || isPortAllocationFailure(task)
 }
 
 func (s *Scheduler) loadServices(ctx context.Context, taskSets ...[]types.Task) (map[types.ServiceID]types.Service, error) {
@@ -263,16 +270,17 @@ func Plan(input PlanInput) []Assignment {
 		if !ok {
 			continue
 		}
-		node, ok := bestNode(task, service, nodes, state)
+		node, ports, ok := bestNode(task, service, nodes, state)
 		if !ok {
 			continue
 		}
 		assignments = append(assignments, Assignment{
 			TaskID:            task.ID,
 			NodeID:            node.ID,
+			Ports:             ports,
 			ExpectedUpdatedAt: task.UpdatedAt.UTC(),
 		})
-		state.addPlanned(node.ID, task.ServiceID, service.Spec.ResourceRequirements.Requests)
+		state.addPlanned(node.ID, task.ServiceID, service.Spec.ResourceRequirements.Requests, ports)
 	}
 	return assignments
 }
@@ -281,6 +289,7 @@ type clusterState struct {
 	usedByNode           map[types.NodeID]types.Resources
 	runningByNode        map[types.NodeID]int
 	runningByNodeService map[types.NodeID]map[types.ServiceID]int
+	portsByNode          map[types.NodeID]map[portKey]struct{}
 }
 
 func newClusterState(nodes []types.Node, runningTasks []types.Task, services map[types.ServiceID]types.Service) *clusterState {
@@ -288,11 +297,13 @@ func newClusterState(nodes []types.Node, runningTasks []types.Task, services map
 		usedByNode:           make(map[types.NodeID]types.Resources, len(nodes)),
 		runningByNode:        make(map[types.NodeID]int, len(nodes)),
 		runningByNodeService: make(map[types.NodeID]map[types.ServiceID]int, len(nodes)),
+		portsByNode:          make(map[types.NodeID]map[portKey]struct{}, len(nodes)),
 	}
 	knownNodes := make(map[types.NodeID]struct{}, len(nodes))
 	for _, node := range nodes {
 		knownNodes[node.ID] = struct{}{}
 		state.runningByNodeService[node.ID] = make(map[types.ServiceID]int)
+		state.portsByNode[node.ID] = make(map[portKey]struct{})
 	}
 	for _, task := range sortedTasks(runningTasks) {
 		if _, ok := knownNodes[task.NodeID]; !ok {
@@ -302,12 +313,26 @@ func newClusterState(nodes []types.Node, runningTasks []types.Task, services map
 		if !ok {
 			continue
 		}
-		state.addPlanned(task.NodeID, task.ServiceID, service.Spec.ResourceRequirements.Requests)
+		state.addExisting(task, service)
 	}
 	return state
 }
 
-func (s *clusterState) addPlanned(nodeID types.NodeID, serviceID types.ServiceID, requests types.Resources) {
+func (s *clusterState) addExisting(task types.Task, service types.Service) {
+	if types.IsActiveTask(task) {
+		s.addResourceUse(task.NodeID, task.ServiceID, service.Spec.ResourceRequirements.Requests)
+	}
+	if types.IsActiveTask(task) || isPortAllocationFailure(task) {
+		s.reservePorts(task.NodeID, portsForTask(task, service))
+	}
+}
+
+func (s *clusterState) addPlanned(nodeID types.NodeID, serviceID types.ServiceID, requests types.Resources, ports []types.Port) {
+	s.addResourceUse(nodeID, serviceID, requests)
+	s.reservePorts(nodeID, ports)
+}
+
+func (s *clusterState) addResourceUse(nodeID types.NodeID, serviceID types.ServiceID, requests types.Resources) {
 	used := s.usedByNode[nodeID]
 	used.CPU += requests.CPU
 	used.Memory += requests.Memory
@@ -319,8 +344,21 @@ func (s *clusterState) addPlanned(nodeID types.NodeID, serviceID types.ServiceID
 	s.runningByNodeService[nodeID][serviceID]++
 }
 
-func bestNode(task types.Task, service types.Service, nodes []types.Node, state *clusterState) (types.Node, bool) {
+func (s *clusterState) reservePorts(nodeID types.NodeID, ports []types.Port) {
+	if s.portsByNode[nodeID] == nil {
+		s.portsByNode[nodeID] = make(map[portKey]struct{})
+	}
+	for _, port := range ports {
+		if port.PublishedPort <= 0 {
+			continue
+		}
+		s.portsByNode[nodeID][newPortKey(port.Protocol, port.PublishedPort)] = struct{}{}
+	}
+}
+
+func bestNode(task types.Task, service types.Service, nodes []types.Node, state *clusterState) (types.Node, []types.Port, bool) {
 	var best types.Node
+	var bestPorts []types.Port
 	var bestScore nodeScore
 	found := false
 	requests := service.Spec.ResourceRequirements.Requests
@@ -328,14 +366,19 @@ func bestNode(task types.Task, service types.Service, nodes []types.Node, state 
 		if !fits(task, service, node, state, requests) {
 			continue
 		}
+		ports, ok := allocatePorts(service.Spec.Ports, node.ID, state)
+		if !ok {
+			continue
+		}
 		score := scoreNode(node, task.ServiceID, state, requests)
 		if !found || score.less(bestScore) {
 			best = node
+			bestPorts = ports
 			bestScore = score
 			found = true
 		}
 	}
-	return best, found
+	return best, bestPorts, found
 }
 
 func fits(_ types.Task, service types.Service, node types.Node, state *clusterState, requests types.Resources) bool {
@@ -346,7 +389,11 @@ func fits(_ types.Task, service types.Service, node types.Node, state *clusterSt
 		return false
 	}
 	free := freeResources(node, state)
-	return free.CPU >= requests.CPU && free.Memory >= requests.Memory
+	if free.CPU < requests.CPU || free.Memory < requests.Memory {
+		return false
+	}
+	_, ok := allocatePorts(service.Spec.Ports, node.ID, state)
+	return ok
 }
 
 type nodeScore struct {
@@ -404,6 +451,83 @@ func placementMatches(constraints []types.PlacementConstraint, labels map[string
 		}
 	}
 	return true
+}
+
+type portKey struct {
+	protocol types.PortProtocol
+	port     int
+}
+
+func allocatePorts(ports []types.Port, nodeID types.NodeID, state *clusterState) ([]types.Port, bool) {
+	if len(ports) == 0 {
+		return nil, true
+	}
+	allocated := make([]types.Port, 0, len(ports))
+	reserved := make(map[portKey]struct{})
+	for _, port := range ports {
+		candidate := port
+		if candidate.Protocol == "" {
+			candidate.Protocol = types.PortTCP
+		}
+		if candidate.PublishedPort > 0 {
+			key := newPortKey(candidate.Protocol, candidate.PublishedPort)
+			if portReserved(nodeID, key, state, reserved) {
+				return nil, false
+			}
+			reserved[key] = struct{}{}
+			allocated = append(allocated, candidate)
+			continue
+		}
+		dynamic, ok := nextDynamicPort(nodeID, candidate.Protocol, state, reserved)
+		if !ok {
+			return nil, false
+		}
+		candidate.PublishedPort = dynamic
+		reserved[newPortKey(candidate.Protocol, dynamic)] = struct{}{}
+		allocated = append(allocated, candidate)
+	}
+	return allocated, true
+}
+
+func nextDynamicPort(nodeID types.NodeID, protocol types.PortProtocol, state *clusterState, planned map[portKey]struct{}) (int, bool) {
+	for port := dynamicPortStart; port <= dynamicPortEnd; port++ {
+		key := newPortKey(protocol, port)
+		if !portReserved(nodeID, key, state, planned) {
+			return port, true
+		}
+	}
+	return 0, false
+}
+
+func portReserved(nodeID types.NodeID, key portKey, state *clusterState, planned map[portKey]struct{}) bool {
+	if _, ok := planned[key]; ok {
+		return true
+	}
+	if state.portsByNode[nodeID] == nil {
+		return false
+	}
+	_, ok := state.portsByNode[nodeID][key]
+	return ok
+}
+
+func newPortKey(protocol types.PortProtocol, port int) portKey {
+	if protocol == "" {
+		protocol = types.PortTCP
+	}
+	return portKey{protocol: protocol, port: port}
+}
+
+func portsForTask(task types.Task, service types.Service) []types.Port {
+	if len(task.Ports) > 0 {
+		return task.Ports
+	}
+	return service.Spec.Ports
+}
+
+func isPortAllocationFailure(task types.Task) bool {
+	return task.NodeID != "" &&
+		task.ActualStatus == types.TaskFailed &&
+		strings.Contains(strings.ToLower(task.FailureReason), "port allocation failed")
 }
 
 func sortedTasks(tasks []types.Task) []types.Task {

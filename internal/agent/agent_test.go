@@ -33,6 +33,7 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 				Image:         "nginx:1.27",
 				Version:       1,
 			},
+			Ports: []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}},
 		}},
 	}
 	runtime := orchdocker.NewFakeRuntime(orchdocker.WithFakeContainerIDs("container-1"))
@@ -49,6 +50,13 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 	wantStatuses := []types.TaskStatus{types.TaskPulling, types.TaskCreated, types.TaskRunning}
 	if !equalStatuses(client.statuses, wantStatuses) {
 		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+	created := runtime.CreatedSpecs()
+	if len(created) != 1 {
+		t.Fatalf("expected one created container spec, got %#v", created)
+	}
+	if len(created[0].Ports) != 1 || created[0].Ports[0].ContainerPort != 8080 || created[0].Ports[0].HostPort != 18080 {
+		t.Fatalf("expected assigned port binding, got %#v", created[0].Ports)
 	}
 }
 
@@ -210,7 +218,7 @@ func TestReconcileAssignedTaskReportsPullAndCreateFailures(t *testing.T) {
 			name:         "create failure",
 			runtime:      orchdocker.NewFakeRuntime(orchdocker.WithFakeCreateFailure(errors.New("port is already allocated"))),
 			wantCalls:    []string{"list", "pull:nginx:1.27", "create:" + string(taskID), "list"},
-			wantReason:   "port is already allocated",
+			wantReason:   "port allocation failed: port is already allocated",
 			wantStatuses: []types.TaskStatus{types.TaskPulling, types.TaskFailed},
 		},
 	}

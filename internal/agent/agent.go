@@ -223,9 +223,10 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 		TaskID:    string(task.ID),
 		NodeID:    string(nodeID),
 		Version:   task.Version,
+		Ports:     dockerPortBindings(assigned.Ports),
 	})
 	if err != nil {
-		_, _ = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, FailureReason: err.Error()})
+		_, _ = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, FailureReason: runtimeFailureReason(err)})
 		return err
 	}
 	if _, err := r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskCreated, ContainerID: string(containerID)}); err != nil {
@@ -243,6 +244,29 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 	assigned.Task.ContainerID = string(containerID)
 	assigned.Task.ActualStatus = types.TaskRunning
 	return r.checkTaskHealth(ctx, nodeID, assigned, orchdocker.ContainerStatus{ID: containerID, Running: true})
+}
+
+func dockerPortBindings(ports []types.Port) []orchdocker.PortBinding {
+	bindings := make([]orchdocker.PortBinding, 0, len(ports))
+	for _, port := range ports {
+		bindings = append(bindings, orchdocker.PortBinding{
+			ContainerPort: port.ContainerPort,
+			HostPort:      port.PublishedPort,
+			Protocol:      string(port.Protocol),
+		})
+	}
+	return bindings
+}
+
+func runtimeFailureReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	if strings.Contains(strings.ToLower(message), "port") && strings.Contains(strings.ToLower(message), "allocated") {
+		return "port allocation failed: " + message
+	}
+	return message
 }
 
 func (r *Runner) currentTaskContainer(ctx context.Context, nodeID types.NodeID, task types.Task) (orchdocker.ContainerStatus, bool, error) {

@@ -1,0 +1,2 @@
+ALTER TABLE tasks
+    ADD COLUMN ports JSONB NOT NULL DEFAULT '[]'::jsonb;
