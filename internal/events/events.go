@@ -18,6 +18,8 @@ const (
 	TypeServiceDeleted         = "service.deleted"
 	TypeServiceDeletionStarted = "service.deletion.started"
 	TypeServiceScaled          = "service.scaled"
+	TypeSecretCreated          = "secret.created"
+	TypeSecretDeleted          = "secret.deleted"
 	TypeRolloutStarted         = "service.rollout.started"
 	TypeRollbackStarted        = "service.rollback.started"
 	TypeTaskAssigned           = "task.assigned"

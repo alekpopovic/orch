@@ -34,6 +34,7 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 				Version:       1,
 			},
 			Ports: []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}},
+			Env:   map[string]string{"DATABASE_URL": "postgres://secret"},
 		}},
 	}
 	runtime := orchdocker.NewFakeRuntime(orchdocker.WithFakeContainerIDs("container-1"))
@@ -46,6 +47,10 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 	wantRuntimeCalls := []string{"list", "pull:nginx:1.27", "create:" + string(taskID), "start:container-1", "list"}
 	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
 		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
+	}
+	specs := runtime.CreatedSpecs()
+	if len(specs) != 1 || specs[0].Env["DATABASE_URL"] != "postgres://secret" {
+		t.Fatalf("expected secret env in container spec, got %#v", specs)
 	}
 	wantStatuses := []types.TaskStatus{types.TaskPulling, types.TaskCreated, types.TaskRunning}
 	if !equalStatuses(client.statuses, wantStatuses) {

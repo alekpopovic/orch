@@ -138,6 +138,10 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux.HandleFunc("GET /v1/nodes/{id}", server.getNode)
 	mux.HandleFunc("POST /v1/nodes/{id}/drain", server.drainNode)
 	mux.HandleFunc("POST /v1/nodes/{id}/uncordon", server.uncordonNode)
+	mux.HandleFunc("POST /v1/secrets", server.createSecret)
+	mux.HandleFunc("GET /v1/secrets", server.listSecrets)
+	mux.HandleFunc("GET /v1/secrets/{name...}", server.getSecret)
+	mux.HandleFunc("DELETE /v1/secrets/{name...}", server.deleteSecret)
 	mux.HandleFunc("POST /v1/services", server.createService)
 	mux.HandleFunc("GET /v1/services", server.listServices)
 	mux.HandleFunc("GET /v1/services/{id}", server.getService)
@@ -217,6 +221,19 @@ type AgentTaskStatusRequest struct {
 
 type NodeResponse struct {
 	Node types.Node `json:"node"`
+}
+
+type CreateSecretRequest struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type SecretResponse struct {
+	Secret types.SecretMetadata `json:"secret"`
+}
+
+type ListSecretsResponse struct {
+	Secrets []types.SecretMetadata `json:"secrets"`
 }
 
 type CreateServiceRequest struct {
@@ -442,6 +459,59 @@ func (s *Server) uncordonNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, NodeResponse{Node: node})
+}
+
+func (s *Server) createSecret(w http.ResponseWriter, r *http.Request) {
+	var req CreateSecretRequest
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		s.writeError(w, r, fmt.Errorf("%w: secret name is required", store.ErrInvalidState))
+		return
+	}
+	secret, err := s.controlPlane.CreateSecret(r.Context(), req.Name, req.Value)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, SecretResponse{Secret: secret})
+}
+
+func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
+	secrets, err := s.controlPlane.ListSecrets(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ListSecretsResponse{Secrets: secrets})
+}
+
+func (s *Server) getSecret(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		s.writeError(w, r, fmt.Errorf("%w: secret name is required", store.ErrInvalidState))
+		return
+	}
+	secret, err := s.controlPlane.GetSecret(r.Context(), name)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, SecretResponse{Secret: secret})
+}
+
+func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		s.writeError(w, r, fmt.Errorf("%w: secret name is required", store.ErrInvalidState))
+		return
+	}
+	if err := s.controlPlane.DeleteSecret(r.Context(), name); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
@@ -818,6 +888,8 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 		switch {
 		case path == "/v1/nodes" || strings.HasPrefix(path, "/v1/nodes/"):
 			return auth.RoleViewer, true
+		case path == "/v1/secrets" || strings.HasPrefix(path, "/v1/secrets/"):
+			return auth.RoleViewer, true
 		case path == "/v1/services" || strings.HasPrefix(path, "/v1/services/"):
 			return auth.RoleViewer, true
 		case path == "/v1/tasks" || strings.HasPrefix(path, "/v1/tasks/"):
@@ -838,9 +910,14 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 		switch {
 		case strings.HasSuffix(path, "/drain") || strings.HasSuffix(path, "/uncordon"):
 			return auth.RoleAdmin, true
+		case path == "/v1/secrets":
+			return auth.RoleOperator, true
 		case path == "/v1/services" || strings.Contains(path, "/scale") || strings.Contains(path, "/rollout") || strings.Contains(path, "/rollback"):
 			return auth.RoleOperator, true
 		}
+	}
+	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/secrets/") {
+		return auth.RoleOperator, true
 	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/services/") {
 		return auth.RoleOperator, true
@@ -933,6 +1010,10 @@ func metricRoute(method string, path string) (string, bool) {
 		return "/v1/nodes/{id}/uncordon", true
 	case strings.HasPrefix(path, "/v1/nodes/"):
 		return "/v1/nodes/{id}", true
+	case path == "/v1/secrets":
+		return "/v1/secrets", true
+	case strings.HasPrefix(path, "/v1/secrets/"):
+		return "/v1/secrets/{name}", true
 	case path == "/v1/services":
 		return "/v1/services", true
 	case strings.HasPrefix(path, "/v1/services/") && strings.HasSuffix(path, "/scale"):

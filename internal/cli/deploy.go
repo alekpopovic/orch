@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,7 +16,7 @@ type DeployFile struct {
 	Image       string            `yaml:"image"`
 	Replicas    int               `yaml:"replicas"`
 	Ports       []DeployPort      `yaml:"ports"`
-	Env         map[string]string `yaml:"env"`
+	Env         DeployEnv         `yaml:"env"`
 	Resources   DeployResources   `yaml:"resources"`
 	Healthcheck DeployHealthcheck `yaml:"healthcheck"`
 	Restart     DeployRestart     `yaml:"restart"`
@@ -26,6 +27,34 @@ type DeployFile struct {
 type DeployPort struct {
 	Container int `yaml:"container"`
 	Public    int `yaml:"public"`
+}
+
+type DeployEnv map[string]DeployEnvValue
+
+type DeployEnvValue struct {
+	Value     string
+	SecretRef string
+}
+
+func (value *DeployEnvValue) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		value.Value = node.Value
+		return nil
+	case yaml.MappingNode:
+		var raw struct {
+			Value     string `yaml:"value"`
+			SecretRef string `yaml:"secretRef"`
+		}
+		if err := node.Decode(&raw); err != nil {
+			return err
+		}
+		value.Value = raw.Value
+		value.SecretRef = raw.SecretRef
+		return nil
+	default:
+		return fmt.Errorf("env value must be a scalar or mapping")
+	}
 }
 
 type DeployResources struct {
@@ -80,7 +109,6 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 		Name:     strings.TrimSpace(deploy.Name),
 		Image:    strings.TrimSpace(deploy.Image),
 		Replicas: deploy.Replicas,
-		Env:      deploy.Env,
 		ResourceRequirements: types.ResourceRequirements{
 			Requests: requests,
 			Limits:   requests,
@@ -88,6 +116,7 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 		RestartPolicy:        restartPolicy(deploy.Restart.Policy),
 		PlacementConstraints: placementConstraints(deploy.Placement.Labels),
 	}
+	spec.Env, spec.SecretRefs = deploy.Env.toDomain()
 
 	for _, port := range deploy.Ports {
 		spec.Ports = append(spec.Ports, types.Port{
@@ -124,6 +153,32 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 		return types.ServiceSpec{}, fmt.Errorf("invalid deploy file: %w", err)
 	}
 	return spec, nil
+}
+
+func (env DeployEnv) toDomain() (map[string]string, []types.SecretRef) {
+	if len(env) == 0 {
+		return nil, nil
+	}
+	literals := make(map[string]string)
+	refs := make([]types.SecretRef, 0)
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		name := strings.TrimSpace(key)
+		value := env[key]
+		if strings.TrimSpace(value.SecretRef) != "" {
+			refs = append(refs, types.SecretRef{Name: strings.TrimSpace(value.SecretRef), Env: name})
+			continue
+		}
+		literals[name] = value.Value
+	}
+	if len(literals) == 0 {
+		literals = nil
+	}
+	return literals, refs
 }
 
 func (r DeployResources) toRequests() (types.Resources, error) {

@@ -15,6 +15,7 @@ type ServerConfig struct {
 	BootstrapToken      string
 	JWTSecret           string
 	Users               string
+	SecretKey           string
 	GracefulShutdownTTL time.Duration
 }
 
@@ -39,6 +40,7 @@ func LoadServer() ServerConfig {
 		BootstrapToken:      getenv("ORCH_AGENT_REGISTRATION_TOKEN", getenv("ORCH_BOOTSTRAP_TOKEN", "dev-bootstrap-token")),
 		JWTSecret:           getenv("ORCH_JWT_SECRET", ""),
 		Users:               getenv("ORCH_USERS", ""),
+		SecretKey:           getenv("ORCH_SECRET_KEY", "dev-secret-key-change-me"),
 		GracefulShutdownTTL: durationFromEnv("ORCH_SHUTDOWN_TIMEOUT", 10*time.Second),
 	}
 }
@@ -113,6 +115,9 @@ func (cfg ServerConfig) Validate() error {
 	}
 	if cfg.GracefulShutdownTTL <= 0 {
 		return fmt.Errorf("shutdown timeout must be positive")
+	}
+	if strings.TrimSpace(cfg.SecretKey) == "" {
+		return fmt.Errorf("secret encryption key is required")
 	}
 	return nil
 }

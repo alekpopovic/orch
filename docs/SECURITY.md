@@ -67,7 +67,7 @@ Recommended controls:
 
 ## Secret Handling
 
-Service specs support secret references, not plaintext secret storage. Do not put secret values in service env vars, deploy YAML, logs, or events.
+Service specs support secret references for environment variables. Secret values are encrypted at rest with the local envelope provider and are returned to agents only in assigned task payloads when needed to start containers. Do not put secret values in service names, labels, route hostnames, logs, or events.
 
 Roadmap:
 

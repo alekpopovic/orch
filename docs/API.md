@@ -74,7 +74,7 @@ curl -X POST http://localhost:8080/v1/services \
       "image": "nginx:1.27",
       "replicas": 2,
       "env": {"APP_ENV": "local"},
-      "secret_refs": [{"name": "registry-creds", "key": "password"}],
+      "secret_refs": [{"name": "prod/database-url", "env": "DATABASE_URL"}],
       "ports": [{"protocol": "tcp", "container_port": 8080, "published_port": 18080}],
       "routes": [{"host": "web.localhost", "path_prefix": "/", "port": 8080, "tls": false}],
       "resource_requirements": {
@@ -132,6 +132,20 @@ curl -X POST http://localhost:8080/v1/services/{service_id}/rollback
 ```
 
 Resource values are normalized to CPU millicores and memory bytes. The CLI deploy parser accepts strings such as `500m`, `2.5`, `512Mi`, and `1Gi`.
+
+## Secrets
+
+```sh
+curl -X POST http://localhost:8080/v1/secrets \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"prod/database-url","value":"postgres://user:pass@db/app"}'
+
+curl http://localhost:8080/v1/secrets
+curl http://localhost:8080/v1/secrets/prod%2Fdatabase-url
+curl -X DELETE http://localhost:8080/v1/secrets/prod%2Fdatabase-url
+```
+
+Secret GET responses include metadata only and never return plaintext. Services can reference secrets with `secret_refs`, and agents receive decrypted values only in assigned task payloads. See [SECRETS.md](SECRETS.md).
 
 ## Service Discovery
 

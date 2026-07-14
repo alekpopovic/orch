@@ -383,12 +383,14 @@ func migrate(t *testing.T, ctx context.Context, pool execer) {
 	t.Helper()
 
 	for _, file := range []string{
+		"000004_secrets.down.sql",
 		"000003_service_routes.down.sql",
 		"000002_task_ports.down.sql",
 		"000001_initial_schema.down.sql",
 		"000001_initial_schema.up.sql",
 		"000002_task_ports.up.sql",
 		"000003_service_routes.up.sql",
+		"000004_secrets.up.sql",
 	} {
 		sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", file))
 		if err != nil {

@@ -181,6 +181,11 @@ func (spec ServiceSpec) Validate() error {
 			return fmt.Errorf("ports[%d]: %w", i, err)
 		}
 	}
+	for i, ref := range spec.SecretRefs {
+		if err := ref.Validate(); err != nil {
+			return fmt.Errorf("secret_refs[%d]: %w", i, err)
+		}
+	}
 	if spec.Healthcheck != nil {
 		if err := spec.Healthcheck.Validate(); err != nil {
 			return err
@@ -207,6 +212,51 @@ func (spec ServiceSpec) Validate() error {
 type SecretRef struct {
 	Name string `json:"name"`
 	Key  string `json:"key,omitempty"`
+	Env  string `json:"env,omitempty"`
+}
+
+func (ref SecretRef) Validate() error {
+	if strings.TrimSpace(ref.Name) == "" {
+		return fmt.Errorf("secret name is required")
+	}
+	if strings.TrimSpace(ref.EnvName()) == "" {
+		return fmt.Errorf("secret env name is required")
+	}
+	return nil
+}
+
+func (ref SecretRef) EnvName() string {
+	if strings.TrimSpace(ref.Env) != "" {
+		return strings.TrimSpace(ref.Env)
+	}
+	if strings.TrimSpace(ref.Key) != "" {
+		return strings.TrimSpace(ref.Key)
+	}
+	return strings.TrimSpace(ref.Name)
+}
+
+type Secret struct {
+	Name           string    `json:"name"`
+	EncryptedValue []byte    `json:"-"`
+	KeyID          string    `json:"key_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (secret Secret) Metadata() SecretMetadata {
+	return SecretMetadata{
+		Name:      secret.Name,
+		KeyID:     secret.KeyID,
+		CreatedAt: secret.CreatedAt.UTC(),
+		UpdatedAt: secret.UpdatedAt.UTC(),
+	}
+}
+
+type SecretMetadata struct {
+	Name      string    `json:"name"`
+	KeyID     string    `json:"key_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Port struct {

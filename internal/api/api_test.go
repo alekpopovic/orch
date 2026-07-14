@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +142,97 @@ func TestDrainNode(t *testing.T) {
 	decodeResponse(t, rec, &body)
 	if body.Node.Status != "draining" {
 		t.Fatalf("expected node to be draining, got %q", body.Node.Status)
+	}
+}
+
+func TestSecretsCreateRetrieveMetadataAndRedactPlaintext(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithBootstrapToken("secret"))
+	const secretValue = "postgres://user:pass@db/app"
+
+	create := doRequest(t, handler, http.MethodPost, "/v1/secrets", CreateSecretRequest{
+		Name:  "prod/database-url",
+		Value: secretValue,
+	})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, create.Code, create.Body.String())
+	}
+	if strings.Contains(create.Body.String(), secretValue) {
+		t.Fatalf("create response leaked secret plaintext: %s", create.Body.String())
+	}
+	var created SecretResponse
+	decodeResponse(t, create, &created)
+	if created.Secret.Name != "prod/database-url" || created.Secret.CreatedAt.IsZero() {
+		t.Fatalf("unexpected secret metadata %#v", created.Secret)
+	}
+
+	get := doRequest(t, handler, http.MethodGet, "/v1/secrets/"+url.PathEscape("prod/database-url"), nil)
+	if get.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, get.Code, get.Body.String())
+	}
+	if strings.Contains(get.Body.String(), secretValue) {
+		t.Fatalf("get response leaked secret plaintext: %s", get.Body.String())
+	}
+	var got SecretResponse
+	decodeResponse(t, get, &got)
+	if got.Secret.Name != created.Secret.Name {
+		t.Fatalf("expected secret %q, got %q", created.Secret.Name, got.Secret.Name)
+	}
+
+	list := doRequest(t, handler, http.MethodGet, "/v1/secrets", nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, list.Code, list.Body.String())
+	}
+	if strings.Contains(list.Body.String(), secretValue) {
+		t.Fatalf("list response leaked secret plaintext: %s", list.Body.String())
+	}
+	events := doRequest(t, handler, http.MethodGet, "/v1/events?type=secret.created", nil)
+	if events.Code != http.StatusOK {
+		t.Fatalf("expected events status %d, got %d: %s", http.StatusOK, events.Code, events.Body.String())
+	}
+	if strings.Contains(events.Body.String(), secretValue) {
+		t.Fatalf("event response leaked secret plaintext: %s", events.Body.String())
+	}
+}
+
+func TestSecretInjectedIntoAgentTaskEnv(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithBootstrapToken("secret"))
+	registered := registerTestNode(t, handler)
+	const secretValue = "postgres://user:pass@db/app"
+	createSecret := doRequest(t, handler, http.MethodPost, "/v1/secrets", CreateSecretRequest{
+		Name:  "prod/database-url",
+		Value: secretValue,
+	})
+	if createSecret.Code != http.StatusCreated {
+		t.Fatalf("expected secret status %d, got %d: %s", http.StatusCreated, createSecret.Code, createSecret.Body.String())
+	}
+	createService := doRequest(t, handler, http.MethodPost, "/v1/services", `{
+		"spec": {
+			"name": "secret-api",
+			"image": "nginx:1.27",
+			"replicas": 1,
+			"env": {"NODE_ENV": "production"},
+			"secret_refs": [{"name": "prod/database-url", "env": "DATABASE_URL"}],
+			"resource_requirements": {"requests": {}, "limits": {}}
+		}
+	}`)
+	if createService.Code != http.StatusCreated {
+		t.Fatalf("expected service status %d, got %d: %s", http.StatusCreated, createService.Code, createService.Body.String())
+	}
+
+	list := doAgentCredentialRequest(t, handler, http.MethodGet, "/v1/agent/tasks?node_id="+string(registered.Node.ID), nil, registered.Credential.Token)
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected tasks status %d, got %d: %s", http.StatusOK, list.Code, list.Body.String())
+	}
+	var tasks AgentTasksResponse
+	decodeResponse(t, list, &tasks)
+	if len(tasks.Tasks) != 1 {
+		t.Fatalf("expected one assigned task, got %#v", tasks.Tasks)
+	}
+	if tasks.Tasks[0].Env["DATABASE_URL"] != secretValue {
+		t.Fatalf("expected secret env to be injected, got %#v", tasks.Tasks[0].Env)
+	}
+	if tasks.Tasks[0].Env["NODE_ENV"] != "production" {
+		t.Fatalf("expected literal env to be preserved, got %#v", tasks.Tasks[0].Env)
 	}
 }
 

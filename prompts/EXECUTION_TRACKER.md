@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `36-traefik-integration.md`
-- Last matching commit: `ea0760e Add optional Traefik integration`
-- Completed prompt range: `00` through `36`
-- Next prompt to execute: `37-secrets-mvp.md`
+- Last executed prompt: `37-secrets-mvp.md`
+- Last matching commit: `same commit: Add secrets MVP`
+- Completed prompt range: `00` through `37`
+- Next prompt to execute: `38-image-registry-authentication.md`
 - Updated: `2026-07-14`
 
 ## Update Rule

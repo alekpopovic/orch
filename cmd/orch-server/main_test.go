@@ -17,6 +17,7 @@ func TestServerStartsAndStopsCleanly(t *testing.T) {
 			Addr:                "127.0.0.1:0",
 			DatabaseURL:         "postgres://orch:orch@localhost:5432/orch?sslmode=disable",
 			BootstrapToken:      "test-registration-token",
+			SecretKey:           "test-secret-key",
 			GracefulShutdownTTL: time.Second,
 		})
 	}()

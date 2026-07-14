@@ -47,12 +47,20 @@ type EventStore interface {
 	ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error)
 }
 
+type SecretStore interface {
+	CreateSecret(ctx context.Context, secret types.Secret) (types.Secret, error)
+	GetSecret(ctx context.Context, name string) (types.Secret, error)
+	ListSecrets(ctx context.Context) ([]types.Secret, error)
+	DeleteSecret(ctx context.Context, name string) error
+}
+
 type Store interface {
 	NodeStore
 	ServiceStore
 	TaskStore
 	DeploymentStore
 	EventStore
+	SecretStore
 }
 
 // TxFunc runs a set of store operations inside one transaction boundary.

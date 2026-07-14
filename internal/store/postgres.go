@@ -339,6 +339,85 @@ func (s *postgresStore) UpdateServiceStatus(ctx context.Context, id types.Servic
 	return service, nil
 }
 
+func (s *postgresStore) CreateSecret(ctx context.Context, secret types.Secret) (types.Secret, error) {
+	secret.Name = strings.TrimSpace(secret.Name)
+	if secret.Name == "" {
+		return types.Secret{}, fmt.Errorf("%w: secret name is required", ErrInvalidState)
+	}
+	if len(secret.EncryptedValue) == 0 {
+		return types.Secret{}, fmt.Errorf("%w: encrypted secret value is required", ErrInvalidState)
+	}
+	if strings.TrimSpace(secret.KeyID) == "" {
+		return types.Secret{}, fmt.Errorf("%w: secret key id is required", ErrInvalidState)
+	}
+	row := s.db.QueryRow(ctx, `
+		INSERT INTO secrets (name, encrypted_value, key_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (name) DO UPDATE
+		SET encrypted_value = EXCLUDED.encrypted_value,
+			key_id = EXCLUDED.key_id,
+			updated_at = timezone('utc', now())
+		RETURNING name, encrypted_value, key_id, created_at, updated_at`,
+		secret.Name,
+		secret.EncryptedValue,
+		secret.KeyID,
+	)
+	created, err := scanSecret(row)
+	if err != nil {
+		return types.Secret{}, mapPostgresError(err)
+	}
+	return created, nil
+}
+
+func (s *postgresStore) GetSecret(ctx context.Context, name string) (types.Secret, error) {
+	row := s.db.QueryRow(ctx, `
+		SELECT name, encrypted_value, key_id, created_at, updated_at
+		FROM secrets
+		WHERE name = $1`,
+		strings.TrimSpace(name),
+	)
+	secret, err := scanSecret(row)
+	if err != nil {
+		return types.Secret{}, mapPostgresError(err)
+	}
+	return secret, nil
+}
+
+func (s *postgresStore) ListSecrets(ctx context.Context) ([]types.Secret, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT name, encrypted_value, key_id, created_at, updated_at
+		FROM secrets
+		ORDER BY name`)
+	if err != nil {
+		return nil, mapPostgresError(err)
+	}
+	defer rows.Close()
+
+	secrets := make([]types.Secret, 0)
+	for rows.Next() {
+		secret, err := scanSecret(rows)
+		if err != nil {
+			return nil, mapPostgresError(err)
+		}
+		secrets = append(secrets, secret)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapPostgresError(err)
+	}
+	return secrets, nil
+}
+
+func (s *postgresStore) DeleteSecret(ctx context.Context, name string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM secrets WHERE name = $1`, strings.TrimSpace(name))
+	if err != nil {
+		return mapPostgresError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *postgresStore) CreateTask(ctx context.Context, task types.Task) (types.Task, error) {
 	if task.DesiredStatus == "" {
 		task.DesiredStatus = types.TaskRunning
@@ -973,6 +1052,24 @@ func scanTask(row pgx.Row) (types.Task, error) {
 		task.FinishedAt = finishedAt.UTC()
 	}
 	return task, nil
+}
+
+func scanSecret(row pgx.Row) (types.Secret, error) {
+	var secret types.Secret
+	err := row.Scan(
+		&secret.Name,
+		&secret.EncryptedValue,
+		&secret.KeyID,
+		&secret.CreatedAt,
+		&secret.UpdatedAt,
+	)
+	if err != nil {
+		return types.Secret{}, err
+	}
+	secret.EncryptedValue = append([]byte(nil), secret.EncryptedValue...)
+	secret.CreatedAt = secret.CreatedAt.UTC()
+	secret.UpdatedAt = secret.UpdatedAt.UTC()
+	return secret, nil
 }
 
 func scanDeployment(row pgx.Row) (types.Deployment, error) {

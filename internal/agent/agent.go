@@ -223,6 +223,7 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 		TaskID:    string(task.ID),
 		NodeID:    string(nodeID),
 		Version:   task.Version,
+		Env:       assigned.Env,
 		Ports:     dockerPortBindings(assigned.Ports),
 	})
 	if err != nil {

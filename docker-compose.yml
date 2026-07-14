@@ -27,6 +27,7 @@ services:
       ORCH_SERVER_ADDR: :8080
       ORCH_AGENT_REGISTRATION_TOKEN: ${ORCH_AGENT_REGISTRATION_TOKEN:-dev-registration-token}
       ORCH_JWT_SECRET: ""
+      ORCH_SECRET_KEY: ${ORCH_SECRET_KEY:-dev-secret-key-change-me}
       ORCH_LOG_LEVEL: ${ORCH_LOG_LEVEL:-info}
     ports:
       - "8080:8080"

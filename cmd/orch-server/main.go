@@ -17,6 +17,7 @@ import (
 	"github.com/alekpopovic/orch/internal/logging"
 	"github.com/alekpopovic/orch/internal/metrics"
 	"github.com/alekpopovic/orch/internal/rollout"
+	"github.com/alekpopovic/orch/internal/secrets"
 )
 
 func main() {
@@ -40,7 +41,11 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 		return err
 	}
 
-	controlPlane := controlplane.NewMemoryService()
+	envelope, err := secrets.NewLocalEnvelope(cfg.SecretKey)
+	if err != nil {
+		return err
+	}
+	controlPlane := controlplane.NewMemoryService(controlplane.WithSecretEnvelope(envelope))
 	serverMetrics := metrics.NewServer()
 	rolloutController := rollout.NewController(controlPlane, logger, rollout.WithMetrics(serverMetrics))
 	go func() {

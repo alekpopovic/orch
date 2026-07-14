@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/secrets"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -26,6 +27,10 @@ type Service interface {
 	GetNode(ctx context.Context, id types.NodeID) (types.Node, error)
 	DrainNode(ctx context.Context, id types.NodeID) (types.Node, error)
 	UncordonNode(ctx context.Context, id types.NodeID) (types.Node, error)
+	CreateSecret(ctx context.Context, name string, plaintext string) (types.SecretMetadata, error)
+	ListSecrets(ctx context.Context) ([]types.SecretMetadata, error)
+	GetSecret(ctx context.Context, name string) (types.SecretMetadata, error)
+	DeleteSecret(ctx context.Context, name string) error
 	CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error)
 	ListServices(ctx context.Context) ([]types.Service, error)
 	GetService(ctx context.Context, id types.ServiceID) (types.Service, error)
@@ -70,6 +75,7 @@ type AgentTask struct {
 	Task        types.Task         `json:"task"`
 	Healthcheck *types.Healthcheck `json:"healthcheck,omitempty"`
 	Ports       []types.Port       `json:"ports,omitempty"`
+	Env         map[string]string  `json:"env,omitempty"`
 }
 
 type TaskStatusReport struct {
@@ -99,20 +105,39 @@ type MemoryService struct {
 	versions    map[types.ServiceID]map[int64]types.ServiceSpec
 	tasks       map[types.TaskID]types.Task
 	deployments map[types.DeploymentID]types.Deployment
+	secrets     map[string]types.Secret
+	envelope    secrets.Envelope
 	events      []types.Event
 	now         func() time.Time
 }
 
-func NewMemoryService() *MemoryService {
+type Option func(*MemoryService)
+
+func WithSecretEnvelope(envelope secrets.Envelope) Option {
+	return func(service *MemoryService) {
+		if envelope != nil {
+			service.envelope = envelope
+		}
+	}
+}
+
+func NewMemoryService(opts ...Option) *MemoryService {
 	now := func() time.Time { return time.Now().UTC() }
-	return &MemoryService{
+	envelope, _ := secrets.NewLocalEnvelope("dev-secret-key-change-me")
+	service := &MemoryService{
 		nodes:       make(map[types.NodeID]types.Node),
 		services:    make(map[types.ServiceID]types.Service),
 		versions:    make(map[types.ServiceID]map[int64]types.ServiceSpec),
 		tasks:       make(map[types.TaskID]types.Task),
 		deployments: make(map[types.DeploymentID]types.Deployment),
+		secrets:     make(map[string]types.Secret),
+		envelope:    envelope,
 		now:         now,
 	}
+	for _, opt := range opts {
+		opt(service)
+	}
+	return service
 }
 
 func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error) {
@@ -285,10 +310,15 @@ func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.Node
 			continue
 		}
 		service := s.services[task.ServiceID]
+		env, err := s.resolveEnvLocked(ctx, service.Spec)
+		if err != nil {
+			return nil, err
+		}
 		tasks = append(tasks, AgentTask{
 			Task:        task,
 			Healthcheck: service.Spec.Healthcheck,
 			Ports:       taskPortsForAgent(task, service),
+			Env:         env,
 		})
 	}
 	slices.SortFunc(tasks, func(a, b AgentTask) int {
@@ -308,6 +338,39 @@ func taskPortsForAgent(task types.Task, service types.Service) []types.Port {
 		return append([]types.Port(nil), task.Ports...)
 	}
 	return append([]types.Port(nil), service.Spec.Ports...)
+}
+
+func (s *MemoryService) resolveEnvLocked(ctx context.Context, spec types.ServiceSpec) (map[string]string, error) {
+	env := cloneStringMap(spec.Env)
+	for _, ref := range spec.SecretRefs {
+		secret, ok := s.secrets[strings.TrimSpace(ref.Name)]
+		if !ok {
+			return nil, fmt.Errorf("%w: referenced secret %q not found", store.ErrInvalidState, ref.Name)
+		}
+		if s.envelope == nil {
+			return nil, fmt.Errorf("%w: secret envelope is not configured", store.ErrInvalidState)
+		}
+		plaintext, err := s.envelope.Decrypt(ctx, secrets.Ciphertext{KeyID: secret.KeyID, Data: secret.EncryptedValue})
+		if err != nil {
+			return nil, fmt.Errorf("%w: decrypt secret %q", store.ErrInvalidState, ref.Name)
+		}
+		env[ref.EnvName()] = string(plaintext)
+	}
+	if len(env) == 0 {
+		return nil, nil
+	}
+	return env, nil
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return map[string]string{}
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusReport) (types.Task, error) {
@@ -427,6 +490,99 @@ func (s *MemoryService) UncordonNode(ctx context.Context, id types.NodeID) (type
 	return s.setNodeStatus(ctx, id, types.NodeReady)
 }
 
+func (s *MemoryService) CreateSecret(ctx context.Context, name string, plaintext string) (types.SecretMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return types.SecretMetadata{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return types.SecretMetadata{}, fmt.Errorf("%w: secret name is required", store.ErrInvalidState)
+	}
+	if s.envelope == nil {
+		return types.SecretMetadata{}, fmt.Errorf("%w: secret envelope is not configured", store.ErrInvalidState)
+	}
+	ciphertext, err := s.envelope.Encrypt(ctx, []byte(plaintext))
+	if err != nil {
+		return types.SecretMetadata{}, fmt.Errorf("encrypt secret %q: %w", name, err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now()
+	if existing, ok := s.secrets[name]; ok {
+		existing.EncryptedValue = append([]byte(nil), ciphertext.Data...)
+		existing.KeyID = ciphertext.KeyID
+		existing.UpdatedAt = now
+		s.secrets[name] = existing
+		return existing.Metadata(), nil
+	}
+	secret := types.Secret{
+		Name:           name,
+		EncryptedValue: append([]byte(nil), ciphertext.Data...),
+		KeyID:          ciphertext.KeyID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	s.secrets[name] = secret
+	s.appendEventLocked(events.TypeSecretCreated, types.EventInfo, "controlplane", "secret created", "secret", "", now)
+	return secret.Metadata(), nil
+}
+
+func (s *MemoryService) ListSecrets(ctx context.Context) ([]types.SecretMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	items := make([]types.SecretMetadata, 0, len(s.secrets))
+	for _, secret := range s.secrets {
+		items = append(items, secret.Metadata())
+	}
+	slices.SortFunc(items, func(a, b types.SecretMetadata) int {
+		if a.Name < b.Name {
+			return -1
+		}
+		if a.Name > b.Name {
+			return 1
+		}
+		return 0
+	})
+	return items, nil
+}
+
+func (s *MemoryService) GetSecret(ctx context.Context, name string) (types.SecretMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return types.SecretMetadata{}, err
+	}
+	name = strings.TrimSpace(name)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	secret, ok := s.secrets[name]
+	if !ok {
+		return types.SecretMetadata{}, store.ErrNotFound
+	}
+	return secret.Metadata(), nil
+}
+
+func (s *MemoryService) DeleteSecret(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	name = strings.TrimSpace(name)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.secrets[name]; !ok {
+		return store.ErrNotFound
+	}
+	delete(s.secrets, name)
+	s.appendEventLocked(events.TypeSecretDeleted, types.EventInfo, "controlplane", "secret deleted", "secret", "", s.now())
+	return nil
+}
+
 func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error) {
 	if err := ctx.Err(); err != nil {
 		return types.Service{}, err
@@ -446,6 +602,11 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 	for _, service := range s.services {
 		if service.Spec.Name == spec.Name {
 			return types.Service{}, store.ErrDuplicate
+		}
+	}
+	for _, ref := range spec.SecretRefs {
+		if _, ok := s.secrets[strings.TrimSpace(ref.Name)]; !ok {
+			return types.Service{}, fmt.Errorf("%w: referenced secret %q not found", store.ErrInvalidState, ref.Name)
 		}
 	}
 

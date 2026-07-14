@@ -20,6 +20,8 @@ routes:
     port: 8080
     tls: true
 env:
+  DATABASE_URL:
+    secretRef: prod/database-url
   NODE_ENV: production
 resources:
   cpu: 500m
@@ -64,6 +66,12 @@ placement:
 	}
 	if spec.RestartPolicy.Condition != types.RestartAlways {
 		t.Fatalf("unexpected restart policy %q", spec.RestartPolicy.Condition)
+	}
+	if spec.Env["NODE_ENV"] != "production" {
+		t.Fatalf("unexpected env %#v", spec.Env)
+	}
+	if len(spec.SecretRefs) != 1 || spec.SecretRefs[0].Name != "prod/database-url" || spec.SecretRefs[0].Env != "DATABASE_URL" {
+		t.Fatalf("unexpected secret refs %#v", spec.SecretRefs)
 	}
 	if len(spec.PlacementConstraints) != 1 || spec.PlacementConstraints[0].Key != "role" {
 		t.Fatalf("unexpected constraints %#v", spec.PlacementConstraints)
