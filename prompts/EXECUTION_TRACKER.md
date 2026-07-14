@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `58-multi-agent-load-test.md`
-- Last matching commit: `same commit: Add multi-agent load test`
-- Completed prompt range: `00` through `58`
-- Next prompt to execute: `59-chaos-testing-scenarios.md`
+- Last executed prompt: `59-chaos-testing-scenarios.md`
+- Last matching commit: `same commit: Add chaos testing scenarios`
+- Completed prompt range: `00` through `59`
+- Next prompt to execute: `60-release-hardening-v0-2-0.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
