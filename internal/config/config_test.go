@@ -55,9 +55,15 @@ addr: :9000
 log_level: warn
 bootstrap_token: file-token
 graceful_shutdown_ttl: 20s
+cluster_policy:
+  allowed_capabilities:
+    - NET_BIND_SERVICE
+  allowed_host_path_prefixes:
+    - /var/lib/orch
 `)
 	t.Setenv("ORCH_SERVER_ADDR", ":9100")
 	t.Setenv("ORCH_LOG_LEVEL", "debug")
+	t.Setenv("ORCH_POLICY_ALLOW_HOST_NETWORK", "true")
 
 	cfg, err := LoadServerWithFile(path, ServerOverrides{Addr: ":9200"})
 	if err != nil {
@@ -74,6 +80,12 @@ graceful_shutdown_ttl: 20s
 	}
 	if cfg.GracefulShutdownTTL != 20*time.Second {
 		t.Fatalf("expected file duration, got %s", cfg.GracefulShutdownTTL)
+	}
+	if !cfg.ClusterPolicy.AllowHostNetwork {
+		t.Fatalf("expected env cluster policy host network allowance")
+	}
+	if len(cfg.ClusterPolicy.AllowedCapabilities) != 1 || cfg.ClusterPolicy.AllowedCapabilities[0] != "NET_BIND_SERVICE" {
+		t.Fatalf("expected file cluster policy capabilities, got %#v", cfg.ClusterPolicy.AllowedCapabilities)
 	}
 }
 

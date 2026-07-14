@@ -71,6 +71,33 @@ Recommended controls:
 
 Agents run HTTP and TCP healthchecks from the node. To avoid service specs causing arbitrary host-local probes, healthchecks are only performed against published TCP ports assigned to the task. A configured container port is resolved to the assigned published host port before probing. Unassigned, unpublished, or UDP-only ports are skipped.
 
+## Container Security Policy
+
+Services may set `security_context` / `securityContext` fields for runtime hardening, including an explicit non-root `user`, read-only root filesystem, Linux capability drops/additions, host network, host PID, and host path mounts.
+
+The default cluster policy is deny-by-default for privilege-escalating options:
+
+- privileged containers are rejected;
+- host network and host PID namespace are rejected;
+- added Linux capabilities are rejected unless explicitly allowlisted;
+- arbitrary host path mounts are rejected unless their host path starts with an allowlisted prefix;
+- containers drop `NET_RAW` by default at the Docker runtime when no custom capability drop list is provided.
+
+Configure allowlists only for trusted clusters:
+
+```yaml
+cluster_policy:
+  allow_privileged: false
+  allow_host_network: false
+  allow_host_pid: false
+  allowed_capabilities:
+    - NET_BIND_SERVICE
+  allowed_host_path_prefixes:
+    - /var/lib/orch-volumes
+```
+
+Equivalent environment variables are `ORCH_POLICY_ALLOW_PRIVILEGED`, `ORCH_POLICY_ALLOW_HOST_NETWORK`, `ORCH_POLICY_ALLOW_HOST_PID`, `ORCH_POLICY_ALLOWED_CAPABILITIES`, and `ORCH_POLICY_ALLOWED_HOST_PATH_PREFIXES`.
+
 ## Secret Handling
 
 Service specs support secret references for environment variables. Secret values are encrypted at rest with the local envelope provider and are returned to agents only in assigned task payloads when needed to start containers. Do not put secret values in service names, labels, route hostnames, logs, or events.

@@ -52,6 +52,43 @@ func TestCreateContainerAddsRequiredLabels(t *testing.T) {
 	if len(fake.createdConfig.Env) != 2 || !slices.Contains(fake.createdConfig.Env, "A=1") {
 		t.Fatalf("unexpected env %#v", fake.createdConfig.Env)
 	}
+	if !slices.Contains(fake.createdHostConfig.CapDrop, "NET_RAW") {
+		t.Fatalf("expected NET_RAW dropped by default, got %#v", fake.createdHostConfig.CapDrop)
+	}
+}
+
+func TestCreateContainerAppliesSecurityContext(t *testing.T) {
+	fake := &fakeDockerClient{createID: "created"}
+	runtime := NewEngineRuntimeWithClient(fake)
+	spec := containerSpecFixture()
+	spec.Security = SecurityContext{
+		User:                   "1000:1000",
+		ReadOnlyRootFilesystem: true,
+		CapDrop:                []string{"ALL"},
+		CapAdd:                 []string{"NET_BIND_SERVICE"},
+		HostPathMounts: []HostPathMount{{
+			HostPath:      "/var/lib/orch/service-a",
+			ContainerPath: "/data",
+			ReadOnly:      true,
+		}},
+	}
+
+	if _, err := runtime.CreateContainer(context.Background(), spec); err != nil {
+		t.Fatalf("create container: %v", err)
+	}
+
+	if fake.createdConfig.User != "1000:1000" {
+		t.Fatalf("expected container user, got %q", fake.createdConfig.User)
+	}
+	if !fake.createdHostConfig.ReadonlyRootfs {
+		t.Fatalf("expected read-only root filesystem")
+	}
+	if !slices.Contains(fake.createdHostConfig.CapDrop, "ALL") || !slices.Contains(fake.createdHostConfig.CapAdd, "NET_BIND_SERVICE") {
+		t.Fatalf("unexpected capabilities drop=%#v add=%#v", fake.createdHostConfig.CapDrop, fake.createdHostConfig.CapAdd)
+	}
+	if len(fake.createdHostConfig.Binds) != 1 || fake.createdHostConfig.Binds[0] != "/var/lib/orch/service-a:/data:ro" {
+		t.Fatalf("unexpected host path binds %#v", fake.createdHostConfig.Binds)
+	}
 }
 
 func TestCreateContainerExistingTaskIsIdempotent(t *testing.T) {

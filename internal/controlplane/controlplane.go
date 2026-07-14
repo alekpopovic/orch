@@ -12,6 +12,7 @@ import (
 
 	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/policy"
 	"github.com/alekpopovic/orch/internal/secrets"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -78,11 +79,12 @@ type AgentDirective struct {
 }
 
 type AgentTask struct {
-	Task          types.Task         `json:"task"`
-	Healthcheck   *types.Healthcheck `json:"healthcheck,omitempty"`
-	Ports         []types.Port       `json:"ports,omitempty"`
-	Env           map[string]string  `json:"env,omitempty"`
-	ImagePullAuth *RegistryAuth      `json:"image_pull_auth,omitempty"`
+	Task            types.Task            `json:"task"`
+	Healthcheck     *types.Healthcheck    `json:"healthcheck,omitempty"`
+	Ports           []types.Port          `json:"ports,omitempty"`
+	SecurityContext types.SecurityContext `json:"security_context,omitempty"`
+	Env             map[string]string     `json:"env,omitempty"`
+	ImagePullAuth   *RegistryAuth         `json:"image_pull_auth,omitempty"`
 }
 
 type RegistryCredentialSpec struct {
@@ -149,6 +151,7 @@ type MemoryService struct {
 	secrets     map[string]types.Secret
 	registries  map[string]types.RegistryCredential
 	envelope    secrets.Envelope
+	policy      policy.ClusterPolicy
 	events      []types.Event
 	auditLogs   []audit.Log
 	now         func() time.Time
@@ -164,6 +167,12 @@ func WithSecretEnvelope(envelope secrets.Envelope) Option {
 	}
 }
 
+func WithClusterPolicy(clusterPolicy policy.ClusterPolicy) Option {
+	return func(service *MemoryService) {
+		service.policy = clusterPolicy
+	}
+}
+
 func NewMemoryService(opts ...Option) *MemoryService {
 	now := func() time.Time { return time.Now().UTC() }
 	envelope, _ := secrets.NewLocalEnvelope("dev-secret-key-change-me")
@@ -176,6 +185,7 @@ func NewMemoryService(opts ...Option) *MemoryService {
 		secrets:     make(map[string]types.Secret),
 		registries:  make(map[string]types.RegistryCredential),
 		envelope:    envelope,
+		policy:      policy.DefaultClusterPolicy(),
 		now:         now,
 	}
 	for _, opt := range opts {
@@ -417,11 +427,12 @@ func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.Node
 			return nil, err
 		}
 		tasks = append(tasks, AgentTask{
-			Task:          task,
-			Healthcheck:   service.Spec.Healthcheck,
-			Ports:         taskPortsForAgent(task, service),
-			Env:           env,
-			ImagePullAuth: auth,
+			Task:            task,
+			Healthcheck:     service.Spec.Healthcheck,
+			Ports:           taskPortsForAgent(task, service),
+			SecurityContext: service.Spec.SecurityContext,
+			Env:             env,
+			ImagePullAuth:   auth,
 		})
 	}
 	slices.SortFunc(tasks, func(a, b AgentTask) int {
@@ -843,6 +854,9 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 	}
 	spec = normalized
 	if err := spec.Validate(); err != nil {
+		return types.Service{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	if err := s.policy.ValidateServiceSpec(spec); err != nil {
 		return types.Service{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
 	}
 

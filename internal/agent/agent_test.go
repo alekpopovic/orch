@@ -35,7 +35,12 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 				Image:         "nginx:1.27",
 				Version:       1,
 			},
-			Ports:         []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}},
+			Ports: []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}},
+			SecurityContext: types.SecurityContext{
+				User:                   "1000:1000",
+				ReadOnlyRootFilesystem: true,
+				CapDrop:                []string{"ALL"},
+			},
 			Env:           map[string]string{"DATABASE_URL": "postgres://secret"},
 			ImagePullAuth: &controlplane.RegistryAuth{Username: "robot", Password: "token", ServerAddress: "ghcr.io"},
 		}},
@@ -69,6 +74,9 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 	}
 	if len(created[0].Ports) != 1 || created[0].Ports[0].ContainerPort != 8080 || created[0].Ports[0].HostPort != 18080 {
 		t.Fatalf("expected assigned port binding, got %#v", created[0].Ports)
+	}
+	if created[0].Security.User != "1000:1000" || !created[0].Security.ReadOnlyRootFilesystem || len(created[0].Security.CapDrop) != 1 || created[0].Security.CapDrop[0] != "ALL" {
+		t.Fatalf("expected security context in container spec, got %#v", created[0].Security)
 	}
 }
 

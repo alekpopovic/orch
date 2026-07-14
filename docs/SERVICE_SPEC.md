@@ -37,6 +37,28 @@ env:
 
 An env entry cannot specify both `value` and `secretRef`.
 
+## Security Context
+
+`securityContext` controls container runtime hardening:
+
+```yaml
+securityContext:
+  user: "1000:1000"
+  readOnlyRootFilesystem: true
+  capDrop:
+    - NET_RAW
+  capAdd:
+    - NET_BIND_SERVICE
+  hostNetwork: false
+  hostPID: false
+  hostPathMounts:
+    - hostPath: /var/lib/orch-volumes/api
+      containerPath: /data
+      readOnly: true
+```
+
+By default, `orch` rejects privileged containers, host networking, host PID, host path mounts outside configured prefixes, and capability additions outside the cluster allowlist. If `capDrop` is omitted, the Docker runtime drops `NET_RAW` by default.
+
 ## Validation
 
 Validate locally without creating a service:
@@ -45,4 +67,4 @@ Validate locally without creating a service:
 orch validate deployments/examples/http-api.yaml
 ```
 
-The CLI rejects unknown YAML fields, invalid ports, invalid resources, invalid healthcheck settings, invalid placement labels, invalid routes, and malformed secret references.
+The CLI rejects unknown YAML fields, invalid ports, invalid resources, invalid healthcheck settings, invalid placement labels, invalid routes, invalid security context paths or capabilities, and malformed secret references. The server additionally applies the cluster container security policy before creating a service.

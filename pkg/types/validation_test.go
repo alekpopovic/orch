@@ -103,6 +103,11 @@ func TestServiceSpecValidate(t *testing.T) {
 			UnhealthyThreshold: 3,
 		},
 		RestartPolicy: RestartPolicy{Condition: RestartOnFailure, MaxAttempts: 3},
+		SecurityContext: SecurityContext{
+			User:                   "1000:1000",
+			ReadOnlyRootFilesystem: true,
+			CapDrop:                []string{"NET_RAW"},
+		},
 		PlacementConstraints: []PlacementConstraint{
 			{Key: "region", Operator: ConstraintEquals, Value: "us-east"},
 		},
@@ -190,6 +195,24 @@ func TestServiceSpecValidate(t *testing.T) {
 			wantErr: "restart policy condition",
 		},
 		{
+			name: "invalid capability",
+			spec: func() ServiceSpec {
+				spec := cloneServiceSpec(valid)
+				spec.SecurityContext.CapAdd = []string{"NET_ADMIN;rm"}
+				return spec
+			}(),
+			wantErr: "security_context.cap_add[0]",
+		},
+		{
+			name: "invalid host path",
+			spec: func() ServiceSpec {
+				spec := cloneServiceSpec(valid)
+				spec.SecurityContext.HostPathMounts = []HostPathMount{{HostPath: "../data", ContainerPath: "/data"}}
+				return spec
+			}(),
+			wantErr: "security_context.host_path_mounts[0]",
+		},
+		{
 			name: "invalid placement constraint",
 			spec: func() ServiceSpec {
 				spec := cloneServiceSpec(valid)
@@ -218,6 +241,9 @@ func cloneServiceSpec(spec ServiceSpec) ServiceSpec {
 	}
 	spec.SecretRefs = append([]SecretRef(nil), spec.SecretRefs...)
 	spec.Ports = append([]Port(nil), spec.Ports...)
+	spec.SecurityContext.CapAdd = append([]string(nil), spec.SecurityContext.CapAdd...)
+	spec.SecurityContext.CapDrop = append([]string(nil), spec.SecurityContext.CapDrop...)
+	spec.SecurityContext.HostPathMounts = append([]HostPathMount(nil), spec.SecurityContext.HostPathMounts...)
 	spec.PlacementConstraints = append([]PlacementConstraint(nil), spec.PlacementConstraints...)
 	if spec.Healthcheck != nil {
 		healthcheck := *spec.Healthcheck

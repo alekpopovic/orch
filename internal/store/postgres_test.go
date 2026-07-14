@@ -53,7 +53,7 @@ func TestMapPostgresError(t *testing.T) {
 
 func TestServiceJSONRoundTrip(t *testing.T) {
 	spec := serviceSpecFixture()
-	env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, routes, err := serviceJSON(spec)
+	env, secretRefs, ports, requirements, securityContext, healthcheck, restartPolicy, constraints, routes, err := serviceJSON(spec)
 	if err != nil {
 		t.Fatalf("encode service json: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestServiceJSONRoundTrip(t *testing.T) {
 	got.Name = spec.Name
 	got.Image = spec.Image
 	got.Replicas = spec.Replicas
-	if err := decodeServiceJSON(&got, env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, routes); err != nil {
+	if err := decodeServiceJSON(&got, env, secretRefs, ports, requirements, securityContext, healthcheck, restartPolicy, constraints, routes); err != nil {
 		t.Fatalf("decode service json: %v", err)
 	}
 
@@ -77,6 +77,9 @@ func TestServiceJSONRoundTrip(t *testing.T) {
 	}
 	if len(got.Routes) != 1 || got.Routes[0].Host != "api.example.com" {
 		t.Fatalf("expected routes to round trip, got %#v", got.Routes)
+	}
+	if !got.SecurityContext.ReadOnlyRootFilesystem || got.SecurityContext.User != "1000:1000" {
+		t.Fatalf("expected security context to round trip, got %#v", got.SecurityContext)
 	}
 }
 
@@ -396,6 +399,11 @@ func serviceSpecFixture() types.ServiceSpec {
 		ResourceRequirements: types.ResourceRequirements{
 			Requests: types.Resources{CPU: 100, Memory: 128 * 1024 * 1024},
 			Limits:   types.Resources{CPU: 500, Memory: 512 * 1024 * 1024},
+		},
+		SecurityContext: types.SecurityContext{
+			User:                   "1000:1000",
+			ReadOnlyRootFilesystem: true,
+			CapDrop:                []string{"NET_RAW"},
 		},
 		Healthcheck: &types.Healthcheck{
 			Type:               types.HealthcheckHTTP,

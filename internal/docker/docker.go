@@ -65,6 +65,7 @@ type ContainerSpec struct {
 	Env         map[string]string
 	Ports       []PortBinding
 	Resources   ResourceLimits
+	Security    SecurityContext
 	Healthcheck *Healthcheck
 	Labels      map[string]string
 	Command     []string
@@ -79,6 +80,23 @@ type PortBinding struct {
 type ResourceLimits struct {
 	CPUMilli int64
 	Memory   int64
+}
+
+type SecurityContext struct {
+	User                   string
+	ReadOnlyRootFilesystem bool
+	Privileged             bool
+	CapAdd                 []string
+	CapDrop                []string
+	HostNetwork            bool
+	HostPID                bool
+	HostPathMounts         []HostPathMount
+}
+
+type HostPathMount struct {
+	HostPath      string
+	ContainerPath string
+	ReadOnly      bool
 }
 
 type Healthcheck struct {
@@ -368,6 +386,14 @@ func (spec ContainerSpec) Validate() error {
 			return fmt.Errorf("ports[%d]: host port must be between 0 and 65535", i)
 		}
 	}
+	for i, mount := range spec.Security.HostPathMounts {
+		if strings.TrimSpace(mount.HostPath) == "" {
+			return fmt.Errorf("security host path mounts[%d]: host path is required", i)
+		}
+		if strings.TrimSpace(mount.ContainerPath) == "" {
+			return fmt.Errorf("security host path mounts[%d]: container path is required", i)
+		}
+	}
 	return nil
 }
 
@@ -386,6 +412,7 @@ func dockerContainerConfig(spec ContainerSpec) (*container.Config, *container.Ho
 		ExposedPorts: exposedPorts,
 		Cmd:          spec.Command,
 		Healthcheck:  dockerHealthcheck(spec.Healthcheck),
+		User:         spec.Security.User,
 	}
 	hostConfig := &container.HostConfig{
 		PortBindings: portBindings,
@@ -396,8 +423,39 @@ func dockerContainerConfig(spec ContainerSpec) (*container.Config, *container.Ho
 			Memory:   spec.Resources.Memory,
 			NanoCPUs: spec.Resources.CPUMilli * 1_000_000,
 		},
+		Privileged:     spec.Security.Privileged,
+		ReadonlyRootfs: spec.Security.ReadOnlyRootFilesystem,
+		CapAdd:         append([]string(nil), spec.Security.CapAdd...),
+		CapDrop:        dockerCapDrop(spec.Security.CapDrop),
+		Binds:          dockerHostPathMounts(spec.Security.HostPathMounts),
+	}
+	if spec.Security.HostNetwork {
+		hostConfig.NetworkMode = "host"
+	}
+	if spec.Security.HostPID {
+		hostConfig.PidMode = "host"
 	}
 	return config, hostConfig, nil
+}
+
+func dockerCapDrop(configured []string) []string {
+	if len(configured) > 0 {
+		return append([]string(nil), configured...)
+	}
+	return []string{"NET_RAW"}
+}
+
+func dockerHostPathMounts(mounts []HostPathMount) []string {
+	binds := make([]string, 0, len(mounts))
+	for _, mount := range mounts {
+		mode := "ro"
+		if !mount.ReadOnly {
+			mode = "rw"
+		}
+		binds = append(binds, mount.HostPath+":"+mount.ContainerPath+":"+mode)
+	}
+	sort.Strings(binds)
+	return binds
 }
 
 func managedLabels(spec ContainerSpec) map[string]string {

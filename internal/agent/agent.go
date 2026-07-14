@@ -252,6 +252,7 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 		Version:   task.Version,
 		Env:       assigned.Env,
 		Ports:     dockerPortBindings(assigned.Ports),
+		Security:  dockerSecurityContext(assigned.SecurityContext),
 	})
 	if err != nil {
 		_, _ = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, FailureReason: runtimeFailureReason(err)})
@@ -284,6 +285,27 @@ func dockerPortBindings(ports []types.Port) []orchdocker.PortBinding {
 		})
 	}
 	return bindings
+}
+
+func dockerSecurityContext(context types.SecurityContext) orchdocker.SecurityContext {
+	mounts := make([]orchdocker.HostPathMount, 0, len(context.HostPathMounts))
+	for _, mount := range context.HostPathMounts {
+		mounts = append(mounts, orchdocker.HostPathMount{
+			HostPath:      mount.HostPath,
+			ContainerPath: mount.ContainerPath,
+			ReadOnly:      mount.ReadOnly,
+		})
+	}
+	return orchdocker.SecurityContext{
+		User:                   context.User,
+		ReadOnlyRootFilesystem: context.ReadOnlyRootFilesystem,
+		Privileged:             context.Privileged,
+		CapAdd:                 append([]string(nil), context.CapAdd...),
+		CapDrop:                append([]string(nil), context.CapDrop...),
+		HostNetwork:            context.HostNetwork,
+		HostPID:                context.HostPID,
+		HostPathMounts:         mounts,
+	}
 }
 
 func dockerRegistryAuth(auth *controlplane.RegistryAuth) *orchdocker.RegistryAuth {

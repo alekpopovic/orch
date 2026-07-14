@@ -7,20 +7,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/policy"
 	"gopkg.in/yaml.v3"
 )
 
 type ServerConfig struct {
-	Addr                string        `json:"addr" yaml:"addr"`
-	DatabaseURL         string        `json:"database_url" yaml:"database_url"`
-	LogLevel            string        `json:"log_level" yaml:"log_level"`
-	BootstrapToken      string        `json:"bootstrap_token" yaml:"bootstrap_token"`
-	JWTSecret           string        `json:"jwt_secret" yaml:"jwt_secret"`
-	Users               string        `json:"users" yaml:"users"`
-	SecretKey           string        `json:"secret_key" yaml:"secret_key"`
-	GracefulShutdownTTL time.Duration `json:"graceful_shutdown_ttl" yaml:"graceful_shutdown_ttl"`
-	HeartbeatTimeout    time.Duration `json:"heartbeat_timeout" yaml:"heartbeat_timeout"`
-	NodeMonitorInterval time.Duration `json:"node_monitor_interval" yaml:"node_monitor_interval"`
+	Addr                string               `json:"addr" yaml:"addr"`
+	DatabaseURL         string               `json:"database_url" yaml:"database_url"`
+	LogLevel            string               `json:"log_level" yaml:"log_level"`
+	BootstrapToken      string               `json:"bootstrap_token" yaml:"bootstrap_token"`
+	JWTSecret           string               `json:"jwt_secret" yaml:"jwt_secret"`
+	Users               string               `json:"users" yaml:"users"`
+	SecretKey           string               `json:"secret_key" yaml:"secret_key"`
+	GracefulShutdownTTL time.Duration        `json:"graceful_shutdown_ttl" yaml:"graceful_shutdown_ttl"`
+	HeartbeatTimeout    time.Duration        `json:"heartbeat_timeout" yaml:"heartbeat_timeout"`
+	NodeMonitorInterval time.Duration        `json:"node_monitor_interval" yaml:"node_monitor_interval"`
+	ClusterPolicy       policy.ClusterPolicy `json:"cluster_policy" yaml:"cluster_policy"`
 }
 
 type AgentConfig struct {
@@ -163,16 +165,17 @@ func defaultAgent() AgentConfig {
 }
 
 type serverFileConfig struct {
-	Addr                string `yaml:"addr"`
-	DatabaseURL         string `yaml:"database_url"`
-	LogLevel            string `yaml:"log_level"`
-	BootstrapToken      string `yaml:"bootstrap_token"`
-	JWTSecret           string `yaml:"jwt_secret"`
-	Users               string `yaml:"users"`
-	SecretKey           string `yaml:"secret_key"`
-	GracefulShutdownTTL string `yaml:"graceful_shutdown_ttl"`
-	HeartbeatTimeout    string `yaml:"heartbeat_timeout"`
-	NodeMonitorInterval string `yaml:"node_monitor_interval"`
+	Addr                string               `yaml:"addr"`
+	DatabaseURL         string               `yaml:"database_url"`
+	LogLevel            string               `yaml:"log_level"`
+	BootstrapToken      string               `yaml:"bootstrap_token"`
+	JWTSecret           string               `yaml:"jwt_secret"`
+	Users               string               `yaml:"users"`
+	SecretKey           string               `yaml:"secret_key"`
+	GracefulShutdownTTL string               `yaml:"graceful_shutdown_ttl"`
+	HeartbeatTimeout    string               `yaml:"heartbeat_timeout"`
+	NodeMonitorInterval string               `yaml:"node_monitor_interval"`
+	ClusterPolicy       policy.ClusterPolicy `yaml:"cluster_policy"`
 }
 
 type agentFileConfig struct {
@@ -212,6 +215,7 @@ func applyServerFile(cfg *ServerConfig, path string) error {
 	if err := applyDuration(&cfg.NodeMonitorInterval, file.NodeMonitorInterval); err != nil {
 		return fmt.Errorf("node_monitor_interval: %w", err)
 	}
+	mergeClusterPolicy(&cfg.ClusterPolicy, file.ClusterPolicy)
 	return nil
 }
 
@@ -262,6 +266,9 @@ func applyServerEnv(cfg *ServerConfig) error {
 	}
 	if err := applyDuration(&cfg.NodeMonitorInterval, os.Getenv("ORCH_NODE_MONITOR_INTERVAL")); err != nil {
 		return fmt.Errorf("ORCH_NODE_MONITOR_INTERVAL: %w", err)
+	}
+	if err := applyClusterPolicyEnv(&cfg.ClusterPolicy); err != nil {
+		return err
 	}
 	return nil
 }
@@ -337,6 +344,68 @@ func applyAgentOverrides(cfg *AgentConfig, overrides AgentOverrides) error {
 func applyString(target *string, value string) {
 	if strings.TrimSpace(value) != "" {
 		*target = strings.TrimSpace(value)
+	}
+}
+
+func applyBool(target *bool, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return err
+	}
+	*target = parsed
+	return nil
+}
+
+func applyCSV(target *[]string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	parts := strings.Split(value, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	*target = values
+}
+
+func applyClusterPolicyEnv(clusterPolicy *policy.ClusterPolicy) error {
+	if err := applyBool(&clusterPolicy.AllowPrivileged, os.Getenv("ORCH_POLICY_ALLOW_PRIVILEGED")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_ALLOW_PRIVILEGED: %w", err)
+	}
+	if err := applyBool(&clusterPolicy.AllowHostNetwork, os.Getenv("ORCH_POLICY_ALLOW_HOST_NETWORK")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_ALLOW_HOST_NETWORK: %w", err)
+	}
+	if err := applyBool(&clusterPolicy.AllowHostPID, os.Getenv("ORCH_POLICY_ALLOW_HOST_PID")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_ALLOW_HOST_PID: %w", err)
+	}
+	applyCSV(&clusterPolicy.AllowedHostPathPrefixes, os.Getenv("ORCH_POLICY_ALLOWED_HOST_PATH_PREFIXES"))
+	applyCSV(&clusterPolicy.AllowedCapabilities, os.Getenv("ORCH_POLICY_ALLOWED_CAPABILITIES"))
+	return nil
+}
+
+func mergeClusterPolicy(target *policy.ClusterPolicy, source policy.ClusterPolicy) {
+	if source.AllowPrivileged {
+		target.AllowPrivileged = true
+	}
+	if source.AllowHostNetwork {
+		target.AllowHostNetwork = true
+	}
+	if source.AllowHostPID {
+		target.AllowHostPID = true
+	}
+	if source.AllowedHostPathPrefixes != nil {
+		target.AllowedHostPathPrefixes = append([]string(nil), source.AllowedHostPathPrefixes...)
+	}
+	if source.AllowedCapabilities != nil {
+		target.AllowedCapabilities = append([]string(nil), source.AllowedCapabilities...)
 	}
 }
 
@@ -434,6 +503,7 @@ func (cfg ServerConfig) Redacted() map[string]any {
 		"graceful_shutdown_ttl": cfg.GracefulShutdownTTL.String(),
 		"heartbeat_timeout":     cfg.HeartbeatTimeout.String(),
 		"node_monitor_interval": cfg.NodeMonitorInterval.String(),
+		"cluster_policy":        cfg.ClusterPolicy.Redacted(),
 	}
 }
 

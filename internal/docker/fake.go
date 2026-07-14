@@ -457,6 +457,9 @@ func cloneContainerSpec(spec ContainerSpec) ContainerSpec {
 	spec.Labels = cloneMap(spec.Labels)
 	spec.Ports = append([]PortBinding(nil), spec.Ports...)
 	spec.Command = append([]string(nil), spec.Command...)
+	spec.Security.CapAdd = append([]string(nil), spec.Security.CapAdd...)
+	spec.Security.CapDrop = append([]string(nil), spec.Security.CapDrop...)
+	spec.Security.HostPathMounts = append([]HostPathMount(nil), spec.Security.HostPathMounts...)
 	return spec
 }
 

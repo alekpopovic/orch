@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/policy"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -568,6 +569,48 @@ func TestUnhealthyRestartableTaskIsMarkedFailed(t *testing.T) {
 	}
 	if task.FinishedAt.IsZero() {
 		t.Fatalf("expected failed task to have finished timestamp")
+	}
+}
+
+func TestClusterPolicyControlsSecurityContext(t *testing.T) {
+	ctx := context.Background()
+	defaultService := NewMemoryService()
+	if _, err := defaultService.CreateService(ctx, types.ServiceSpec{
+		Name:            "privileged",
+		Image:           "nginx:1.27",
+		Replicas:        1,
+		SecurityContext: types.SecurityContext{Privileged: true},
+	}); err == nil {
+		t.Fatalf("expected default cluster policy to reject privileged service")
+	}
+
+	service := NewMemoryService(WithClusterPolicy(policy.ClusterPolicy{AllowedCapabilities: []string{"NET_BIND_SERVICE"}}))
+	registered, err := service.RegisterNode(ctx, NodeRegistration{
+		Name:             "node-a",
+		AdvertiseAddress: "10.0.0.10",
+		Capacity:         types.Resources{CPU: 4000, Memory: 1024},
+		Allocatable:      types.Resources{CPU: 4000, Memory: 1024},
+	})
+	if err != nil {
+		t.Fatalf("register node: %v", err)
+	}
+	if _, err := service.CreateService(ctx, types.ServiceSpec{
+		Name:     "web",
+		Image:    "nginx:1.27",
+		Replicas: 1,
+		SecurityContext: types.SecurityContext{
+			CapAdd:  []string{"NET_BIND_SERVICE"},
+			CapDrop: []string{"ALL"},
+		},
+	}); err != nil {
+		t.Fatalf("expected allowed capability service: %v", err)
+	}
+	tasks, err := service.ListAssignedTasks(ctx, registered.Node.ID)
+	if err != nil {
+		t.Fatalf("list assigned tasks: %v", err)
+	}
+	if len(tasks) != 1 || len(tasks[0].SecurityContext.CapAdd) != 1 || tasks[0].SecurityContext.CapAdd[0] != "NET_BIND_SERVICE" {
+		t.Fatalf("expected security context in agent task, got %#v", tasks)
 	}
 }
 

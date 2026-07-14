@@ -638,6 +638,25 @@ func TestCreateServiceValidationError(t *testing.T) {
 	}
 }
 
+func TestCreateServiceRejectsDisallowedSecurityContext(t *testing.T) {
+	rec := doRequest(t, newTestHandler(), http.MethodPost, "/v1/services", `{
+		"spec": {
+			"name": "privileged-web",
+			"image": "nginx:1.27",
+			"replicas": 1,
+			"security_context": {"privileged": true},
+			"resource_requirements": {"requests": {}, "limits": {}}
+		}
+	}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "privileged") {
+		t.Fatalf("expected privileged policy error, got %s", rec.Body.String())
+	}
+}
+
 func TestWriteErrorMapsDomainErrorAndRedactsDetails(t *testing.T) {
 	server := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	req := httptest.NewRequest(http.MethodPost, "/v1/services", nil)

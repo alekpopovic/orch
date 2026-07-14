@@ -28,6 +28,11 @@ env:
 resources:
   cpu: 500m
   memory: 512Mi
+securityContext:
+  user: "1000:1000"
+  readOnlyRootFilesystem: true
+  capDrop:
+    - NET_RAW
 healthcheck:
   type: http
   path: /health
@@ -65,6 +70,9 @@ placement:
 	}
 	if spec.ResourceRequirements.Requests.Memory != 512*1024*1024 {
 		t.Fatalf("unexpected memory %d", spec.ResourceRequirements.Requests.Memory)
+	}
+	if spec.SecurityContext.User != "1000:1000" || !spec.SecurityContext.ReadOnlyRootFilesystem || len(spec.SecurityContext.CapDrop) != 1 {
+		t.Fatalf("unexpected security context %#v", spec.SecurityContext)
 	}
 	if spec.Healthcheck == nil || spec.Healthcheck.Port != 8080 || spec.Healthcheck.Path != "/health" {
 		t.Fatalf("unexpected healthcheck %#v", spec.Healthcheck)

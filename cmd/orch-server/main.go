@@ -87,7 +87,7 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 	if err != nil {
 		return err
 	}
-	controlPlane := controlplane.NewMemoryService(controlplane.WithSecretEnvelope(envelope))
+	controlPlane := controlplane.NewMemoryService(controlplane.WithSecretEnvelope(envelope), controlplane.WithClusterPolicy(cfg.ClusterPolicy))
 	serverMetrics := metrics.NewServer()
 	rolloutController := rollout.NewController(controlPlane, logger, rollout.WithMetrics(serverMetrics))
 	go func() {

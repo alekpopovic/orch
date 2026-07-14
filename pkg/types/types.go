@@ -159,6 +159,7 @@ type ServiceSpec struct {
 	SecretRefs           []SecretRef           `json:"secret_refs,omitempty"`
 	Ports                []Port                `json:"ports,omitempty"`
 	ResourceRequirements ResourceRequirements  `json:"resource_requirements"`
+	SecurityContext      SecurityContext       `json:"security_context,omitempty"`
 	Healthcheck          *Healthcheck          `json:"healthcheck,omitempty"`
 	RestartPolicy        RestartPolicy         `json:"restart_policy"`
 	PlacementConstraints []PlacementConstraint `json:"placement_constraints,omitempty"`
@@ -180,6 +181,9 @@ func (spec ServiceSpec) Validate() error {
 		return fmt.Errorf("replicas cannot be negative")
 	}
 	if err := spec.ResourceRequirements.Validate(); err != nil {
+		return err
+	}
+	if err := spec.SecurityContext.Validate(); err != nil {
 		return err
 	}
 	for i, port := range spec.Ports {
@@ -357,6 +361,75 @@ func (route Route) Validate() error {
 	}
 	if route.Port < 1 || route.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535")
+	}
+	return nil
+}
+
+type SecurityContext struct {
+	User                   string          `json:"user,omitempty"`
+	ReadOnlyRootFilesystem bool            `json:"read_only_root_filesystem,omitempty"`
+	Privileged             bool            `json:"privileged,omitempty"`
+	CapAdd                 []string        `json:"cap_add,omitempty"`
+	CapDrop                []string        `json:"cap_drop,omitempty"`
+	HostNetwork            bool            `json:"host_network,omitempty"`
+	HostPID                bool            `json:"host_pid,omitempty"`
+	HostPathMounts         []HostPathMount `json:"host_path_mounts,omitempty"`
+}
+
+type HostPathMount struct {
+	HostPath      string `json:"host_path"`
+	ContainerPath string `json:"container_path"`
+	ReadOnly      bool   `json:"read_only,omitempty"`
+}
+
+func (context SecurityContext) Validate() error {
+	if strings.ContainsAny(context.User, "\x00\r\n") {
+		return fmt.Errorf("security context user contains invalid characters")
+	}
+	for i, capability := range context.CapAdd {
+		if err := validateCapabilityName(capability); err != nil {
+			return fmt.Errorf("security_context.cap_add[%d]: %w", i, err)
+		}
+	}
+	for i, capability := range context.CapDrop {
+		if err := validateCapabilityName(capability); err != nil {
+			return fmt.Errorf("security_context.cap_drop[%d]: %w", i, err)
+		}
+	}
+	for i, mount := range context.HostPathMounts {
+		if err := mount.Validate(); err != nil {
+			return fmt.Errorf("security_context.host_path_mounts[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (mount HostPathMount) Validate() error {
+	if !strings.HasPrefix(mount.HostPath, "/") {
+		return fmt.Errorf("host_path must be absolute")
+	}
+	if strings.Contains(mount.HostPath, "\x00") || strings.Contains(mount.HostPath, "..") {
+		return fmt.Errorf("host_path contains invalid path segment")
+	}
+	if !strings.HasPrefix(mount.ContainerPath, "/") {
+		return fmt.Errorf("container_path must be absolute")
+	}
+	if strings.Contains(mount.ContainerPath, "\x00") || strings.Contains(mount.ContainerPath, "..") {
+		return fmt.Errorf("container_path contains invalid path segment")
+	}
+	return nil
+}
+
+func validateCapabilityName(capability string) error {
+	capability = strings.TrimSpace(capability)
+	if capability == "" {
+		return fmt.Errorf("capability is required")
+	}
+	capability = strings.TrimPrefix(strings.ToUpper(capability), "CAP_")
+	for _, char := range capability {
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
+			return fmt.Errorf("capability %q is invalid", capability)
+		}
 	}
 	return nil
 }

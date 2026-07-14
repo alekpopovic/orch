@@ -13,18 +13,19 @@ import (
 )
 
 type DeployFile struct {
-	Name            string            `yaml:"name"`
-	Image           string            `yaml:"image"`
-	ImagePullSecret string            `yaml:"imagePullSecret"`
-	Stateful        bool              `yaml:"stateful"`
-	Replicas        int               `yaml:"replicas"`
-	Ports           []DeployPort      `yaml:"ports"`
-	Env             DeployEnv         `yaml:"env"`
-	Resources       DeployResources   `yaml:"resources"`
-	Healthcheck     DeployHealthcheck `yaml:"healthcheck"`
-	Restart         DeployRestart     `yaml:"restart"`
-	Placement       DeployPlacement   `yaml:"placement"`
-	Routes          []DeployRoute     `yaml:"routes"`
+	Name            string                `yaml:"name"`
+	Image           string                `yaml:"image"`
+	ImagePullSecret string                `yaml:"imagePullSecret"`
+	Stateful        bool                  `yaml:"stateful"`
+	Replicas        int                   `yaml:"replicas"`
+	Ports           []DeployPort          `yaml:"ports"`
+	Env             DeployEnv             `yaml:"env"`
+	Resources       DeployResources       `yaml:"resources"`
+	SecurityContext DeploySecurityContext `yaml:"securityContext"`
+	Healthcheck     DeployHealthcheck     `yaml:"healthcheck"`
+	Restart         DeployRestart         `yaml:"restart"`
+	Placement       DeployPlacement       `yaml:"placement"`
+	Routes          []DeployRoute         `yaml:"routes"`
 }
 
 type DeployPort struct {
@@ -63,6 +64,23 @@ func (value *DeployEnvValue) UnmarshalYAML(node *yaml.Node) error {
 type DeployResources struct {
 	CPU    string `yaml:"cpu"`
 	Memory string `yaml:"memory"`
+}
+
+type DeploySecurityContext struct {
+	User                   string                `yaml:"user"`
+	ReadOnlyRootFilesystem bool                  `yaml:"readOnlyRootFilesystem"`
+	Privileged             bool                  `yaml:"privileged"`
+	CapAdd                 []string              `yaml:"capAdd"`
+	CapDrop                []string              `yaml:"capDrop"`
+	HostNetwork            bool                  `yaml:"hostNetwork"`
+	HostPID                bool                  `yaml:"hostPID"`
+	HostPathMounts         []DeployHostPathMount `yaml:"hostPathMounts"`
+}
+
+type DeployHostPathMount struct {
+	HostPath      string `yaml:"hostPath"`
+	ContainerPath string `yaml:"containerPath"`
+	ReadOnly      bool   `yaml:"readOnly"`
 }
 
 type DeployHealthcheck struct {
@@ -123,6 +141,7 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 			Requests: requests,
 			Limits:   requests,
 		},
+		SecurityContext:      deploy.SecurityContext.toDomain(),
 		RestartPolicy:        restartPolicy(deploy.Restart.Policy),
 		PlacementConstraints: placementConstraints(deploy.Placement.Labels),
 	}
@@ -163,6 +182,27 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 		return types.ServiceSpec{}, fmt.Errorf("invalid deploy file: %w", err)
 	}
 	return spec, nil
+}
+
+func (context DeploySecurityContext) toDomain() types.SecurityContext {
+	mounts := make([]types.HostPathMount, 0, len(context.HostPathMounts))
+	for _, mount := range context.HostPathMounts {
+		mounts = append(mounts, types.HostPathMount{
+			HostPath:      strings.TrimSpace(mount.HostPath),
+			ContainerPath: strings.TrimSpace(mount.ContainerPath),
+			ReadOnly:      mount.ReadOnly,
+		})
+	}
+	return types.SecurityContext{
+		User:                   strings.TrimSpace(context.User),
+		ReadOnlyRootFilesystem: context.ReadOnlyRootFilesystem,
+		Privileged:             context.Privileged,
+		CapAdd:                 append([]string(nil), context.CapAdd...),
+		CapDrop:                append([]string(nil), context.CapDrop...),
+		HostNetwork:            context.HostNetwork,
+		HostPID:                context.HostPID,
+		HostPathMounts:         mounts,
+	}
 }
 
 func (deploy DeployFile) Validate() error {
