@@ -268,6 +268,13 @@ func (s *PostgresStore) UpdateService(ctx context.Context, id types.ServiceID, s
 }
 
 func (s *PostgresStore) UpdateServiceStatus(ctx context.Context, id types.ServiceID, status types.ServiceStatus, expectedUpdatedAt time.Time) (types.Service, error) {
+	current, err := s.GetService(ctx, id)
+	if err != nil {
+		return types.Service{}, err
+	}
+	if err := types.ValidateServiceTransition(current.Status, status); err != nil {
+		return types.Service{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
 	row := s.pool.QueryRow(ctx, `
 		UPDATE services
 		SET status = $2,
@@ -292,6 +299,15 @@ func (s *PostgresStore) UpdateServiceStatus(ctx context.Context, id types.Servic
 }
 
 func (s *PostgresStore) CreateTask(ctx context.Context, task types.Task) (types.Task, error) {
+	if task.DesiredStatus == "" {
+		task.DesiredStatus = types.TaskRunning
+	}
+	if task.ActualStatus == "" {
+		task.ActualStatus = types.TaskPending
+	}
+	if !types.ValidTaskStatus(task.DesiredStatus) || !types.ValidTaskStatus(task.ActualStatus) {
+		return types.Task{}, fmt.Errorf("%w: task status is invalid", ErrInvalidState)
+	}
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO tasks (
 			service_id, node_id, container_id, desired_status, actual_status,
@@ -329,6 +345,13 @@ func (s *PostgresStore) GetTask(ctx context.Context, id types.TaskID) (types.Tas
 }
 
 func (s *PostgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID types.NodeID, expectedUpdatedAt time.Time) (types.Task, error) {
+	current, err := s.GetTask(ctx, id)
+	if err != nil {
+		return types.Task{}, err
+	}
+	if err := types.ValidateTaskTransition(current.ActualStatus, types.TaskAssigned); err != nil {
+		return types.Task{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
 	row := s.pool.QueryRow(ctx, `
 		UPDATE tasks
 		SET node_id = $2,
@@ -361,6 +384,16 @@ func (s *PostgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID 
 }
 
 func (s *PostgresStore) StopTask(ctx context.Context, id types.TaskID, expectedUpdatedAt time.Time) (types.Task, error) {
+	current, err := s.GetTask(ctx, id)
+	if err != nil {
+		return types.Task{}, err
+	}
+	if current.DesiredStatus == types.TaskStopped || current.DesiredStatus == types.TaskRemoved {
+		return current, nil
+	}
+	if err := types.ValidateTaskDesiredTransition(current.DesiredStatus, types.TaskStopped); err != nil {
+		return types.Task{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
 	row := s.pool.QueryRow(ctx, `
 		UPDATE tasks
 		SET desired_status = $2,
@@ -391,6 +424,16 @@ func (s *PostgresStore) StopTask(ctx context.Context, id types.TaskID, expectedU
 }
 
 func (s *PostgresStore) UpdateTaskStatus(ctx context.Context, id types.TaskID, desired types.TaskStatus, actual types.TaskStatus, containerID string, failureReason string, expectedUpdatedAt time.Time) (types.Task, error) {
+	current, err := s.GetTask(ctx, id)
+	if err != nil {
+		return types.Task{}, err
+	}
+	if err := types.ValidateTaskDesiredTransition(current.DesiredStatus, desired); err != nil {
+		return types.Task{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
+	if err := types.ValidateTaskTransition(current.ActualStatus, actual); err != nil {
+		return types.Task{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
 	row := s.pool.QueryRow(ctx, `
 		UPDATE tasks
 		SET desired_status = $2,
@@ -509,6 +552,13 @@ func (s *PostgresStore) ListDeploymentsByStatus(ctx context.Context, status type
 }
 
 func (s *PostgresStore) UpdateDeploymentStatus(ctx context.Context, id types.DeploymentID, status types.DeploymentStatus, expectedUpdatedAt time.Time) (types.Deployment, error) {
+	current, err := s.GetDeployment(ctx, id)
+	if err != nil {
+		return types.Deployment{}, err
+	}
+	if err := types.ValidateDeploymentTransition(current.Status, status); err != nil {
+		return types.Deployment{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
 	row := s.pool.QueryRow(ctx, `
 		UPDATE deployments
 		SET status = $2,

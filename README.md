@@ -159,6 +159,7 @@ placement:
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [API](docs/API.md)
+- [State machines](docs/STATE_MACHINES.md)
 - [Agent](docs/AGENT.md)
 - [Scheduler](docs/SCHEDULER.md)
 - [Reconciler](docs/RECONCILER.md)

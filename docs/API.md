@@ -157,6 +157,8 @@ Valid task statuses include:
 - `removed`
 - `failed`
 
+Lifecycle transition rules are documented in [STATE_MACHINES.md](STATE_MACHINES.md).
+
 ## Agent Registration And Heartbeat
 
 Register:

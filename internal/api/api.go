@@ -361,7 +361,7 @@ func (s *Server) agentTaskStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeAgentCredential(w, r, req.NodeID) {
 		return
 	}
-	if !validAgentTaskStatus(req.Status) {
+	if !types.ValidAgentTaskStatus(req.Status) {
 		s.writeError(w, r, fmt.Errorf("%w: task status is invalid", store.ErrInvalidState))
 		return
 	}
@@ -380,22 +380,6 @@ func (s *Server) agentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		s.controlMetrics.IncTasksFailed()
 	}
 	writeJSON(w, http.StatusOK, TaskResponse{Task: task})
-}
-
-func validAgentTaskStatus(status types.TaskStatus) bool {
-	switch status {
-	case types.TaskPulling,
-		types.TaskCreated,
-		types.TaskRunning,
-		types.TaskHealthy,
-		types.TaskUnhealthy,
-		types.TaskFailed,
-		types.TaskStopped,
-		types.TaskRemoved:
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
@@ -1005,7 +989,7 @@ func (s *Server) taskFilter(w http.ResponseWriter, r *http.Request) (controlplan
 		filter.NodeID = types.NodeID(nodeID)
 	}
 	if status := strings.TrimSpace(query.Get("status")); status != "" {
-		if !validTaskStatus(types.TaskStatus(status)) {
+		if !types.ValidTaskStatus(types.TaskStatus(status)) {
 			s.writeError(w, r, fmt.Errorf("%w: status is invalid", store.ErrInvalidState))
 			return controlplane.TaskFilter{}, false
 		}
@@ -1160,26 +1144,6 @@ func validUUID(value string) bool {
 		}
 	}
 	return true
-}
-
-func validTaskStatus(status types.TaskStatus) bool {
-	switch status {
-	case types.TaskPending,
-		types.TaskAssigned,
-		types.TaskPulling,
-		types.TaskCreated,
-		types.TaskStarting,
-		types.TaskRunning,
-		types.TaskHealthy,
-		types.TaskUnhealthy,
-		types.TaskStopping,
-		types.TaskStopped,
-		types.TaskRemoved,
-		types.TaskFailed:
-		return true
-	default:
-		return false
-	}
 }
 
 func validEventSeverity(severity types.EventSeverity) bool {

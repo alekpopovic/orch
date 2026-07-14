@@ -313,27 +313,11 @@ func rolloutStateFor(deployment types.Deployment, service types.Service, tasks [
 }
 
 func isActive(task types.Task) bool {
-	if task.DesiredStatus == types.TaskStopped || task.DesiredStatus == types.TaskRemoved {
-		return false
-	}
-	switch task.ActualStatus {
-	case types.TaskPending,
-		types.TaskAssigned,
-		types.TaskPulling,
-		types.TaskCreated,
-		types.TaskStarting,
-		types.TaskRunning,
-		types.TaskHealthy,
-		types.TaskUnhealthy,
-		types.TaskStopping:
-		return true
-	default:
-		return false
-	}
+	return types.IsActiveTask(task)
 }
 
 func isAvailable(task types.Task) bool {
-	return task.ActualStatus == types.TaskRunning || task.ActualStatus == types.TaskHealthy
+	return types.IsAvailableTaskStatus(task.ActualStatus)
 }
 
 func terminalStatusFor(deployment types.Deployment) types.DeploymentStatus {

@@ -141,6 +141,9 @@ func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegis
 			node.Capacity = registration.Capacity
 			node.Allocatable = registration.Allocatable
 			if node.Status == types.NodeUnknown || node.Status == types.NodeOffline {
+				if err := types.ValidateNodeTransition(node.Status, types.NodeReady); err != nil {
+					return NodeCommand{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+				}
 				node.Status = types.NodeReady
 			}
 			node.LastHeartbeatAt = now
@@ -197,6 +200,9 @@ func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbe
 		node.Labels = heartbeat.Labels
 	}
 	if heartbeat.Shutdown {
+		if err := types.ValidateNodeTransition(node.Status, types.NodeOffline); err != nil {
+			return NodeCommand{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+		}
 		node.Status = types.NodeOffline
 	}
 	node.LastHeartbeatAt = now
@@ -307,7 +313,7 @@ func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusR
 	if report.NodeID == "" {
 		return types.Task{}, fmt.Errorf("%w: node id is required", store.ErrInvalidState)
 	}
-	if !validAgentTaskStatus(report.Status) {
+	if !types.ValidAgentTaskStatus(report.Status) {
 		return types.Task{}, fmt.Errorf("%w: task status %q is invalid", store.ErrInvalidState, report.Status)
 	}
 
@@ -321,10 +327,10 @@ func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusR
 	if task.NodeID != report.NodeID {
 		return types.Task{}, fmt.Errorf("%w: task is not assigned to node", store.ErrInvalidState)
 	}
-	if !taskCanAcceptAgentStatus(task, report.Status) {
+	if !types.AgentCanReportTaskStatus(task, report.Status) {
 		return types.Task{}, fmt.Errorf("%w: task %s with desired=%q actual=%q cannot accept agent status %q", store.ErrInvalidState, task.ID, task.DesiredStatus, task.ActualStatus, report.Status)
 	}
-	if isTerminalTaskStatus(task.ActualStatus) && task.ActualStatus == report.Status {
+	if types.IsTerminalTaskStatus(task.ActualStatus) && task.ActualStatus == report.Status {
 		return task, nil
 	}
 	status := report.Status
@@ -503,6 +509,9 @@ func (s *MemoryService) DeleteService(ctx context.Context, id types.ServiceID) e
 	if service.Status == types.ServiceDeleted || service.Status == types.ServiceDeleting {
 		return nil
 	}
+	if err := types.ValidateServiceTransition(service.Status, types.ServiceDeleting); err != nil {
+		return fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
 	now := s.now()
 	service.Status = types.ServiceDeleting
 	service.UpdatedAt = now
@@ -510,6 +519,9 @@ func (s *MemoryService) DeleteService(ctx context.Context, id types.ServiceID) e
 	for taskID, task := range s.tasks {
 		if task.ServiceID == id {
 			if task.DesiredStatus != types.TaskRemoved && task.ActualStatus != types.TaskRemoved {
+				if err := types.ValidateTaskDesiredTransition(task.DesiredStatus, types.TaskStopped); err != nil {
+					return fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+				}
 				task.DesiredStatus = types.TaskStopped
 				task.UpdatedAt = now
 				s.tasks[taskID] = task
@@ -737,6 +749,9 @@ func (s *MemoryService) CreateTask(ctx context.Context, task types.Task) (types.
 	if task.ActualStatus == "" {
 		task.ActualStatus = types.TaskPending
 	}
+	if !types.ValidTaskStatus(task.DesiredStatus) || !types.ValidTaskStatus(task.ActualStatus) {
+		return types.Task{}, fmt.Errorf("%w: task status is invalid", store.ErrInvalidState)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -773,6 +788,9 @@ func (s *MemoryService) StopTask(ctx context.Context, id types.TaskID, expectedU
 	if task.DesiredStatus == types.TaskStopped || task.DesiredStatus == types.TaskRemoved {
 		return task, nil
 	}
+	if err := types.ValidateTaskDesiredTransition(task.DesiredStatus, types.TaskStopped); err != nil {
+		return types.Task{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
 	task.DesiredStatus = types.TaskStopped
 	task.UpdatedAt = s.now()
 	s.tasks[id] = task
@@ -796,6 +814,9 @@ func (s *MemoryService) UpdateServiceStatus(ctx context.Context, id types.Servic
 	}
 	if !expectedUpdatedAt.IsZero() && !service.UpdatedAt.Equal(expectedUpdatedAt) {
 		return types.Service{}, store.ErrConflict
+	}
+	if err := types.ValidateServiceTransition(service.Status, status); err != nil {
+		return types.Service{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
 	}
 	service.Status = status
 	service.UpdatedAt = s.now()
@@ -850,6 +871,9 @@ func (s *MemoryService) UpdateDeploymentStatus(ctx context.Context, id types.Dep
 	}
 	if !expectedUpdatedAt.IsZero() && !deployment.UpdatedAt.Equal(expectedUpdatedAt) {
 		return types.Deployment{}, store.ErrConflict
+	}
+	if err := types.ValidateDeploymentTransition(deployment.Status, status); err != nil {
+		return types.Deployment{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
 	}
 	now := s.now()
 	deployment.Status = status
@@ -940,6 +964,9 @@ func (s *MemoryService) setNodeStatus(ctx context.Context, id types.NodeID, stat
 	if !ok {
 		return types.Node{}, store.ErrNotFound
 	}
+	if err := types.ValidateNodeTransition(node.Status, status); err != nil {
+		return types.Node{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
 	node.Status = status
 	node.UpdatedAt = s.now()
 	s.nodes[id] = node
@@ -1009,6 +1036,9 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 			continue
 		}
 		if task.Image != service.Spec.Image || task.Version != service.DeploymentVersion {
+			if err := types.ValidateTaskDesiredTransition(task.DesiredStatus, types.TaskRemoved); err != nil {
+				continue
+			}
 			task.DesiredStatus = types.TaskRemoved
 			task.UpdatedAt = timestamp
 			s.tasks[task.ID] = task
@@ -1050,6 +1080,9 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 
 	for i, task := range active {
 		if i >= service.Spec.Replicas {
+			if err := types.ValidateTaskDesiredTransition(task.DesiredStatus, types.TaskRemoved); err != nil {
+				continue
+			}
 			task.DesiredStatus = types.TaskRemoved
 			task.UpdatedAt = timestamp
 			s.tasks[task.ID] = task
@@ -1059,23 +1092,7 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 }
 
 func countsTowardDesiredReplicas(task types.Task) bool {
-	if task.DesiredStatus == types.TaskRemoved || task.DesiredStatus == types.TaskStopped {
-		return false
-	}
-	switch task.ActualStatus {
-	case types.TaskPending,
-		types.TaskAssigned,
-		types.TaskPulling,
-		types.TaskCreated,
-		types.TaskStarting,
-		types.TaskRunning,
-		types.TaskHealthy,
-		types.TaskUnhealthy,
-		types.TaskStopping:
-		return true
-	default:
-		return false
-	}
+	return types.IsActiveTask(task)
 }
 
 func (s *MemoryService) hasActiveDeploymentLocked(serviceID types.ServiceID) bool {
@@ -1102,6 +1119,9 @@ func (s *MemoryService) maybeFinalizeServiceDeletionLocked(serviceID types.Servi
 		if task.ActualStatus != types.TaskRemoved {
 			return
 		}
+	}
+	if err := types.ValidateServiceTransition(service.Status, types.ServiceDeleted); err != nil {
+		return
 	}
 	service.Status = types.ServiceDeleted
 	service.UpdatedAt = timestamp
@@ -1175,53 +1195,6 @@ func (s *MemoryService) readyNodesLocked() []types.Node {
 		return 0
 	})
 	return nodes
-}
-
-func validAgentTaskStatus(status types.TaskStatus) bool {
-	switch status {
-	case types.TaskPulling,
-		types.TaskCreated,
-		types.TaskRunning,
-		types.TaskHealthy,
-		types.TaskUnhealthy,
-		types.TaskFailed,
-		types.TaskStopped,
-		types.TaskRemoved:
-		return true
-	default:
-		return false
-	}
-}
-
-func taskCanAcceptAgentStatus(task types.Task, status types.TaskStatus) bool {
-	if task.ActualStatus == types.TaskRemoved {
-		return status == types.TaskRemoved
-	}
-	if task.DesiredStatus == types.TaskStopped || task.DesiredStatus == types.TaskRemoved {
-		return isStoppingOrTerminalAgentStatus(status)
-	}
-	if isTerminalTaskStatus(task.ActualStatus) {
-		return task.ActualStatus == status
-	}
-	return true
-}
-
-func isStoppingOrTerminalAgentStatus(status types.TaskStatus) bool {
-	switch status {
-	case types.TaskStopping, types.TaskStopped, types.TaskRemoved, types.TaskFailed:
-		return true
-	default:
-		return false
-	}
-}
-
-func isTerminalTaskStatus(status types.TaskStatus) bool {
-	switch status {
-	case types.TaskStopped, types.TaskRemoved, types.TaskFailed:
-		return true
-	default:
-		return false
-	}
 }
 
 func restartAllowed(policy types.RestartPolicy) bool {
