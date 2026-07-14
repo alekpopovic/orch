@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `32-reconciler-idempotency-under-restart.md`
-- Last matching commit: `a11cec0 Harden reconciler restart idempotency`
-- Completed prompt range: `00` through `32`
-- Next prompt to execute: `33-fake-runtime-for-deterministic-tests.md`
+- Last executed prompt: `33-fake-runtime-for-deterministic-tests.md`
+- Last matching commit: `c69f9ff Add deterministic fake container runtime`
+- Completed prompt range: `00` through `33`
+- Next prompt to execute: `34-port-allocation-and-collision-handling.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
