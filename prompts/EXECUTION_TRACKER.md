@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `30-transaction-boundaries-audit.md`
-- Last matching commit: `72fd9ba Add transaction boundaries for store operations`
-- Completed prompt range: `00` through `30`
-- Next prompt to execute: `31-scheduler-concurrency-safety.md`
+- Last executed prompt: `31-scheduler-concurrency-safety.md`
+- Last matching commit: `1a1c216 Add scheduler concurrency-safe assignment`
+- Completed prompt range: `00` through `31`
+- Next prompt to execute: `32-reconciler-idempotency-under-restart.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
