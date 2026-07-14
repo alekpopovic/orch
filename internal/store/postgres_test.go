@@ -187,6 +187,7 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		Message:           "task started",
 		RelatedObjectType: "task",
 		RelatedObjectID:   string(task.ID),
+		Details:           map[string]string{"error_code": "unavailable"},
 		Timestamp:         time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("append event: %v", err)
@@ -197,6 +198,9 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 	if len(listedEvents) != 1 {
 		t.Fatalf("expected one event, got %d", len(listedEvents))
+	}
+	if listedEvents[0].Details["error_code"] != "unavailable" {
+		t.Fatalf("unexpected event details %#v", listedEvents[0].Details)
 	}
 }
 

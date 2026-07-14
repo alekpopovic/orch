@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -61,6 +62,30 @@ func TestControllerDoesNotEmitStatusEventWhenStatusUnchanged(t *testing.T) {
 	}
 	if len(fake.events) != 0 {
 		t.Fatalf("expected no status event for unchanged rollout status, got %#v", fake.events)
+	}
+}
+
+func TestControllerEmitsErrorEventOnReconcileFailure(t *testing.T) {
+	ctx := context.Background()
+	fake := newFakeStore(1, types.Deployment{MaxUnavailable: 1, MaxSurge: 1})
+	fake.getServiceErr = store.ErrInvalidState
+
+	err := NewController(fake, slog.Default()).RunOnce(ctx)
+	if !errors.Is(err, store.ErrInvalidState) {
+		t.Fatalf("expected invalid state error, got %v", err)
+	}
+	if len(fake.events) != 1 {
+		t.Fatalf("expected one controller error event, got %#v", fake.events)
+	}
+	event := fake.events[0]
+	if event.Type != events.TypeControllerError || event.Severity != types.EventError {
+		t.Fatalf("unexpected event %#v", event)
+	}
+	if event.RelatedObjectType != "service" || event.RelatedObjectID != string(fake.deployment.ServiceID) {
+		t.Fatalf("unexpected related object %#v", event)
+	}
+	if event.Details["error_code"] != "invalid_argument" || event.Details["deployment_id"] != string(fake.deployment.ID) {
+		t.Fatalf("unexpected event details %#v", event.Details)
 	}
 }
 
@@ -132,12 +157,13 @@ func mustRunOnce(t *testing.T, controller *Controller, ctx context.Context) {
 }
 
 type fakeStore struct {
-	service    types.Service
-	deployment types.Deployment
-	tasks      map[types.TaskID]types.Task
-	events     []types.Event
-	nextTask   int
-	now        time.Time
+	service       types.Service
+	deployment    types.Deployment
+	tasks         map[types.TaskID]types.Task
+	events        []types.Event
+	nextTask      int
+	now           time.Time
+	getServiceErr error
 }
 
 func newFakeStore(replicas int, deployment types.Deployment) *fakeStore {
@@ -197,6 +223,9 @@ func task(id string, version int64, desired types.TaskStatus, actual types.TaskS
 }
 
 func (s *fakeStore) GetService(context.Context, types.ServiceID) (types.Service, error) {
+	if s.getServiceErr != nil {
+		return types.Service{}, s.getServiceErr
+	}
 	return s.service, nil
 }
 

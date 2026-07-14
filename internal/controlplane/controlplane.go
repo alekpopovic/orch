@@ -1520,15 +1520,7 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 		}
 		active = append(active, task)
 	}
-	slices.SortFunc(active, func(a, b types.Task) int {
-		if a.ID < b.ID {
-			return -1
-		}
-		if a.ID > b.ID {
-			return 1
-		}
-		return 0
-	})
+	sortTasksForReplicaRetention(active)
 
 	nodes := s.readyNodesLocked()
 	if len(nodes) == 0 {
@@ -1682,6 +1674,42 @@ func sortTasksByID(tasks []types.Task) {
 		}
 		return 0
 	})
+}
+
+func sortTasksForReplicaRetention(tasks []types.Task) {
+	slices.SortFunc(tasks, func(a, b types.Task) int {
+		if rankA, rankB := taskRetentionRank(a), taskRetentionRank(b); rankA != rankB {
+			return rankA - rankB
+		}
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			if a.CreatedAt.Before(b.CreatedAt) {
+				return -1
+			}
+			return 1
+		}
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
+		return 0
+	})
+}
+
+func taskRetentionRank(task types.Task) int {
+	switch task.ActualStatus {
+	case types.TaskHealthy, types.TaskRunning:
+		return 0
+	case types.TaskStarting, types.TaskCreated, types.TaskPulling:
+		return 1
+	case types.TaskAssigned, types.TaskPending:
+		return 2
+	case types.TaskUnhealthy:
+		return 3
+	default:
+		return 4
+	}
 }
 
 func availableTaskCount(tasks []types.Task) int {

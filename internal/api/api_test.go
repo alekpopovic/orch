@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/apperrors"
 	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/metrics"
@@ -628,11 +629,38 @@ func TestCreateServiceValidationError(t *testing.T) {
 
 	var body ErrorResponse
 	decodeResponse(t, rec, &body)
-	if body.Error.Code != "invalid_request" {
-		t.Fatalf("expected invalid_request, got %q", body.Error.Code)
+	if body.Error.Code != "invalid_argument" {
+		t.Fatalf("expected invalid_argument, got %q", body.Error.Code)
 	}
 	if body.Error.RequestID == "" {
 		t.Fatalf("expected request id in error")
+	}
+}
+
+func TestWriteErrorMapsDomainErrorAndRedactsDetails(t *testing.T) {
+	server := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	req := httptest.NewRequest(http.MethodPost, "/v1/services", nil)
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey{}, "req-structured"))
+	rec := httptest.NewRecorder()
+
+	server.writeError(rec, req, apperrors.New(apperrors.CodeFailedPrecondition, "service is deleting").WithDetails(map[string]any{
+		"field":    "status",
+		"password": "super-secret",
+	}))
+
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected status %d, got %d", http.StatusPreconditionFailed, rec.Code)
+	}
+	var body ErrorResponse
+	decodeResponse(t, rec, &body)
+	if body.Error.Code != "failed_precondition" || body.Error.RequestID != "req-structured" {
+		t.Fatalf("unexpected error response %#v", body.Error)
+	}
+	if body.Error.Details["field"] != "status" {
+		t.Fatalf("expected field detail, got %#v", body.Error.Details)
+	}
+	if body.Error.Details["password"] != "[REDACTED]" {
+		t.Fatalf("expected redacted password detail, got %#v", body.Error.Details)
 	}
 }
 

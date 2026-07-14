@@ -11,14 +11,28 @@ Errors use a stable envelope:
 ```json
 {
   "error": {
-    "code": "invalid_request",
+    "code": "invalid_argument",
     "message": "invalid state: image is required",
-    "request_id": "9f95d3c2-9a78-4b11-a11f-8991d45db5e1"
+    "request_id": "9f95d3c2-9a78-4b11-a11f-8991d45db5e1",
+    "details": {
+      "field": "image"
+    }
   }
 }
 ```
 
-Clients may send `X-Request-ID`. If absent, the server generates one and includes it in errors and access logs.
+`details` is optional and secret-like fields are redacted before they are returned. Stable error codes are:
+
+- `not_found`
+- `invalid_argument`
+- `conflict`
+- `unauthorized`
+- `forbidden`
+- `failed_precondition`
+- `unavailable`
+- `internal`
+
+Clients may send `X-Request-ID`. If absent, the server generates one and includes it in errors and access logs. Error logs include `error_code` plus related object identifiers such as `service_id`, `task_id`, or `node_id` when the request supplies them. Controllers emit `controller.error` events for important reconciliation failures with `details.error_code`.
 
 ## Authentication
 

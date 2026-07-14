@@ -869,7 +869,14 @@ func (c *HTTPClient) doMethod(ctx context.Context, method string, path string, b
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var apiErr api.ErrorResponse
 		if err := json.NewDecoder(resp.Body).Decode(&apiErr); err == nil && apiErr.Error.Message != "" {
-			return fmt.Errorf("%s", apiErr.Error.Message)
+			message := apiErr.Error.Message
+			if apiErr.Error.Code != "" {
+				message = strings.ReplaceAll(apiErr.Error.Code, "_", " ") + ": " + message
+			}
+			if apiErr.Error.RequestID != "" {
+				message += " [request_id=" + apiErr.Error.RequestID + "]"
+			}
+			return fmt.Errorf("%s", message)
 		}
 		return fmt.Errorf("server returned %s", resp.Status)
 	}

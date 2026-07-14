@@ -38,6 +38,7 @@ const (
 	TypeRolloutTaskCreated     = "rollout.task.created"
 	TypeRolloutTaskStopped     = "rollout.task.stopped"
 	TypeRolloutStatusChanged   = "rollout.status.changed"
+	TypeControllerError        = "controller.error"
 )
 
 type Event = types.Event

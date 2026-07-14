@@ -822,16 +822,17 @@ func (s *postgresStore) UpdateDeploymentStatus(ctx context.Context, id types.Dep
 func (s *postgresStore) AppendEvent(ctx context.Context, event types.Event) (types.Event, error) {
 	row := s.db.QueryRow(ctx, `
 		INSERT INTO events (
-			type, severity, source, message, related_object_type, related_object_id, created_at
+			type, severity, source, message, related_object_type, related_object_id, details, created_at
 		)
-		VALUES ($1, $2, $3, $4, nullif($5, ''), nullif($6, '')::uuid, COALESCE($7, timezone('utc', now())))
-		RETURNING id, type, severity, source, message, related_object_type, related_object_id, created_at`,
+		VALUES ($1, $2, $3, $4, nullif($5, ''), nullif($6, '')::uuid, $7, COALESCE($8, timezone('utc', now())))
+		RETURNING id, type, severity, source, message, related_object_type, related_object_id, details, created_at`,
 		event.Type,
 		string(event.Severity),
 		event.Source,
 		event.Message,
 		event.RelatedObjectType,
 		event.RelatedObjectID,
+		defaultMap(event.Details),
 		nilTime(event.Timestamp),
 	)
 	created, err := scanEvent(row)
@@ -848,7 +849,7 @@ func (s *postgresStore) ListEvents(ctx context.Context, filter events.Filter) ([
 	}
 
 	sql := `
-		SELECT id, type, severity, source, message, related_object_type, related_object_id, created_at
+		SELECT id, type, severity, source, message, related_object_type, related_object_id, details, created_at
 		FROM events`
 	args := make([]any, 0, 8)
 	conditions := make([]string, 0, 8)
@@ -1240,6 +1241,7 @@ func scanEvent(row pgx.Row) (types.Event, error) {
 	var event types.Event
 	var id string
 	var relatedType, relatedID *string
+	var details []byte
 	err := row.Scan(
 		&id,
 		&event.Type,
@@ -1248,10 +1250,16 @@ func scanEvent(row pgx.Row) (types.Event, error) {
 		&event.Message,
 		&relatedType,
 		&relatedID,
+		&details,
 		&event.Timestamp,
 	)
 	if err != nil {
 		return types.Event{}, err
+	}
+	if len(details) > 0 {
+		if err := json.Unmarshal(details, &event.Details); err != nil {
+			return types.Event{}, fmt.Errorf("decode event details: %w", err)
+		}
 	}
 	event.ID = types.EventID(id)
 	if relatedType != nil {

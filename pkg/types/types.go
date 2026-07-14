@@ -622,14 +622,15 @@ const (
 )
 
 type Event struct {
-	ID                EventID       `json:"id"`
-	Type              string        `json:"type"`
-	Severity          EventSeverity `json:"severity"`
-	Source            string        `json:"source"`
-	Message           string        `json:"message"`
-	RelatedObjectType string        `json:"related_object_type,omitempty"`
-	RelatedObjectID   string        `json:"related_object_id,omitempty"`
-	Timestamp         time.Time     `json:"timestamp"`
+	ID                EventID           `json:"id"`
+	Type              string            `json:"type"`
+	Severity          EventSeverity     `json:"severity"`
+	Source            string            `json:"source"`
+	Message           string            `json:"message"`
+	RelatedObjectType string            `json:"related_object_type,omitempty"`
+	RelatedObjectID   string            `json:"related_object_id,omitempty"`
+	Details           map[string]string `json:"details,omitempty"`
+	Timestamp         time.Time         `json:"timestamp"`
 }
 
 type EventSeverity string

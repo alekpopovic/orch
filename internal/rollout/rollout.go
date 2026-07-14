@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/apperrors"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -97,6 +98,7 @@ func (c *Controller) RunOnce(ctx context.Context) error {
 			return err
 		}
 		if err := c.reconcileDeployment(ctx, deployment); err != nil {
+			c.emitControllerError(ctx, deployment, err)
 			return err
 		}
 	}
@@ -306,6 +308,29 @@ func (c *Controller) eventOptions(transactional bool) []events.EmitOption {
 		options = append(options, events.Strict())
 	}
 	return options
+}
+
+func (c *Controller) emitControllerError(ctx context.Context, deployment types.Deployment, err error) {
+	code := apperrors.CodeOf(err)
+	c.logger.Warn("rollout controller error",
+		"error_code", string(code),
+		"service_id", deployment.ServiceID,
+		"deployment_id", deployment.ID,
+		"error", apperrors.MessageOf(err),
+	)
+	_ = events.Emit(ctx, c.store, types.Event{
+		Type:              events.TypeControllerError,
+		Severity:          types.EventError,
+		Source:            "rollout",
+		Message:           "rollout controller error: " + string(code),
+		RelatedObjectType: "service",
+		RelatedObjectID:   string(deployment.ServiceID),
+		Details: apperrors.StringDetails(map[string]any{
+			"deployment_id": deployment.ID,
+			"error_code":    code,
+		}),
+		Timestamp: c.now(),
+	}, events.WithLogger(c.logger))
 }
 
 type rolloutState struct {

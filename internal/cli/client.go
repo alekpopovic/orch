@@ -8,11 +8,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/alekpopovic/orch/internal/api"
+	"github.com/alekpopovic/orch/internal/apperrors"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
@@ -23,6 +25,38 @@ type APIClient struct {
 	baseURL    string
 	httpClient *http.Client
 	token      string
+}
+
+type APIError struct {
+	StatusCode int
+	Status     string
+	Code       string
+	Message    string
+	RequestID  string
+	Details    map[string]any
+}
+
+func (e *APIError) Error() string {
+	if e == nil {
+		return ""
+	}
+	code := strings.ReplaceAll(strings.TrimSpace(e.Code), "_", " ")
+	message := strings.TrimSpace(e.Message)
+	switch {
+	case code != "" && message != "":
+		message = code + ": " + message
+	case code != "":
+		message = code
+	case message == "":
+		message = "server returned " + e.Status
+	}
+	if details := formatDetails(e.Details); details != "" {
+		message += " (" + details + ")"
+	}
+	if e.RequestID != "" {
+		message += " [request_id=" + e.RequestID + "]"
+	}
+	return message
 }
 
 func NewAPIClient(serverURL string) (*APIClient, error) {
@@ -296,10 +330,30 @@ func (c *APIClient) do(ctx context.Context, method string, path string, body any
 func decodeAPIError(resp *http.Response) error {
 	var body api.ErrorResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil && body.Error.Message != "" {
-		if body.Error.RequestID != "" {
-			return fmt.Errorf("%s (request %s)", body.Error.Message, body.Error.RequestID)
+		return &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Code:       body.Error.Code,
+			Message:    body.Error.Message,
+			RequestID:  body.Error.RequestID,
+			Details:    apperrors.RedactDetails(body.Error.Details),
 		}
-		return fmt.Errorf("%s", body.Error.Message)
 	}
-	return fmt.Errorf("server returned %s", resp.Status)
+	return &APIError{StatusCode: resp.StatusCode, Status: resp.Status}
+}
+
+func formatDetails(details map[string]any) string {
+	if len(details) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(details))
+	for key := range details {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", key, details[key]))
+	}
+	return strings.Join(parts, ", ")
 }

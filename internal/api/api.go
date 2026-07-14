@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/apperrors"
 	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
@@ -177,9 +178,10 @@ type ErrorResponse struct {
 }
 
 type RequestError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	RequestID string `json:"request_id,omitempty"`
+	Code      string         `json:"code"`
+	Message   string         `json:"message"`
+	RequestID string         `json:"request_id,omitempty"`
+	Details   map[string]any `json:"details,omitempty"`
 }
 
 type ListNodesResponse struct {
@@ -1170,13 +1172,7 @@ func (s *Server) authorizeAgentRegistration(w http.ResponseWriter, r *http.Reque
 		token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 	}
 	if token != s.bootstrapToken {
-		writeJSON(w, http.StatusUnauthorized, ErrorResponse{
-			Error: RequestError{
-				Code:      "unauthorized",
-				Message:   "invalid agent registration token",
-				RequestID: requestID(r.Context()),
-			},
-		})
+		s.writeAuthError(w, r, http.StatusUnauthorized, string(apperrors.CodeUnauthorized), "invalid agent registration token")
 		return false
 	}
 	return true
@@ -1217,6 +1213,7 @@ func (s *Server) issueAgentCredential(ctx context.Context, nodeID types.NodeID) 
 }
 
 func (s *Server) writeAuthError(w http.ResponseWriter, r *http.Request, status int, code string, message string) {
+	s.logRequestError(r, status, apperrors.Code(code), errors.New(message))
 	writeJSON(w, status, ErrorResponse{
 		Error: RequestError{
 			Code:      code,
@@ -1365,37 +1362,102 @@ func (s *Server) logTask(r *http.Request) (types.Task, error) {
 }
 
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
-	status, code := errorStatus(err)
-	message := err.Error()
-	if status == http.StatusInternalServerError {
-		message = "internal server error"
-	}
+	status, code, message, details := errorAttributes(err)
+	s.logRequestError(r, status, code, err)
 	writeJSON(w, status, ErrorResponse{
 		Error: RequestError{
-			Code:      code,
+			Code:      string(code),
 			Message:   message,
 			RequestID: requestID(r.Context()),
+			Details:   details,
 		},
 	})
 }
 
 func errorStatus(err error) (int, string) {
+	status, code, _, _ := errorAttributes(err)
+	return status, string(code)
+}
+
+func errorAttributes(err error) (int, apperrors.Code, string, map[string]any) {
+	code := apperrors.CodeOf(err)
+	message := apperrors.MessageOf(err)
+	details := apperrors.DetailsOf(err)
+	return statusForCode(code), code, message, details
+}
+
+func statusForCode(code apperrors.Code) int {
 	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return http.StatusNotFound, "not_found"
-	case errors.Is(err, store.ErrConflict):
-		return http.StatusConflict, "conflict"
-	case errors.Is(err, store.ErrInvalidState):
-		return http.StatusBadRequest, "invalid_request"
-	case errors.Is(err, store.ErrDuplicate):
-		return http.StatusConflict, "duplicate"
-	case errors.Is(err, context.Canceled):
-		return http.StatusRequestTimeout, "request_canceled"
-	case errors.Is(err, context.DeadlineExceeded):
-		return http.StatusGatewayTimeout, "deadline_exceeded"
+	case code == apperrors.CodeNotFound:
+		return http.StatusNotFound
+	case code == apperrors.CodeInvalidArgument:
+		return http.StatusBadRequest
+	case code == apperrors.CodeConflict:
+		return http.StatusConflict
+	case code == apperrors.CodeUnauthorized:
+		return http.StatusUnauthorized
+	case code == apperrors.CodeForbidden:
+		return http.StatusForbidden
+	case code == apperrors.CodeFailedPrecondition:
+		return http.StatusPreconditionFailed
+	case code == apperrors.CodeUnavailable:
+		return http.StatusServiceUnavailable
 	default:
-		return http.StatusInternalServerError, "internal"
+		return http.StatusInternalServerError
 	}
+}
+
+func (s *Server) logRequestError(r *http.Request, status int, code apperrors.Code, err error) {
+	if s.logger == nil {
+		return
+	}
+	fields := []any{
+		"request_id", requestID(r.Context()),
+		"method", r.Method,
+		"path", r.URL.Path,
+		"status", status,
+		"error_code", string(code),
+		"error", apperrors.MessageOf(err),
+	}
+	fields = append(fields, requestObjectFields(r)...)
+	if status >= http.StatusInternalServerError {
+		s.logger.Error("api request failed", fields...)
+		return
+	}
+	s.logger.Warn("api request failed", fields...)
+}
+
+func requestObjectFields(r *http.Request) []any {
+	fields := make([]any, 0, 8)
+	if id := strings.TrimSpace(r.PathValue("id")); id != "" {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/services/"):
+			fields = append(fields, "service_id", id)
+		case strings.HasPrefix(r.URL.Path, "/v1/nodes/"):
+			fields = append(fields, "node_id", id)
+		case strings.HasPrefix(r.URL.Path, "/v1/tasks/"):
+			fields = append(fields, "task_id", id)
+		default:
+			fields = append(fields, "object_id", id)
+		}
+	}
+	if taskID := strings.TrimSpace(r.PathValue("task_id")); taskID != "" {
+		fields = append(fields, "task_id", taskID)
+	}
+	query := r.URL.Query()
+	for _, item := range []struct {
+		name  string
+		field string
+	}{
+		{name: "service_id", field: "service_id"},
+		{name: "task_id", field: "task_id"},
+		{name: "node_id", field: "node_id"},
+	} {
+		if value := strings.TrimSpace(query.Get(item.name)); value != "" {
+			fields = append(fields, item.field, value)
+		}
+	}
+	return fields
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
