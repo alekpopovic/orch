@@ -11,6 +11,7 @@ The Pages workflow publishes:
 - All Markdown files from `docs/`.
 - `README.md`, `CHANGELOG.md`, and `RELEASE_NOTES.md` for release-oriented pages.
 - `api/openapi.yaml` as `openapi.yaml` for the API contract page.
+- SVG brand assets and Mermaid chart pages for a colorful release portal.
 
 ## Theme Modes
 
@@ -21,6 +22,10 @@ The site supports three theme modes:
 - `Dark` forces the dark palette.
 
 The selected mode is stored in local browser storage.
+
+## Charts
+
+The site loads Mermaid and renders fenced `mermaid` code blocks from Markdown. README and `CHARTS.md` use this for architecture, release-focus, and lifecycle diagrams.
 
 ## Deployment
 

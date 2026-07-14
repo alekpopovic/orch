@@ -73,6 +73,7 @@ This is the first release; no upgrade path is required. For future releases, run
 - Added HA control-plane design and PostgreSQL advisory-lock leader election primitives.
 - Added multi-agent load testing and chaos-style integration scenarios.
 - Added a GitHub Pages documentation portal with release docs, OpenAPI access, left-sidebar navigation, and auto/light/dark theme support.
+- Added a branded README/docs refresh with a unique SVG logo, colorful cards, icons, and Mermaid chart rendering.
 
 ### Compatibility Notes
 

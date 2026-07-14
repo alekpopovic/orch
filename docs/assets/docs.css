@@ -6,6 +6,82 @@
   color-scheme: dark;
 }
 
+.brand-panel {
+  background:
+    radial-gradient(circle at 20% 0%, rgb(34 211 238 / 0.18), transparent 36%),
+    radial-gradient(circle at 100% 20%, rgb(139 92 246 / 0.16), transparent 38%),
+    rgb(255 255 255 / 0.86);
+}
+
+.dark .brand-panel {
+  background:
+    radial-gradient(circle at 20% 0%, rgb(34 211 238 / 0.12), transparent 36%),
+    radial-gradient(circle at 100% 20%, rgb(139 92 246 / 0.14), transparent 38%),
+    rgb(15 23 42 / 0.78);
+}
+
+.metric-card {
+  align-items: flex-start;
+  background: linear-gradient(135deg, rgb(255 255 255 / 0.92), rgb(239 246 255 / 0.84));
+  border: 1px solid rgb(191 219 254 / 0.72);
+  border-radius: 1.25rem;
+  box-shadow: 0 16px 45px -34px rgb(15 23 42 / 0.45);
+  display: grid;
+  gap: 0.2rem;
+  padding: 1rem;
+  transition: all 180ms ease;
+}
+
+.metric-card:hover {
+  border-color: rgb(35 116 225 / 0.5);
+  box-shadow: 0 24px 55px -34px rgb(35 116 225 / 0.6);
+  transform: translateY(-2px);
+}
+
+.metric-card span {
+  font-size: 1.45rem;
+}
+
+.metric-card strong {
+  color: rgb(15 23 42);
+}
+
+.metric-card small {
+  color: rgb(100 116 139);
+}
+
+.dark .metric-card {
+  background: linear-gradient(135deg, rgb(15 23 42 / 0.86), rgb(30 41 59 / 0.72));
+  border-color: rgb(51 65 85);
+}
+
+.dark .metric-card strong {
+  color: rgb(248 250 252);
+}
+
+.dark .metric-card small {
+  color: rgb(148 163 184);
+}
+
+.mini-stat {
+  border-radius: 1rem;
+  display: grid;
+  padding: 0.8rem;
+}
+
+.mini-stat strong {
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.mini-stat span {
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-top: 0.3rem;
+  opacity: 0.76;
+  text-transform: uppercase;
+}
+
 .quick-link {
   border-radius: 0.875rem;
   border: 1px solid rgb(226 232 240);
@@ -235,4 +311,24 @@
 .dark .doc-content th {
   background: rgb(15 23 42);
   color: rgb(241 245 249);
+}
+
+.doc-content .mermaid {
+  background:
+    radial-gradient(circle at 0% 0%, rgb(34 211 238 / 0.1), transparent 34%),
+    radial-gradient(circle at 100% 10%, rgb(139 92 246 / 0.1), transparent 36%),
+    rgb(248 250 252);
+  border: 1px solid rgb(226 232 240);
+  border-radius: 1.25rem;
+  margin-top: 1.2rem;
+  overflow-x: auto;
+  padding: 1rem;
+}
+
+.dark .doc-content .mermaid {
+  background:
+    radial-gradient(circle at 0% 0%, rgb(34 211 238 / 0.08), transparent 34%),
+    radial-gradient(circle at 100% 10%, rgb(139 92 246 / 0.08), transparent 36%),
+    rgb(15 23 42);
+  border-color: rgb(30 41 59);
 }

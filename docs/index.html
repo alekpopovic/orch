@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="light dark" />
     <title>orch Documentation</title>
     <meta name="description" content="Release and operator documentation for orch, a Docker-first Go container orchestrator." />
+    <link rel="icon" href="assets/orch-mark.svg" type="image/svg+xml" />
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
       tailwind.config = {
@@ -18,7 +19,8 @@
                 100: '#d9edff',
                 500: '#2374e1',
                 600: '#1d5fc0',
-                700: '#194d9a'
+                700: '#194d9a',
+                950: '#06142b'
               }
             },
             boxShadow: {
@@ -29,6 +31,7 @@
       }
     </script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <link rel="stylesheet" href="assets/docs.css" />
   </head>
   <body class="bg-slate-50 text-slate-900 antialiased transition-colors dark:bg-slate-950 dark:text-slate-100">
@@ -43,7 +46,7 @@
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
         <a href="#README.md" class="flex items-center gap-2 font-semibold tracking-tight">
-          <span class="grid h-8 w-8 place-items-center rounded-xl bg-orch-600 text-white shadow-glow">o</span>
+          <img class="h-9 w-9 rounded-xl shadow-glow" src="assets/orch-mark.svg" alt="" />
           <span>orch docs</span>
         </a>
         <select id="theme-select-mobile" class="rounded-xl border border-slate-200 bg-white px-2 py-1 text-sm dark:border-slate-800 dark:bg-slate-900" aria-label="Theme">
@@ -59,10 +62,10 @@
     <aside id="sidebar" class="fixed inset-y-0 left-0 z-50 flex w-80 -translate-x-full flex-col border-r border-slate-200 bg-white/95 shadow-2xl backdrop-blur-xl transition-transform dark:border-slate-800 dark:bg-slate-950/95 lg:translate-x-0 lg:shadow-none">
       <div class="flex h-20 items-center justify-between border-b border-slate-200 px-5 dark:border-slate-800">
         <a href="#README.md" class="flex items-center gap-3">
-          <span class="grid h-10 w-10 place-items-center rounded-2xl bg-gradient-to-br from-orch-500 to-cyan-400 text-lg font-black text-white shadow-glow">o</span>
+          <img class="h-11 w-11 rounded-2xl shadow-glow" src="assets/orch-mark.svg" alt="" />
           <span>
             <span class="block text-base font-bold tracking-tight">orch docs</span>
-            <span class="block text-xs text-slate-500 dark:text-slate-400">release + operator guide</span>
+            <span class="block text-xs text-slate-500 dark:text-slate-400">colorful operator cockpit</span>
           </span>
         </a>
         <button id="sidebar-close" class="rounded-xl p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-900 lg:hidden" aria-label="Close navigation">
@@ -86,30 +89,45 @@
       <nav id="nav" class="flex-1 space-y-6 overflow-y-auto px-4 py-5"></nav>
 
       <div class="border-t border-slate-200 p-5 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
+        <div class="mb-3 rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-orch-50 p-3 dark:border-slate-800 dark:from-slate-900 dark:to-orch-950/30">
+          <p class="font-semibold text-slate-700 dark:text-slate-200">✨ Brand kit</p>
+          <p class="mt-1">Orbit logo, neon accents, Mermaid charts, and readable ops docs.</p>
+        </div>
         <p>Built from Markdown in <code class="rounded bg-slate-100 px-1 dark:bg-slate-900">docs/</code>.</p>
         <a class="mt-2 inline-flex font-medium text-orch-600 hover:text-orch-700 dark:text-orch-400" href="https://github.com/alekpopovic/orch">View on GitHub →</a>
       </div>
     </aside>
 
     <main class="lg:pl-80">
-      <section class="border-b border-slate-200 bg-white/60 px-6 py-10 backdrop-blur dark:border-slate-800 dark:bg-slate-950/30 sm:px-10 lg:px-12">
+      <section class="relative overflow-hidden border-b border-slate-200 bg-white/60 px-6 py-10 backdrop-blur dark:border-slate-800 dark:bg-slate-950/30 sm:px-10 lg:px-12">
+        <div class="absolute -right-24 top-6 hidden h-72 w-72 rounded-full bg-violet-400/20 blur-3xl dark:bg-violet-500/10 lg:block"></div>
         <div class="mx-auto max-w-5xl">
           <div class="mb-6 inline-flex items-center gap-2 rounded-full border border-orch-500/20 bg-orch-50 px-3 py-1 text-sm font-medium text-orch-700 dark:border-orch-400/20 dark:bg-orch-500/10 dark:text-orch-200">
             <span class="h-2 w-2 rounded-full bg-emerald-500"></span>
-            v0.2.0 production-hardening docs
+            v0.2.0 production-hardening docs · branded cockpit
           </div>
-          <div class="grid gap-8 lg:grid-cols-[1fr_18rem] lg:items-end">
+          <div class="grid gap-8 lg:grid-cols-[1fr_22rem] lg:items-end">
             <div>
-              <h1 class="text-4xl font-black tracking-tight text-slate-950 dark:text-white sm:text-5xl">orch documentation</h1>
-              <p class="mt-4 max-w-3xl text-lg leading-8 text-slate-600 dark:text-slate-300">A GitHub Pages documentation hub for release notes, API contracts, operations, security, scheduling, rollouts, and production workflows.</p>
+              <img class="mb-7 h-auto w-full max-w-md" src="assets/orch-wordmark.svg" alt="orch Docker-first orchestration" />
+              <h1 class="text-4xl font-black tracking-tight text-slate-950 dark:text-white sm:text-5xl">a colorful control-plane handbook</h1>
+              <p class="mt-4 max-w-3xl text-lg leading-8 text-slate-600 dark:text-slate-300">Release notes, API contracts, operations, security, scheduler internals, rollouts, Mermaid charts, and production workflows in one bright GitHub Pages portal.</p>
+              <div class="mt-7 grid gap-3 sm:grid-cols-3">
+                <a class="metric-card" href="#API.md"><span>🔌</span><strong>OpenAPI</strong><small>public API contract</small></a>
+                <a class="metric-card" href="#PRODUCTION_DEPLOYMENT.md"><span>🚢</span><strong>Deploy</strong><small>production runbooks</small></a>
+                <a class="metric-card" href="#OBSERVABILITY.md"><span>📈</span><strong>Signals</strong><small>metrics + dashboards</small></a>
+              </div>
             </div>
-            <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/80">
+            <div class="brand-panel rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/80">
               <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Quick links</p>
               <div class="mt-4 grid gap-2 text-sm">
-                <a class="quick-link" href="#RELEASE_NOTES.md">Release notes</a>
-                <a class="quick-link" href="#API.md">API guide</a>
-                <a class="quick-link" href="#PRODUCTION_DEPLOYMENT.md">Production deploy</a>
-                <a class="quick-link" href="#openapi.yaml">OpenAPI YAML</a>
+                <a class="quick-link" href="#RELEASE_NOTES.md">🎉 Release notes</a>
+                <a class="quick-link" href="#BRAND.md">🎨 Brand kit</a>
+                <a class="quick-link" href="#CHARTS.md">📊 Charts</a>
+                <a class="quick-link" href="#API.md">🔌 API guide</a>
+              </div>
+              <div class="mt-5 grid grid-cols-2 gap-3">
+                <div class="mini-stat bg-cyan-500/10 text-cyan-700 dark:text-cyan-200"><strong>36</strong><span>doc pages</span></div>
+                <div class="mini-stat bg-violet-500/10 text-violet-700 dark:text-violet-200"><strong>v0.2</strong><span>hardened</span></div>
               </div>
             </div>
           </div>

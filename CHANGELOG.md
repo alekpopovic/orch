@@ -16,6 +16,7 @@ Production-hardening release for the MVP orchestrator.
 - HA control-plane design and PostgreSQL advisory-lock leader election MVP.
 - Multi-agent load test command and chaos-style integration scenarios.
 - GitHub Pages documentation portal with release docs, OpenAPI access, sidebar navigation, and auto/light/dark theme support.
+- Branded docs refresh with a unique SVG logo system, colorful README landing page, icons, and Mermaid charts.
 
 ### Changed
 

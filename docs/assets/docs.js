@@ -2,67 +2,69 @@ const docsNav = [
   {
     group: 'Release',
     items: [
-      { title: 'Overview', path: 'README.md', fallbacks: ['../README.md'] },
-      { title: 'Release notes', path: 'RELEASE_NOTES.md', fallbacks: ['../RELEASE_NOTES.md'] },
-      { title: 'Changelog', path: 'CHANGELOG.md', fallbacks: ['../CHANGELOG.md'] },
-      { title: 'GitHub Pages', path: 'GITHUB_PAGES.md' }
+      { title: 'Overview', path: 'README.md', icon: '🌈', fallbacks: ['../README.md'] },
+      { title: 'Brand kit', path: 'BRAND.md', icon: '🎨' },
+      { title: 'Charts', path: 'CHARTS.md', icon: '📊' },
+      { title: 'Release notes', path: 'RELEASE_NOTES.md', icon: '🎉', fallbacks: ['../RELEASE_NOTES.md'] },
+      { title: 'Changelog', path: 'CHANGELOG.md', icon: '🗓️', fallbacks: ['../CHANGELOG.md'] },
+      { title: 'GitHub Pages', path: 'GITHUB_PAGES.md', icon: '🚀' }
     ]
   },
   {
     group: 'API and Operations',
     items: [
-      { title: 'API', path: 'API.md' },
-      { title: 'OpenAPI YAML', path: 'openapi.yaml', fallbacks: ['../api/openapi.yaml'], format: 'code' },
-      { title: 'Configuration', path: 'CONFIGURATION.md' },
-      { title: 'Production deployment', path: 'PRODUCTION_DEPLOYMENT.md' },
-      { title: 'Operations', path: 'OPERATIONS.md' },
-      { title: 'Backup and restore', path: 'BACKUP_RESTORE.md' }
+      { title: 'API', path: 'API.md', icon: '🔌' },
+      { title: 'OpenAPI YAML', path: 'openapi.yaml', icon: '🧾', fallbacks: ['../api/openapi.yaml'], format: 'code' },
+      { title: 'Configuration', path: 'CONFIGURATION.md', icon: '⚙️' },
+      { title: 'Production deployment', path: 'PRODUCTION_DEPLOYMENT.md', icon: '🚢' },
+      { title: 'Operations', path: 'OPERATIONS.md', icon: '🧰' },
+      { title: 'Backup and restore', path: 'BACKUP_RESTORE.md', icon: '💾' }
     ]
   },
   {
     group: 'Architecture',
     items: [
-      { title: 'Architecture', path: 'ARCHITECTURE.md' },
-      { title: 'State machines', path: 'STATE_MACHINES.md' },
-      { title: 'Scheduler', path: 'SCHEDULER.md' },
-      { title: 'Reconciler', path: 'RECONCILER.md' },
-      { title: 'Rollouts', path: 'ROLLOUTS.md' },
-      { title: 'HA control plane', path: 'HA_CONTROL_PLANE_DESIGN.md' }
+      { title: 'Architecture', path: 'ARCHITECTURE.md', icon: '🏗️' },
+      { title: 'State machines', path: 'STATE_MACHINES.md', icon: '🔀' },
+      { title: 'Scheduler', path: 'SCHEDULER.md', icon: '🧭' },
+      { title: 'Reconciler', path: 'RECONCILER.md', icon: '🔁' },
+      { title: 'Rollouts', path: 'ROLLOUTS.md', icon: '🚀' },
+      { title: 'HA control plane', path: 'HA_CONTROL_PLANE_DESIGN.md', icon: '👑' }
     ]
   },
   {
     group: 'Runtime',
     items: [
-      { title: 'Agent', path: 'AGENT.md' },
-      { title: 'Service spec', path: 'SERVICE_SPEC.md' },
-      { title: 'Resources', path: 'RESOURCES.md' },
-      { title: 'Health checks', path: 'HEALTHCHECKS.md' },
-      { title: 'Logs', path: 'LOGS.md' },
-      { title: 'Events', path: 'EVENTS.md' }
+      { title: 'Agent', path: 'AGENT.md', icon: '🤖' },
+      { title: 'Service spec', path: 'SERVICE_SPEC.md', icon: '📦' },
+      { title: 'Resources', path: 'RESOURCES.md', icon: '🧮' },
+      { title: 'Health checks', path: 'HEALTHCHECKS.md', icon: '🫀' },
+      { title: 'Logs', path: 'LOGS.md', icon: '📜' },
+      { title: 'Events', path: 'EVENTS.md', icon: '⚡' }
     ]
   },
   {
     group: 'Networking and Security',
     items: [
-      { title: 'Networking', path: 'NETWORKING.md' },
-      { title: 'Service discovery', path: 'SERVICE_DISCOVERY.md' },
-      { title: 'Traefik', path: 'TRAEFIK.md' },
-      { title: 'Secrets', path: 'SECRETS.md' },
-      { title: 'Registries', path: 'REGISTRIES.md' },
-      { title: 'Security', path: 'SECURITY.md' },
-      { title: 'Security review', path: 'SECURITY_REVIEW.md' }
+      { title: 'Networking', path: 'NETWORKING.md', icon: '🕸️' },
+      { title: 'Service discovery', path: 'SERVICE_DISCOVERY.md', icon: '🔎' },
+      { title: 'Traefik', path: 'TRAEFIK.md', icon: '🚦' },
+      { title: 'Secrets', path: 'SECRETS.md', icon: '🔐' },
+      { title: 'Registries', path: 'REGISTRIES.md', icon: '🗃️' },
+      { title: 'Security', path: 'SECURITY.md', icon: '🛡️' },
+      { title: 'Security review', path: 'SECURITY_REVIEW.md', icon: '🧪' }
     ]
   },
   {
     group: 'Reliability',
     items: [
-      { title: 'Observability', path: 'OBSERVABILITY.md' },
-      { title: 'Reliability', path: 'RELIABILITY.md' },
-      { title: 'Autoscaling', path: 'AUTOSCALING.md' },
-      { title: 'Autoscaling design', path: 'AUTOSCALING_DESIGN.md' },
-      { title: 'Load testing', path: 'LOAD_TESTING.md' },
-      { title: 'Chaos testing', path: 'CHAOS_TESTING.md' },
-      { title: 'Development', path: 'DEVELOPMENT.md' }
+      { title: 'Observability', path: 'OBSERVABILITY.md', icon: '📈' },
+      { title: 'Reliability', path: 'RELIABILITY.md', icon: '🪢' },
+      { title: 'Autoscaling', path: 'AUTOSCALING.md', icon: '📊' },
+      { title: 'Autoscaling design', path: 'AUTOSCALING_DESIGN.md', icon: '🧠' },
+      { title: 'Load testing', path: 'LOAD_TESTING.md', icon: '🏋️' },
+      { title: 'Chaos testing', path: 'CHAOS_TESTING.md', icon: '🌪️' },
+      { title: 'Development', path: 'DEVELOPMENT.md', icon: '🛠️' }
     ]
   }
 ]
@@ -91,6 +93,9 @@ function applyTheme(mode) {
 function setTheme(mode) {
   localStorage.setItem('orch-docs-theme', mode)
   applyTheme(mode)
+  if (content.querySelector('.mermaid')) {
+    loadDoc()
+  }
 }
 
 function normalizeRoute(route) {
@@ -119,7 +124,7 @@ function renderNav(filter = '') {
           <div class="mt-2 space-y-1">
             ${items.map((item) => `
               <a class="nav-link ${item.path === current ? 'active' : ''}" href="#${encodeURIComponent(item.path)}">
-                <span class="h-1.5 w-1.5 rounded-full bg-current opacity-50"></span>
+                <span class="grid h-6 w-6 place-items-center rounded-lg bg-slate-100 text-sm dark:bg-slate-900">${escapeHTML(item.icon || '•')}</span>
                 <span>${escapeHTML(item.title)}</span>
               </a>
             `).join('')}
@@ -168,6 +173,7 @@ async function loadDoc() {
       content.innerHTML = `<pre><code>${escapeHTML(loaded.text)}</code></pre>`
     }
     wireContentLinks()
+    await renderMermaidDiagrams()
     closeSidebar()
     window.scrollTo({ top: 0, behavior: 'smooth' })
   } catch (error) {
@@ -177,6 +183,32 @@ async function loadDoc() {
       <pre><code>${escapeHTML(error.message || String(error))}</code></pre>
     `
   }
+}
+
+async function renderMermaidDiagrams() {
+  if (!window.mermaid) return
+  const blocks = Array.from(content.querySelectorAll('pre code.language-mermaid'))
+  if (!blocks.length) return
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: 'strict',
+    theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
+    themeVariables: {
+      primaryColor: '#dbeafe',
+      primaryBorderColor: '#2374e1',
+      primaryTextColor: '#0f172a',
+      lineColor: '#64748b',
+      secondaryColor: '#ede9fe',
+      tertiaryColor: '#ecfeff'
+    }
+  })
+  blocks.forEach((block) => {
+    const diagram = document.createElement('div')
+    diagram.className = 'mermaid'
+    diagram.textContent = block.textContent
+    block.closest('pre').replaceWith(diagram)
+  })
+  await mermaid.run({ nodes: content.querySelectorAll('.mermaid') })
 }
 
 function wireContentLinks() {

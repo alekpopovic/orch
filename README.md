@@ -1,42 +1,80 @@
-# orch
+<p align="center">
+  <img src="docs/assets/orch-wordmark.svg" alt="orch Docker-first orchestration" width="520" />
+</p>
 
-[![CI](https://github.com/alekpopovic/orch/actions/workflows/ci.yml/badge.svg)](https://github.com/alekpopovic/orch/actions/workflows/ci.yml)
+<p align="center">
+  <strong>Docker-first orchestration for small clusters — API, agents, scheduling, rollouts, observability, and production-shaped docs.</strong>
+</p>
 
-`orch` is a Go container orchestrator for small, Docker-based clusters. It provides a control-plane API, a worker agent, and a CLI for deploying services, scaling replicas, assigning tasks to nodes, running Docker containers, checking health, streaming logs, and recording events.
+<p align="center">
+  <a href="https://github.com/alekpopovic/orch/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/alekpopovic/orch/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://github.com/alekpopovic/orch/actions/workflows/pages.yml"><img alt="Docs Pages" src="https://github.com/alekpopovic/orch/actions/workflows/pages.yml/badge.svg" /></a>
+  <img alt="Go" src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white" />
+  <img alt="Docker" src="https://img.shields.io/badge/runtime-Docker-2496ED?logo=docker&logoColor=white" />
+  <img alt="OpenAPI" src="https://img.shields.io/badge/API-OpenAPI-6BA539?logo=openapiinitiative&logoColor=white" />
+</p>
 
-The project is production-shaped but still an MVP. Package boundaries, tests, migrations, and interfaces are designed for production evolution; the default `orch-server` binary currently wires the in-memory control plane, so process restart recovery is not production-safe until the PostgreSQL-backed store is connected to the server runtime.
+<p align="center">
+  <a href="docs/GITHUB_PAGES.md">📚 Docs site</a> ·
+  <a href="docs/API.md">🔌 API</a> ·
+  <a href="docs/PRODUCTION_DEPLOYMENT.md">🚢 Deploy</a> ·
+  <a href="docs/SECURITY.md">🛡️ Security</a> ·
+  <a href="api/openapi.yaml">🧾 OpenAPI</a>
+</p>
 
-## What It Solves
+<p align="center">
+  <img src="docs/assets/orch-social-card.svg" alt="orch project preview" width="900" />
+</p>
 
-- Deploy a named service from YAML or REST.
-- Keep service replica count converged through task creation and stop directives.
-- Assign pending tasks to ready nodes with deterministic scheduling.
-- Run tasks as Docker containers through the Docker Engine API.
-- Register agents, heartbeat nodes, and poll assigned tasks.
-- Perform HTTP/TCP health checks and report healthy/unhealthy task state.
-- Start rolling updates and rollbacks through asynchronous deployment objects.
-- Stream task logs through the server from the owning agent.
-- Emit event records through the active control plane implementation.
-- Expose Prometheus metrics for the server and agent.
+## ✨ Why orch
 
-## What It Does Not Solve Yet
+`orch` is a Go container orchestrator for small, Docker-based clusters. It gives operators a control-plane API, a worker agent, and a CLI for deploying services, scaling replicas, assigning tasks to nodes, running Docker containers, checking health, streaming logs, recording events, and coordinating rollouts.
 
-- The shipped `orch-server` process does not yet use PostgreSQL for its control-plane state.
-- There is no HA leader election implementation; the reconciler has an abstraction only.
-- Abrupt node loss is not marked offline by heartbeat expiry yet.
-- Networking is Docker host/port based; there is no overlay network or service discovery.
-- Secrets are represented as references, not a complete secret storage system.
-- There is no multi-tenant isolation model.
-- Agent authentication is token based; mTLS is documented as roadmap.
-- Containerd support is a future runtime target.
+The project is still MVP-era, but intentionally production-shaped: package boundaries, tests, migrations, metrics, docs, interfaces, and runtime seams are designed so the Docker-first core can evolve toward durable multi-node operation.
 
-## Binaries
+| Capability | What you get |
+| --- | --- |
+| ⚡ **Control plane** | REST API with request IDs, stable JSON errors, auth/RBAC boundaries, and OpenAPI docs. |
+| 🧭 **Deterministic scheduling** | Scheduler and reconciler logic that stays testable without Docker, PostgreSQL, or real time. |
+| 🐳 **Docker runtime** | Idempotent container operations through the Docker Engine API with orch labels and safe convergence. |
+| 🚀 **Rollouts** | Rolling update and rollback coordination with service versions, deployment objects, and events. |
+| 📈 **Observability** | Prometheus metrics, Grafana dashboard, structured logs, events, audit logs, and load/chaos testing docs. |
+| 🛡️ **Hardening** | Security contexts, secret redaction, SSRF-safe healthchecks, registry credentials, and policy hooks. |
 
-- `orch-server`: REST API server and rollout controller.
-- `orch-agent`: worker node process that talks to Docker and the server.
-- `orch`: Cobra CLI for operators and scripts.
+## 🧬 System map
 
-## Quickstart
+```mermaid
+flowchart LR
+    cli["🖥️ orch CLI"] --> api["⚡ orch-server API"]
+    user["👤 Operator"] --> cli
+    api --> cp["🧠 Control plane"]
+    cp --> scheduler["🧭 Scheduler"]
+    cp --> reconciler["🔁 Reconciler"]
+    cp --> rollout["🚀 Rollout controller"]
+    cp --> store[("🗄️ PostgreSQL-ready store")]
+    scheduler --> tasks["📦 Tasks"]
+    reconciler --> tasks
+    rollout --> tasks
+    agent["🐳 orch-agent"] --> docker["Docker Engine"]
+    agent --> api
+    tasks --> agent
+    api --> metrics["📈 Metrics / Events / Audit"]
+```
+
+## 📊 Release signal
+
+```mermaid
+pie showData
+    title v0.2.0 hardening focus
+    "Security + policy" : 24
+    "Observability" : 18
+    "Backup + operations" : 16
+    "Autoscaling" : 15
+    "HA design" : 14
+    "Load + chaos testing" : 13
+```
+
+## 🚀 Quickstart
 
 Prerequisites:
 
@@ -57,8 +95,6 @@ Apply migrations:
 ./scripts/migrate-up.sh
 ```
 
-The migration script is safe to rerun for the local initial schema. Migrations prepare PostgreSQL for the store package and integration tests; the current local `orch-server` still uses in-memory state.
-
 Point the CLI at the server:
 
 ```sh
@@ -66,15 +102,10 @@ export ORCH_SERVER_URL=http://localhost:8080
 go run ./cmd/orch node ls
 ```
 
-Deploy the demo service:
+Deploy and operate the demo service:
 
 ```sh
 ./scripts/demo-deploy.sh
-```
-
-Operate it:
-
-```sh
 go run ./cmd/orch service ls
 go run ./cmd/orch service ps http-api
 go run ./cmd/orch scale http-api --replicas 2
@@ -90,7 +121,32 @@ Stop local services:
 ./scripts/dev-down.sh
 ```
 
-## Build And Test
+## 🧰 Binaries
+
+| Binary | Role |
+| --- | --- |
+| `orch-server` | REST API server and rollout controller. |
+| `orch-agent` | Worker node process that talks to Docker and the server. |
+| `orch` | Cobra CLI for operators and automation scripts. |
+| `orch-loadtest` | Fake multi-agent load test runner for scheduler/control-plane pressure. |
+
+## 🔌 Go API client
+
+The public REST contract lives in `api/openapi.yaml`. Go programs can use the hand-written client in `pkg/client`:
+
+```go
+apiClient, err := client.New("http://localhost:8080", client.WithBearerToken(token))
+if err != nil {
+    return err
+}
+services, err := apiClient.ListServices(context.Background())
+if err != nil {
+    return err
+}
+fmt.Println(len(services))
+```
+
+## 🧪 Build and test
 
 ```sh
 make build
@@ -108,23 +164,7 @@ go vet ./...
 go build ./...
 ```
 
-## Go API Client
-
-The public REST contract lives in `api/openapi.yaml`. Go programs can use the hand-written client in `pkg/client`:
-
-```go
-apiClient, err := client.New("http://localhost:8080", client.WithBearerToken(token))
-if err != nil {
-    return err
-}
-services, err := apiClient.ListServices(context.Background())
-if err != nil {
-    return err
-}
-fmt.Println(len(services))
-```
-
-## CLI Configuration
+## ⚙️ CLI configuration
 
 The CLI resolves the server URL in this order:
 
@@ -171,19 +211,25 @@ placement:
     role: app
 ```
 
-## Documentation
+## 🧱 Current boundaries
 
-- [GitHub Pages documentation site](docs/GITHUB_PAGES.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [API](docs/API.md)
-- [State machines](docs/STATE_MACHINES.md)
-- [Agent](docs/AGENT.md)
-- [Scheduler](docs/SCHEDULER.md)
-- [Reconciler](docs/RECONCILER.md)
-- [Rollouts](docs/ROLLOUTS.md)
-- [Health checks](docs/HEALTHCHECKS.md)
-- [Security](docs/SECURITY.md)
-- [Observability](docs/OBSERVABILITY.md)
-- [Reliability](docs/RELIABILITY.md)
-- [Operations](docs/OPERATIONS.md)
-- [Development](docs/DEVELOPMENT.md)
+| ✅ Works today | 🚧 Still future work |
+| --- | --- |
+| In-memory control plane for local dev and tests. | Default server runtime is not yet PostgreSQL-backed. |
+| PostgreSQL migrations and store implementation. | Restart-safe production server state wiring. |
+| Agent registration, heartbeat, task polling, and Docker reconciliation. | mTLS node identity. |
+| Scheduler, reconciler, rollouts, logs, events, metrics, auth, and CLI. | Overlay networking and containerd runtime support. |
+| Security context policy, registry credentials, secret references, audit logs. | Full multi-tenant isolation model. |
+
+## 📚 Documentation
+
+| Area | Docs |
+| --- | --- |
+| 🌈 Brand + site | [GitHub Pages documentation site](docs/GITHUB_PAGES.md), [Brand kit](docs/BRAND.md), [Charts](docs/CHARTS.md) |
+| 🏗️ Architecture | [Architecture](docs/ARCHITECTURE.md), [State machines](docs/STATE_MACHINES.md) |
+| 🔌 API | [API](docs/API.md), [OpenAPI](api/openapi.yaml) |
+| 🐳 Runtime | [Agent](docs/AGENT.md), [Service spec](docs/SERVICE_SPEC.md), [Resources](docs/RESOURCES.md) |
+| 🧭 Control loops | [Scheduler](docs/SCHEDULER.md), [Reconciler](docs/RECONCILER.md), [Rollouts](docs/ROLLOUTS.md) |
+| 🛡️ Security | [Security](docs/SECURITY.md), [Security review](docs/SECURITY_REVIEW.md), [Secrets](docs/SECRETS.md), [Registries](docs/REGISTRIES.md) |
+| 📈 Operations | [Observability](docs/OBSERVABILITY.md), [Reliability](docs/RELIABILITY.md), [Operations](docs/OPERATIONS.md), [Production deployment](docs/PRODUCTION_DEPLOYMENT.md) |
+| 🧪 Testing | [Load testing](docs/LOAD_TESTING.md), [Chaos testing](docs/CHAOS_TESTING.md), [Development](docs/DEVELOPMENT.md) |
