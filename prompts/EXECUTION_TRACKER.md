@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `55-autoscaling-mvp-implementation.md`
-- Last matching commit: `same commit: Add autoscaling MVP`
-- Completed prompt range: `00` through `55`
-- Next prompt to execute: `56-ha-control-plane-design.md`
+- Last executed prompt: `56-ha-control-plane-design.md`
+- Last matching commit: `same commit: Add HA control plane design`
+- Completed prompt range: `00` through `56`
+- Next prompt to execute: `57-controller-leader-election-mvp.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
