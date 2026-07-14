@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `59-chaos-testing-scenarios.md`
-- Last matching commit: `same commit: Add chaos testing scenarios`
-- Completed prompt range: `00` through `59`
-- Next prompt to execute: `60-release-hardening-v0-2-0.md`
+- Last executed prompt: `60-release-hardening-v0-2-0.md`
+- Last matching commit: `same commit: Prepare v0.2.0 release hardening`
+- Completed prompt range: `00` through `60`
+- Next prompt to execute: `61-openapi-specification-and-generated-clients.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
