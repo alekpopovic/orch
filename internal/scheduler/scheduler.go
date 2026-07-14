@@ -123,15 +123,33 @@ func (s *Scheduler) RunOnce(ctx context.Context) ([]Assignment, error) {
 		if !ok {
 			continue
 		}
-		if _, err := s.store.AssignTask(ctx, assignment.TaskID, assignment.NodeID, task.UpdatedAt); err != nil {
-			if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
-				continue
-			}
+		assigned, err := s.persistAssignment(ctx, task, assignment)
+		if err != nil {
 			s.metrics.IncSchedulerErrors()
-			return assignments, fmt.Errorf("assign task %s: %w", assignment.TaskID, err)
+			return assignments, err
 		}
-		assignments = append(assignments, assignment)
-		_ = events.Emit(ctx, s.store, types.Event{
+		if assigned {
+			assignments = append(assignments, assignment)
+		}
+	}
+	return assignments, nil
+}
+
+func (s *Scheduler) persistAssignment(ctx context.Context, task types.Task, assignment Assignment) (bool, error) {
+	transactional := false
+	if _, ok := any(s.store).(store.Transactor); ok {
+		transactional = true
+	}
+	assigned := false
+	err := store.WithTx(ctx, s.store, func(txCtx context.Context, tx Store) error {
+		if _, err := tx.AssignTask(txCtx, assignment.TaskID, assignment.NodeID, task.UpdatedAt); err != nil {
+			return err
+		}
+		options := []events.EmitOption(nil)
+		if transactional {
+			options = append(options, events.Strict())
+		}
+		if err := events.Emit(txCtx, tx, types.Event{
 			Type:              events.TypeTaskAssigned,
 			Severity:          types.EventInfo,
 			Source:            "scheduler",
@@ -139,9 +157,19 @@ func (s *Scheduler) RunOnce(ctx context.Context) ([]Assignment, error) {
 			RelatedObjectType: "task",
 			RelatedObjectID:   string(assignment.TaskID),
 			Timestamp:         s.now(),
-		})
+		}, options...); err != nil {
+			return fmt.Errorf("emit task assignment event: %w", err)
+		}
+		assigned = true
+		return nil
+	})
+	if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
+		return false, nil
 	}
-	return assignments, nil
+	if err != nil {
+		return false, fmt.Errorf("assign task %s: %w", assignment.TaskID, err)
+	}
+	return assigned, nil
 }
 
 func (s *Scheduler) loadRunningTasks(ctx context.Context, nodes []types.Node) ([]types.Task, error) {

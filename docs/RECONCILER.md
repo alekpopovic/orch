@@ -69,6 +69,6 @@ Repeated delete and reconcile passes are idempotent.
 ## Current Limitations
 
 - No durable leader election yet.
-- No database transaction wrapping a full service reconciliation pass.
+- Individual create/stop/status-plus-event writes use `store.WithTx` when the store supports transactions; a full reconciliation pass is still intentionally recomputed step by step.
 - No controller for abrupt node heartbeat expiry yet.
 - The default `orch-server` binary currently uses the in-memory control plane rather than this store-backed reconciler loop.

@@ -235,22 +235,30 @@ func (r *Reconciler) reconcileDeletingService(ctx context.Context, service types
 		}
 	}
 	if allRemoved {
-		updated, err := r.store.UpdateServiceStatus(ctx, service.ID, types.ServiceDeleted, service.UpdatedAt)
+		transactional := r.transactional()
+		var updated types.Service
+		err := store.WithTx(ctx, r.store, func(txCtx context.Context, tx Store) error {
+			var err error
+			updated, err = tx.UpdateServiceStatus(txCtx, service.ID, types.ServiceDeleted, service.UpdatedAt)
+			if err != nil {
+				return err
+			}
+			return events.Emit(txCtx, tx, types.Event{
+				Type:              events.TypeServiceDeleted,
+				Severity:          types.EventInfo,
+				Source:            "reconciler",
+				Message:           "service deletion completed",
+				RelatedObjectType: "service",
+				RelatedObjectID:   string(updated.ID),
+				Timestamp:         r.now(),
+			}, eventOptions(transactional)...)
+		})
 		if err != nil {
 			if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
 				return result, nil
 			}
 			return result, fmt.Errorf("mark service %s deleted: %w", service.ID, err)
 		}
-		_ = events.Emit(ctx, r.store, types.Event{
-			Type:              events.TypeServiceDeleted,
-			Severity:          types.EventInfo,
-			Source:            "reconciler",
-			Message:           "service deletion completed",
-			RelatedObjectType: "service",
-			RelatedObjectID:   string(updated.ID),
-			Timestamp:         r.now(),
-		}, events.WithLogger(r.logger))
 	}
 	return result, nil
 }
@@ -368,19 +376,25 @@ func (r *Reconciler) createTask(ctx context.Context, service types.Service, reas
 		Image:         service.Spec.Image,
 		Version:       service.DeploymentVersion,
 	}
-	created, err := r.store.CreateTask(ctx, task)
+	transactional := r.transactional()
+	err := store.WithTx(ctx, r.store, func(txCtx context.Context, tx Store) error {
+		created, err := tx.CreateTask(txCtx, task)
+		if err != nil {
+			return err
+		}
+		return events.Emit(txCtx, tx, types.Event{
+			Type:              events.TypeReconcilerTaskCreated,
+			Severity:          types.EventInfo,
+			Source:            "reconciler",
+			Message:           reason,
+			RelatedObjectType: "task",
+			RelatedObjectID:   string(created.ID),
+			Timestamp:         r.now(),
+		}, eventOptions(transactional)...)
+	})
 	if err != nil {
 		return fmt.Errorf("create task for service %s: %w", service.ID, err)
 	}
-	_ = events.Emit(ctx, r.store, types.Event{
-		Type:              events.TypeReconcilerTaskCreated,
-		Severity:          types.EventInfo,
-		Source:            "reconciler",
-		Message:           reason,
-		RelatedObjectType: "task",
-		RelatedObjectID:   string(created.ID),
-		Timestamp:         r.now(),
-	}, events.WithLogger(r.logger))
 	return nil
 }
 
@@ -388,23 +402,46 @@ func (r *Reconciler) stopTask(ctx context.Context, task types.Task, reason strin
 	if task.DesiredStatus == types.TaskStopped || task.DesiredStatus == types.TaskRemoved {
 		return false, nil
 	}
-	stopped, err := r.store.StopTask(ctx, task.ID, task.UpdatedAt)
+	transactional := r.transactional()
+	stopped := false
+	err := store.WithTx(ctx, r.store, func(txCtx context.Context, tx Store) error {
+		stoppedTask, err := tx.StopTask(txCtx, task.ID, task.UpdatedAt)
+		if err != nil {
+			return err
+		}
+		if err := events.Emit(txCtx, tx, types.Event{
+			Type:              events.TypeReconcilerTaskStopped,
+			Severity:          types.EventInfo,
+			Source:            "reconciler",
+			Message:           reason,
+			RelatedObjectType: "task",
+			RelatedObjectID:   string(stoppedTask.ID),
+			Timestamp:         r.now(),
+		}, eventOptions(transactional)...); err != nil {
+			return err
+		}
+		stopped = true
+		return nil
+	})
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("stop task %s: %w", task.ID, err)
 	}
-	_ = events.Emit(ctx, r.store, types.Event{
-		Type:              events.TypeReconcilerTaskStopped,
-		Severity:          types.EventInfo,
-		Source:            "reconciler",
-		Message:           reason,
-		RelatedObjectType: "task",
-		RelatedObjectID:   string(stopped.ID),
-		Timestamp:         r.now(),
-	}, events.WithLogger(r.logger))
-	return true, nil
+	return stopped, nil
+}
+
+func (r *Reconciler) transactional() bool {
+	_, ok := any(r.store).(store.Transactor)
+	return ok
+}
+
+func eventOptions(transactional bool) []events.EmitOption {
+	if transactional {
+		return []events.EmitOption{events.Strict()}
+	}
+	return nil
 }
 
 func isNonTerminal(task types.Task) bool {

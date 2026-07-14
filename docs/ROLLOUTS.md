@@ -72,4 +72,4 @@ Status-change events are emitted only when the deployment status actually change
 - No manual pause/resume endpoint yet.
 - No automatic rollback on failed rollout.
 - No progress deadline.
-- No per-step transaction wrapping deployment update plus events.
+- No transaction retry loop for serialization conflicts or deadlocks yet.

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -192,6 +193,35 @@ func TestRunOnceIgnoresEventEmissionFailure(t *testing.T) {
 	}
 }
 
+func TestRunOnceRollsBackTransactionalAssignmentWhenEventFails(t *testing.T) {
+	task := pendingTask("task-a", "svc")
+	task.UpdatedAt = time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	base := &fakeStore{
+		pending: []types.Task{task},
+		nodes: []types.Node{
+			nodeFixture("node-a", types.NodeReady, nil, types.Resources{CPU: 2000, Memory: 2048}),
+		},
+		services: map[types.ServiceID]types.Service{
+			"svc": serviceFixture("svc", types.Resources{CPU: 500, Memory: 512}, nil),
+		},
+		failEvents: true,
+	}
+
+	assignments, err := New(&transactionalFakeStore{fakeStore: base}).RunOnce(context.Background())
+	if !errors.Is(err, errFakeEvent) {
+		t.Fatalf("expected transactional event failure, got %v", err)
+	}
+	if len(assignments) != 0 {
+		t.Fatalf("expected no returned assignments after rollback, got %#v", assignments)
+	}
+	if len(base.assigned) != 0 {
+		t.Fatalf("expected assignment rollback, got %#v", base.assigned)
+	}
+	if len(base.events) != 0 {
+		t.Fatalf("expected no persisted event, got %#v", base.events)
+	}
+}
+
 func TestRunOnceSkipsAssignmentConflict(t *testing.T) {
 	task := pendingTask("task-a", "svc")
 	task.UpdatedAt = time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
@@ -215,6 +245,55 @@ func TestRunOnceSkipsAssignmentConflict(t *testing.T) {
 	}
 	if len(fake.events) != 0 {
 		t.Fatalf("expected no assignment event for conflicted task, got %#v", fake.events)
+	}
+}
+
+func TestConcurrentSchedulerAttemptsAssignTaskOnce(t *testing.T) {
+	task := pendingTask("task-a", "svc")
+	task.UpdatedAt = time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	store := &concurrentAssignmentStore{
+		task:    task,
+		node:    nodeFixture("node-a", types.NodeReady, nil, types.Resources{CPU: 2000, Memory: 2048}),
+		service: serviceFixture("svc", types.Resources{CPU: 500, Memory: 512}, nil),
+	}
+	scheduler := New(store)
+	assignment := Assignment{TaskID: task.ID, NodeID: "node-a"}
+
+	var wg sync.WaitGroup
+	results := make(chan bool, 2)
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			assigned, err := scheduler.persistAssignment(context.Background(), task, assignment)
+			results <- assigned
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	successes := 0
+	for assigned := range results {
+		if assigned {
+			successes++
+		}
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("expected conflict to be treated as benign, got %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly one assignment success, got %d", successes)
+	}
+	if store.task.ActualStatus != types.TaskAssigned || store.task.NodeID != "node-a" {
+		t.Fatalf("expected task assigned once, got %#v", store.task)
+	}
+	if len(store.events) != 1 {
+		t.Fatalf("expected one assignment event, got %#v", store.events)
 	}
 }
 
@@ -261,6 +340,84 @@ type fakeStore struct {
 	events     []types.Event
 	failEvents bool
 	assignErr  error
+}
+
+type transactionalFakeStore struct {
+	*fakeStore
+}
+
+func (s *transactionalFakeStore) WithTx(ctx context.Context, fn store.TxFunc) error {
+	assigned := append([]Assignment(nil), s.assigned...)
+	events := append([]types.Event(nil), s.events...)
+	if err := fn(ctx, s); err != nil {
+		s.assigned = assigned
+		s.events = events
+		return err
+	}
+	return nil
+}
+
+type concurrentAssignmentStore struct {
+	mu      sync.Mutex
+	task    types.Task
+	node    types.Node
+	service types.Service
+	events  []types.Event
+}
+
+func (s *concurrentAssignmentStore) WithTx(ctx context.Context, fn store.TxFunc) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task := s.task
+	events := append([]types.Event(nil), s.events...)
+	if err := fn(ctx, s); err != nil {
+		s.task = task
+		s.events = events
+		return err
+	}
+	return nil
+}
+
+func (s *concurrentAssignmentStore) ListTasksByStatus(_ context.Context, status types.TaskStatus) ([]types.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.task.ActualStatus == status {
+		return []types.Task{s.task}, nil
+	}
+	return nil, nil
+}
+
+func (s *concurrentAssignmentStore) ListNodesByStatus(_ context.Context, status types.NodeStatus) ([]types.Node, error) {
+	if s.node.Status == status {
+		return []types.Node{s.node}, nil
+	}
+	return nil, nil
+}
+
+func (s *concurrentAssignmentStore) ListTasksByNode(context.Context, types.NodeID) ([]types.Task, error) {
+	return nil, nil
+}
+
+func (s *concurrentAssignmentStore) GetService(context.Context, types.ServiceID) (types.Service, error) {
+	return s.service, nil
+}
+
+func (s *concurrentAssignmentStore) AssignTask(_ context.Context, id types.TaskID, nodeID types.NodeID, expectedUpdatedAt time.Time) (types.Task, error) {
+	if s.task.ID != id {
+		return types.Task{}, store.ErrNotFound
+	}
+	if s.task.ActualStatus != types.TaskPending || !s.task.UpdatedAt.Equal(expectedUpdatedAt) {
+		return types.Task{}, store.ErrConflict
+	}
+	s.task.NodeID = nodeID
+	s.task.ActualStatus = types.TaskAssigned
+	s.task.UpdatedAt = s.task.UpdatedAt.Add(time.Second)
+	return s.task, nil
+}
+
+func (s *concurrentAssignmentStore) AppendEvent(_ context.Context, event types.Event) (types.Event, error) {
+	s.events = append(s.events, event)
+	return event, nil
 }
 
 func (s *fakeStore) ListTasksByStatus(_ context.Context, status types.TaskStatus) ([]types.Task, error) {

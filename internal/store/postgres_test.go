@@ -193,6 +193,151 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 }
 
+func TestPostgresStoreWithTxRollsBackOnError(t *testing.T) {
+	databaseURL := os.Getenv("ORCH_INTEGRATION_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set ORCH_INTEGRATION_DATABASE_URL to run PostgreSQL integration tests")
+	}
+
+	ctx := context.Background()
+	pool, err := ConnectPostgres(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer pool.Close()
+
+	migrate(t, ctx, pool)
+	pgStore := NewPostgresStore(pool)
+	var durable Store = pgStore
+	errRollback := errors.New("rollback tx")
+	var serviceID types.ServiceID
+
+	err = WithTx(ctx, durable, func(txCtx context.Context, tx Store) error {
+		service, err := tx.CreateService(txCtx, serviceSpecFixture())
+		if err != nil {
+			return err
+		}
+		serviceID = service.ID
+		if _, err := tx.AppendEvent(txCtx, types.Event{
+			Type:              events.TypeServiceCreated,
+			Severity:          types.EventInfo,
+			Source:            "test",
+			Message:           "service created",
+			RelatedObjectType: "service",
+			RelatedObjectID:   string(service.ID),
+		}); err != nil {
+			return err
+		}
+		return errRollback
+	})
+	if !errors.Is(err, errRollback) {
+		t.Fatalf("expected rollback error, got %v", err)
+	}
+	if _, err := pgStore.GetService(ctx, serviceID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected service insert to roll back, got %v", err)
+	}
+	events, err := pgStore.ListEvents(ctx, events.Filter{ServiceID: serviceID})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected event insert to roll back, got %#v", events)
+	}
+}
+
+func TestPostgresStoreConcurrentAssignTaskOnce(t *testing.T) {
+	databaseURL := os.Getenv("ORCH_INTEGRATION_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set ORCH_INTEGRATION_DATABASE_URL to run PostgreSQL integration tests")
+	}
+
+	ctx := context.Background()
+	pool, err := ConnectPostgres(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect postgres: %v", err)
+	}
+	defer pool.Close()
+
+	migrate(t, ctx, pool)
+	pgStore := NewPostgresStore(pool)
+	var durable Store = pgStore
+	node, err := pgStore.CreateNode(ctx, types.NodeSpec{
+		Hostname:         "node-1",
+		AdvertiseAddress: "10.0.0.10",
+		Capacity:         types.Resources{CPU: 4000, Memory: 1024},
+		Allocatable:      types.Resources{CPU: 3000, Memory: 512},
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	service, err := pgStore.CreateService(ctx, serviceSpecFixture())
+	if err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+	task, err := pgStore.CreateTask(ctx, types.Task{
+		ServiceID:     service.ID,
+		DesiredStatus: types.TaskRunning,
+		ActualStatus:  types.TaskPending,
+		Image:         service.Spec.Image,
+		Version:       service.DeploymentVersion,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			results <- WithTx(ctx, durable, func(txCtx context.Context, tx Store) error {
+				assigned, err := tx.AssignTask(txCtx, task.ID, node.ID, task.UpdatedAt)
+				if err != nil {
+					return err
+				}
+				_, err = tx.AppendEvent(txCtx, types.Event{
+					Type:              events.TypeTaskAssigned,
+					Severity:          types.EventInfo,
+					Source:            "test",
+					Message:           "task assigned",
+					RelatedObjectType: "task",
+					RelatedObjectID:   string(assigned.ID),
+				})
+				return err
+			})
+		}()
+	}
+
+	successes := 0
+	conflicts := 0
+	for i := 0; i < 2; i++ {
+		err := <-results
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrConflict):
+			conflicts++
+		default:
+			t.Fatalf("unexpected assignment error: %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("expected one success and one conflict, got successes=%d conflicts=%d", successes, conflicts)
+	}
+	assigned, err := pgStore.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get assigned task: %v", err)
+	}
+	if assigned.ActualStatus != types.TaskAssigned || assigned.NodeID != node.ID {
+		t.Fatalf("expected task assigned once, got %#v", assigned)
+	}
+	events, err := pgStore.ListEvents(ctx, events.Filter{TaskID: task.ID})
+	if err != nil {
+		t.Fatalf("list task events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one assignment event, got %#v", events)
+	}
+}
+
 func serviceSpecFixture() types.ServiceSpec {
 	return types.ServiceSpec{
 		Name:     "web",

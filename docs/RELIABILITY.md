@@ -64,6 +64,24 @@ Docker create/start failure is reported as `failed` with the runtime error as fa
 
 Store operations return errors. Controllers should retry from fresh state on the next loop. Full database retry/backoff policy is roadmap.
 
+### Transaction Boundaries
+
+Durable control-plane code must wrap multi-write operations in `store.WithTx`. The callback receives a store interface, not a database-specific transaction type.
+
+Critical transaction boundaries:
+
+- service create: service row, initial service version row, and `service.created` event;
+- scale: service update, reconciliation side effects, and `service.scaled` event;
+- scheduler assignment: task assignment and `task.assigned` event;
+- agent status report: task status update and task status/failure/health event;
+- rollout request: service version update, deployment row, and rollout event;
+- rollback request: service version restore, rollback deployment row, and rollback event;
+- service deletion: service `deleting` mark, task stop directives, and deletion-started event.
+
+PostgreSQL-backed transactions use row-level locking for task assignment preflight and still finish with an atomic `UPDATE ... actual_status = 'pending'` guard. Concurrent scheduler attempts must result in at most one persisted assignment and one assignment event.
+
+The in-memory control plane currently protects these same multi-write flows with a single mutex. When `orch-server` is wired to PostgreSQL, equivalent API and controller flows must use `store.WithTx` rather than issuing separate store calls.
+
 ### Rollout Interrupted Mid-Way
 
 The rollout controller recomputes state from deployment and task records. It respects max surge and max unavailable on each pass.
@@ -93,6 +111,6 @@ Every reliability-sensitive change should add tests for:
 - Wire server to PostgreSQL.
 - Add heartbeat expiry and node-failure rebalancing.
 - Add real leader election.
-- Add database transaction boundaries around multi-row controller operations where needed.
+- Add automatic transaction retries for serialization conflicts and deadlocks.
 - Add progress deadlines for rollouts.
 - Add persistent event export.

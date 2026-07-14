@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/alekpopovic/orch/internal/events"
@@ -52,4 +53,27 @@ type Store interface {
 	TaskStore
 	DeploymentStore
 	EventStore
+}
+
+// TxFunc runs a set of store operations inside one transaction boundary.
+type TxFunc func(ctx context.Context, tx any) error
+
+// Transactor is implemented by stores that can execute a callback atomically.
+type Transactor interface {
+	WithTx(ctx context.Context, fn TxFunc) error
+}
+
+// WithTx runs fn inside candidate's transaction support when it exists.
+func WithTx[S any](ctx context.Context, candidate S, fn func(context.Context, S) error) error {
+	transactor, ok := any(candidate).(Transactor)
+	if !ok {
+		return fn(ctx, candidate)
+	}
+	return transactor.WithTx(ctx, func(txCtx context.Context, tx any) error {
+		scoped, ok := any(tx).(S)
+		if !ok {
+			return fmt.Errorf("%w: transaction store does not implement requested boundary", ErrInvalidState)
+		}
+		return fn(txCtx, scoped)
+	})
 }

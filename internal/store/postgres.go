@@ -17,11 +17,38 @@ import (
 )
 
 type PostgresStore struct {
+	*postgresStore
 	pool *pgxpool.Pool
 }
 
+type postgresStore struct {
+	db    postgresDB
+	begin func(context.Context) (pgx.Tx, error)
+}
+
+type postgresDB interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
-	return &PostgresStore{pool: pool}
+	return &PostgresStore{
+		postgresStore: &postgresStore{
+			db:    pool,
+			begin: pool.Begin,
+		},
+		pool: pool,
+	}
+}
+
+func (s *PostgresStore) WithTx(ctx context.Context, fn TxFunc) error {
+	if s == nil || s.pool == nil {
+		return fmt.Errorf("%w: postgres store is not initialized", ErrInvalidState)
+	}
+	return s.postgresStore.withTx(ctx, func(txStore *postgresStore) error {
+		return fn(ctx, txStore)
+	})
 }
 
 func ConnectPostgres(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
@@ -36,7 +63,23 @@ func ConnectPostgres(ctx context.Context, databaseURL string) (*pgxpool.Pool, er
 	return pool, nil
 }
 
-func (s *PostgresStore) CreateNode(ctx context.Context, spec types.NodeSpec) (types.Node, error) {
+func (s *postgresStore) withTx(ctx context.Context, fn func(*postgresStore) error) error {
+	if s.begin == nil {
+		return fn(s)
+	}
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return mapPostgresError(err)
+	}
+	txStore := &postgresStore{db: tx}
+	defer rollback(ctx, tx)
+	if err := fn(txStore); err != nil {
+		return err
+	}
+	return mapPostgresError(tx.Commit(ctx))
+}
+
+func (s *postgresStore) CreateNode(ctx context.Context, spec types.NodeSpec) (types.Node, error) {
 	if err := spec.Validate(); err != nil {
 		return types.Node{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
@@ -46,7 +89,7 @@ func (s *PostgresStore) CreateNode(ctx context.Context, spec types.NodeSpec) (ty
 		return types.Node{}, err
 	}
 
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 		INSERT INTO nodes (
 			hostname, advertise_address, labels,
 			capacity_cpu, capacity_memory, allocatable_cpu, allocatable_memory,
@@ -72,8 +115,8 @@ func (s *PostgresStore) CreateNode(ctx context.Context, spec types.NodeSpec) (ty
 	return node, nil
 }
 
-func (s *PostgresStore) GetNode(ctx context.Context, id types.NodeID) (types.Node, error) {
-	row := s.pool.QueryRow(ctx, `
+func (s *postgresStore) GetNode(ctx context.Context, id types.NodeID) (types.Node, error) {
+	row := s.db.QueryRow(ctx, `
 		SELECT id, hostname, advertise_address, labels,
 			capacity_cpu, capacity_memory, allocatable_cpu, allocatable_memory,
 			status, last_heartbeat_at, agent_token_hash, agent_token_expires_at, agent_revoked, created_at, updated_at
@@ -88,7 +131,7 @@ func (s *PostgresStore) GetNode(ctx context.Context, id types.NodeID) (types.Nod
 	return node, nil
 }
 
-func (s *PostgresStore) UpdateNode(ctx context.Context, node types.Node, expectedUpdatedAt time.Time) (types.Node, error) {
+func (s *postgresStore) UpdateNode(ctx context.Context, node types.Node, expectedUpdatedAt time.Time) (types.Node, error) {
 	spec := types.NodeSpec{
 		Hostname:         node.Hostname,
 		AdvertiseAddress: node.AdvertiseAddress,
@@ -105,7 +148,7 @@ func (s *PostgresStore) UpdateNode(ctx context.Context, node types.Node, expecte
 		return types.Node{}, err
 	}
 
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 		UPDATE nodes
 		SET hostname = $2,
 			advertise_address = $3,
@@ -150,8 +193,8 @@ func (s *PostgresStore) UpdateNode(ctx context.Context, node types.Node, expecte
 	return updated, nil
 }
 
-func (s *PostgresStore) ListNodesByStatus(ctx context.Context, status types.NodeStatus) ([]types.Node, error) {
-	rows, err := s.pool.Query(ctx, `
+func (s *postgresStore) ListNodesByStatus(ctx context.Context, status types.NodeStatus) ([]types.Node, error) {
+	rows, err := s.db.Query(ctx, `
 		SELECT id, hostname, advertise_address, labels,
 			capacity_cpu, capacity_memory, allocatable_cpu, allocatable_memory,
 			status, last_heartbeat_at, agent_token_hash, agent_token_expires_at, agent_revoked, created_at, updated_at
@@ -179,7 +222,7 @@ func (s *PostgresStore) ListNodesByStatus(ctx context.Context, status types.Node
 	return nodes, nil
 }
 
-func (s *PostgresStore) CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error) {
+func (s *postgresStore) CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error) {
 	normalized, err := types.NormalizeServiceSpec(spec, types.DefaultResourceDefaults())
 	if err != nil {
 		return types.Service{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
@@ -189,27 +232,26 @@ func (s *PostgresStore) CreateService(ctx context.Context, spec types.ServiceSpe
 		return types.Service{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return types.Service{}, mapPostgresError(err)
-	}
-	defer rollback(ctx, tx)
-
-	service, err := insertService(ctx, tx, spec)
+	var service types.Service
+	err = s.withTx(ctx, func(tx *postgresStore) error {
+		created, err := insertService(ctx, tx.db, spec)
+		if err != nil {
+			return err
+		}
+		if err := insertServiceVersion(ctx, tx.db, created.ID, created.DeploymentVersion, spec); err != nil {
+			return err
+		}
+		service = created
+		return nil
+	})
 	if err != nil {
 		return types.Service{}, err
-	}
-	if err := insertServiceVersion(ctx, tx, service.ID, service.DeploymentVersion, spec); err != nil {
-		return types.Service{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return types.Service{}, mapPostgresError(err)
 	}
 	return service, nil
 }
 
-func (s *PostgresStore) GetService(ctx context.Context, id types.ServiceID) (types.Service, error) {
-	row := s.pool.QueryRow(ctx, serviceSelectSQL()+` WHERE id = $1`, string(id))
+func (s *postgresStore) GetService(ctx context.Context, id types.ServiceID) (types.Service, error) {
+	row := s.db.QueryRow(ctx, serviceSelectSQL()+` WHERE id = $1`, string(id))
 	service, err := scanService(row)
 	if err != nil {
 		return types.Service{}, mapPostgresError(err)
@@ -217,8 +259,8 @@ func (s *PostgresStore) GetService(ctx context.Context, id types.ServiceID) (typ
 	return service, nil
 }
 
-func (s *PostgresStore) ListServices(ctx context.Context) ([]types.Service, error) {
-	rows, err := s.pool.Query(ctx, serviceSelectSQL()+` ORDER BY name, id`)
+func (s *postgresStore) ListServices(ctx context.Context) ([]types.Service, error) {
+	rows, err := s.db.Query(ctx, serviceSelectSQL()+` ORDER BY name, id`)
 	if err != nil {
 		return nil, mapPostgresError(err)
 	}
@@ -238,7 +280,7 @@ func (s *PostgresStore) ListServices(ctx context.Context) ([]types.Service, erro
 	return services, nil
 }
 
-func (s *PostgresStore) UpdateService(ctx context.Context, id types.ServiceID, spec types.ServiceSpec, expectedUpdatedAt time.Time) (types.Service, error) {
+func (s *postgresStore) UpdateService(ctx context.Context, id types.ServiceID, spec types.ServiceSpec, expectedUpdatedAt time.Time) (types.Service, error) {
 	normalized, err := types.NormalizeServiceSpec(spec, types.DefaultResourceDefaults())
 	if err != nil {
 		return types.Service{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
@@ -248,26 +290,25 @@ func (s *PostgresStore) UpdateService(ctx context.Context, id types.ServiceID, s
 		return types.Service{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return types.Service{}, mapPostgresError(err)
-	}
-	defer rollback(ctx, tx)
-
-	service, err := updateService(ctx, tx, id, spec, expectedUpdatedAt)
+	var service types.Service
+	err = s.withTx(ctx, func(tx *postgresStore) error {
+		updated, err := updateService(ctx, tx.db, id, spec, expectedUpdatedAt)
+		if err != nil {
+			return err
+		}
+		if err := insertServiceVersion(ctx, tx.db, updated.ID, updated.DeploymentVersion, spec); err != nil {
+			return err
+		}
+		service = updated
+		return nil
+	})
 	if err != nil {
 		return types.Service{}, err
-	}
-	if err := insertServiceVersion(ctx, tx, service.ID, service.DeploymentVersion, spec); err != nil {
-		return types.Service{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return types.Service{}, mapPostgresError(err)
 	}
 	return service, nil
 }
 
-func (s *PostgresStore) UpdateServiceStatus(ctx context.Context, id types.ServiceID, status types.ServiceStatus, expectedUpdatedAt time.Time) (types.Service, error) {
+func (s *postgresStore) UpdateServiceStatus(ctx context.Context, id types.ServiceID, status types.ServiceStatus, expectedUpdatedAt time.Time) (types.Service, error) {
 	current, err := s.GetService(ctx, id)
 	if err != nil {
 		return types.Service{}, err
@@ -275,7 +316,7 @@ func (s *PostgresStore) UpdateServiceStatus(ctx context.Context, id types.Servic
 	if err := types.ValidateServiceTransition(current.Status, status); err != nil {
 		return types.Service{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 		UPDATE services
 		SET status = $2,
 			updated_at = timezone('utc', now()),
@@ -298,7 +339,7 @@ func (s *PostgresStore) UpdateServiceStatus(ctx context.Context, id types.Servic
 	return service, nil
 }
 
-func (s *PostgresStore) CreateTask(ctx context.Context, task types.Task) (types.Task, error) {
+func (s *postgresStore) CreateTask(ctx context.Context, task types.Task) (types.Task, error) {
 	if task.DesiredStatus == "" {
 		task.DesiredStatus = types.TaskRunning
 	}
@@ -308,7 +349,7 @@ func (s *PostgresStore) CreateTask(ctx context.Context, task types.Task) (types.
 	if !types.ValidTaskStatus(task.DesiredStatus) || !types.ValidTaskStatus(task.ActualStatus) {
 		return types.Task{}, fmt.Errorf("%w: task status is invalid", ErrInvalidState)
 	}
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 		INSERT INTO tasks (
 			service_id, node_id, container_id, desired_status, actual_status,
 			image, version, restart_count, failure_reason, started_at, finished_at
@@ -335,8 +376,16 @@ func (s *PostgresStore) CreateTask(ctx context.Context, task types.Task) (types.
 	return created, nil
 }
 
-func (s *PostgresStore) GetTask(ctx context.Context, id types.TaskID) (types.Task, error) {
-	row := s.pool.QueryRow(ctx, taskSelectSQL()+` WHERE id = $1`, string(id))
+func (s *postgresStore) GetTask(ctx context.Context, id types.TaskID) (types.Task, error) {
+	return s.getTask(ctx, id, false)
+}
+
+func (s *postgresStore) getTask(ctx context.Context, id types.TaskID, forUpdate bool) (types.Task, error) {
+	sql := taskSelectSQL() + ` WHERE id = $1`
+	if forUpdate {
+		sql += ` FOR UPDATE`
+	}
+	row := s.db.QueryRow(ctx, sql, string(id))
 	task, err := scanTask(row)
 	if err != nil {
 		return types.Task{}, mapPostgresError(err)
@@ -344,15 +393,15 @@ func (s *PostgresStore) GetTask(ctx context.Context, id types.TaskID) (types.Tas
 	return task, nil
 }
 
-func (s *PostgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID types.NodeID, expectedUpdatedAt time.Time) (types.Task, error) {
-	current, err := s.GetTask(ctx, id)
+func (s *postgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID types.NodeID, expectedUpdatedAt time.Time) (types.Task, error) {
+	current, err := s.getTask(ctx, id, s.begin == nil)
 	if err != nil {
 		return types.Task{}, err
 	}
 	if err := types.ValidateTaskTransition(current.ActualStatus, types.TaskAssigned); err != nil {
 		return types.Task{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 		UPDATE tasks
 		SET node_id = $2,
 			actual_status = $3,
@@ -383,7 +432,7 @@ func (s *PostgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID 
 	return task, nil
 }
 
-func (s *PostgresStore) StopTask(ctx context.Context, id types.TaskID, expectedUpdatedAt time.Time) (types.Task, error) {
+func (s *postgresStore) StopTask(ctx context.Context, id types.TaskID, expectedUpdatedAt time.Time) (types.Task, error) {
 	current, err := s.GetTask(ctx, id)
 	if err != nil {
 		return types.Task{}, err
@@ -394,7 +443,7 @@ func (s *PostgresStore) StopTask(ctx context.Context, id types.TaskID, expectedU
 	if err := types.ValidateTaskDesiredTransition(current.DesiredStatus, types.TaskStopped); err != nil {
 		return types.Task{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 		UPDATE tasks
 		SET desired_status = $2,
 			updated_at = timezone('utc', now()),
@@ -423,7 +472,7 @@ func (s *PostgresStore) StopTask(ctx context.Context, id types.TaskID, expectedU
 	return task, nil
 }
 
-func (s *PostgresStore) UpdateTaskStatus(ctx context.Context, id types.TaskID, desired types.TaskStatus, actual types.TaskStatus, containerID string, failureReason string, expectedUpdatedAt time.Time) (types.Task, error) {
+func (s *postgresStore) UpdateTaskStatus(ctx context.Context, id types.TaskID, desired types.TaskStatus, actual types.TaskStatus, containerID string, failureReason string, expectedUpdatedAt time.Time) (types.Task, error) {
 	current, err := s.GetTask(ctx, id)
 	if err != nil {
 		return types.Task{}, err
@@ -434,7 +483,7 @@ func (s *PostgresStore) UpdateTaskStatus(ctx context.Context, id types.TaskID, d
 	if err := types.ValidateTaskTransition(current.ActualStatus, actual); err != nil {
 		return types.Task{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 		UPDATE tasks
 		SET desired_status = $2,
 			actual_status = $3,
@@ -462,20 +511,20 @@ func (s *PostgresStore) UpdateTaskStatus(ctx context.Context, id types.TaskID, d
 	return task, nil
 }
 
-func (s *PostgresStore) ListTasksByService(ctx context.Context, serviceID types.ServiceID) ([]types.Task, error) {
+func (s *postgresStore) ListTasksByService(ctx context.Context, serviceID types.ServiceID) ([]types.Task, error) {
 	return s.listTasks(ctx, taskSelectSQL()+` WHERE service_id = $1 ORDER BY created_at, id`, string(serviceID))
 }
 
-func (s *PostgresStore) ListTasksByNode(ctx context.Context, nodeID types.NodeID) ([]types.Task, error) {
+func (s *postgresStore) ListTasksByNode(ctx context.Context, nodeID types.NodeID) ([]types.Task, error) {
 	return s.listTasks(ctx, taskSelectSQL()+` WHERE node_id = $1 ORDER BY created_at, id`, string(nodeID))
 }
 
-func (s *PostgresStore) ListTasksByStatus(ctx context.Context, status types.TaskStatus) ([]types.Task, error) {
+func (s *postgresStore) ListTasksByStatus(ctx context.Context, status types.TaskStatus) ([]types.Task, error) {
 	return s.listTasks(ctx, taskSelectSQL()+` WHERE actual_status = $1 ORDER BY created_at, id`, string(status))
 }
 
-func (s *PostgresStore) listTasks(ctx context.Context, sql string, arg any) ([]types.Task, error) {
-	rows, err := s.pool.Query(ctx, sql, arg)
+func (s *postgresStore) listTasks(ctx context.Context, sql string, arg any) ([]types.Task, error) {
+	rows, err := s.db.Query(ctx, sql, arg)
 	if err != nil {
 		return nil, mapPostgresError(err)
 	}
@@ -495,8 +544,8 @@ func (s *PostgresStore) listTasks(ctx context.Context, sql string, arg any) ([]t
 	return tasks, nil
 }
 
-func (s *PostgresStore) CreateDeployment(ctx context.Context, deployment types.Deployment) (types.Deployment, error) {
-	row := s.pool.QueryRow(ctx, `
+func (s *postgresStore) CreateDeployment(ctx context.Context, deployment types.Deployment) (types.Deployment, error) {
+	row := s.db.QueryRow(ctx, `
 		INSERT INTO deployments (
 			service_id, from_version, to_version, strategy, status,
 			max_unavailable, max_surge, started_at, completed_at
@@ -521,8 +570,8 @@ func (s *PostgresStore) CreateDeployment(ctx context.Context, deployment types.D
 	return created, nil
 }
 
-func (s *PostgresStore) GetDeployment(ctx context.Context, id types.DeploymentID) (types.Deployment, error) {
-	row := s.pool.QueryRow(ctx, deploymentSelectSQL()+` WHERE id = $1`, string(id))
+func (s *postgresStore) GetDeployment(ctx context.Context, id types.DeploymentID) (types.Deployment, error) {
+	row := s.db.QueryRow(ctx, deploymentSelectSQL()+` WHERE id = $1`, string(id))
 	deployment, err := scanDeployment(row)
 	if err != nil {
 		return types.Deployment{}, mapPostgresError(err)
@@ -530,8 +579,8 @@ func (s *PostgresStore) GetDeployment(ctx context.Context, id types.DeploymentID
 	return deployment, nil
 }
 
-func (s *PostgresStore) ListDeploymentsByStatus(ctx context.Context, status types.DeploymentStatus) ([]types.Deployment, error) {
-	rows, err := s.pool.Query(ctx, deploymentSelectSQL()+` WHERE status = $1 ORDER BY created_at, id`, string(status))
+func (s *postgresStore) ListDeploymentsByStatus(ctx context.Context, status types.DeploymentStatus) ([]types.Deployment, error) {
+	rows, err := s.db.Query(ctx, deploymentSelectSQL()+` WHERE status = $1 ORDER BY created_at, id`, string(status))
 	if err != nil {
 		return nil, mapPostgresError(err)
 	}
@@ -551,7 +600,7 @@ func (s *PostgresStore) ListDeploymentsByStatus(ctx context.Context, status type
 	return deployments, nil
 }
 
-func (s *PostgresStore) UpdateDeploymentStatus(ctx context.Context, id types.DeploymentID, status types.DeploymentStatus, expectedUpdatedAt time.Time) (types.Deployment, error) {
+func (s *postgresStore) UpdateDeploymentStatus(ctx context.Context, id types.DeploymentID, status types.DeploymentStatus, expectedUpdatedAt time.Time) (types.Deployment, error) {
 	current, err := s.GetDeployment(ctx, id)
 	if err != nil {
 		return types.Deployment{}, err
@@ -559,7 +608,7 @@ func (s *PostgresStore) UpdateDeploymentStatus(ctx context.Context, id types.Dep
 	if err := types.ValidateDeploymentTransition(current.Status, status); err != nil {
 		return types.Deployment{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 		UPDATE deployments
 		SET status = $2,
 			started_at = CASE WHEN $2 IN ('running', 'rolling_back') AND started_at IS NULL THEN timezone('utc', now()) ELSE started_at END,
@@ -583,8 +632,8 @@ func (s *PostgresStore) UpdateDeploymentStatus(ctx context.Context, id types.Dep
 	return deployment, nil
 }
 
-func (s *PostgresStore) AppendEvent(ctx context.Context, event types.Event) (types.Event, error) {
-	row := s.pool.QueryRow(ctx, `
+func (s *postgresStore) AppendEvent(ctx context.Context, event types.Event) (types.Event, error) {
+	row := s.db.QueryRow(ctx, `
 		INSERT INTO events (
 			type, severity, source, message, related_object_type, related_object_id, created_at
 		)
@@ -605,7 +654,7 @@ func (s *PostgresStore) AppendEvent(ctx context.Context, event types.Event) (typ
 	return created, nil
 }
 
-func (s *PostgresStore) ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error) {
+func (s *postgresStore) ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error) {
 	limit := filter.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 100
@@ -644,7 +693,7 @@ func (s *PostgresStore) ListEvents(ctx context.Context, filter events.Filter) ([
 	args = append(args, limit)
 	sql += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args))
 
-	rows, err := s.pool.Query(ctx, sql, args...)
+	rows, err := s.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, mapPostgresError(err)
 	}
@@ -664,12 +713,12 @@ func (s *PostgresStore) ListEvents(ctx context.Context, filter events.Filter) ([
 	return events, nil
 }
 
-func insertService(ctx context.Context, tx pgx.Tx, spec types.ServiceSpec) (types.Service, error) {
+func insertService(ctx context.Context, db postgresDB, spec types.ServiceSpec) (types.Service, error) {
 	env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, err := serviceJSON(spec)
 	if err != nil {
 		return types.Service{}, err
 	}
-	row := tx.QueryRow(ctx, `
+	row := db.QueryRow(ctx, `
 		INSERT INTO services (
 			name, image, replicas, env, secret_refs, ports,
 			resource_requirements, healthcheck, restart_policy, placement_constraints
@@ -696,12 +745,12 @@ func insertService(ctx context.Context, tx pgx.Tx, spec types.ServiceSpec) (type
 	return service, nil
 }
 
-func updateService(ctx context.Context, tx pgx.Tx, id types.ServiceID, spec types.ServiceSpec, expectedUpdatedAt time.Time) (types.Service, error) {
+func updateService(ctx context.Context, db postgresDB, id types.ServiceID, spec types.ServiceSpec, expectedUpdatedAt time.Time) (types.Service, error) {
 	env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, err := serviceJSON(spec)
 	if err != nil {
 		return types.Service{}, err
 	}
-	row := tx.QueryRow(ctx, `
+	row := db.QueryRow(ctx, `
 		UPDATE services
 		SET name = $2,
 			image = $3,
@@ -743,12 +792,12 @@ func updateService(ctx context.Context, tx pgx.Tx, id types.ServiceID, spec type
 	return service, nil
 }
 
-func insertServiceVersion(ctx context.Context, tx pgx.Tx, serviceID types.ServiceID, version int64, spec types.ServiceSpec) error {
+func insertServiceVersion(ctx context.Context, db postgresDB, serviceID types.ServiceID, version int64, spec types.ServiceSpec) error {
 	specJSON, err := jsonBytes(spec)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `
+	_, err = db.Exec(ctx, `
 		INSERT INTO service_versions (service_id, version, spec)
 		VALUES ($1, $2, $3)`,
 		string(serviceID),

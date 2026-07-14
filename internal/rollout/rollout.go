@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -186,26 +187,40 @@ func (c *Controller) createNewTasks(ctx context.Context, deployment types.Deploy
 		surgeLimit = service.Spec.Replicas
 	}
 	for state.newActive+created < service.Spec.Replicas && state.totalActive+created < surgeLimit {
-		task, err := c.store.CreateTask(ctx, types.Task{
-			ServiceID:     service.ID,
-			DesiredStatus: types.TaskRunning,
-			ActualStatus:  types.TaskPending,
-			Image:         service.Spec.Image,
-			Version:       deployment.ToVersion,
+		transactional := c.transactional()
+		var task types.Task
+		err := store.WithTx(ctx, c.store, func(txCtx context.Context, tx Store) error {
+			createdTask, err := tx.CreateTask(txCtx, types.Task{
+				ServiceID:     service.ID,
+				DesiredStatus: types.TaskRunning,
+				ActualStatus:  types.TaskPending,
+				Image:         service.Spec.Image,
+				Version:       deployment.ToVersion,
+			})
+			if err != nil {
+				return err
+			}
+			if err := events.Emit(txCtx, tx, types.Event{
+				Type:              events.TypeRolloutTaskCreated,
+				Severity:          types.EventInfo,
+				Source:            "rollout",
+				Message:           "created new-version task",
+				RelatedObjectType: "task",
+				RelatedObjectID:   string(createdTask.ID),
+				Timestamp:         c.now(),
+			}, c.eventOptions(transactional)...); err != nil {
+				return err
+			}
+			task = createdTask
+			return nil
 		})
 		if err != nil {
 			return created, fmt.Errorf("create rollout task: %w", err)
 		}
+		if task.ID == "" {
+			return created, fmt.Errorf("create rollout task: %w", store.ErrInvalidState)
+		}
 		created++
-		_ = events.Emit(ctx, c.store, types.Event{
-			Type:              events.TypeRolloutTaskCreated,
-			Severity:          types.EventInfo,
-			Source:            "rollout",
-			Message:           "created new-version task",
-			RelatedObjectType: "task",
-			RelatedObjectID:   string(task.ID),
-			Timestamp:         c.now(),
-		}, events.WithLogger(c.logger))
 	}
 	return created, nil
 }
@@ -223,20 +238,28 @@ func (c *Controller) stopOldTasks(ctx context.Context, deployment types.Deployme
 		if service.Spec.Replicas-(state.available-stopped-1) > deployment.MaxUnavailable {
 			break
 		}
-		stoppedTask, err := c.store.StopTask(ctx, task.ID, task.UpdatedAt)
+		transactional := c.transactional()
+		stoppedTask := types.Task{}
+		err := store.WithTx(ctx, c.store, func(txCtx context.Context, tx Store) error {
+			var err error
+			stoppedTask, err = tx.StopTask(txCtx, task.ID, task.UpdatedAt)
+			if err != nil {
+				return err
+			}
+			return events.Emit(txCtx, tx, types.Event{
+				Type:              events.TypeRolloutTaskStopped,
+				Severity:          types.EventInfo,
+				Source:            "rollout",
+				Message:           "stopped old-version task",
+				RelatedObjectType: "task",
+				RelatedObjectID:   string(stoppedTask.ID),
+				Timestamp:         c.now(),
+			}, c.eventOptions(transactional)...)
+		})
 		if err != nil {
 			return stopped, fmt.Errorf("stop old rollout task %s: %w", task.ID, err)
 		}
 		stopped++
-		_ = events.Emit(ctx, c.store, types.Event{
-			Type:              events.TypeRolloutTaskStopped,
-			Severity:          types.EventInfo,
-			Source:            "rollout",
-			Message:           "stopped old-version task",
-			RelatedObjectType: "task",
-			RelatedObjectID:   string(stoppedTask.ID),
-			Timestamp:         c.now(),
-		}, events.WithLogger(c.logger))
 	}
 	return stopped, nil
 }
@@ -245,24 +268,44 @@ func (c *Controller) setStatus(ctx context.Context, deployment types.Deployment,
 	if deployment.Status == status {
 		return deployment, nil
 	}
-	updated, err := c.store.UpdateDeploymentStatus(ctx, deployment.ID, status, deployment.UpdatedAt)
+	transactional := c.transactional()
+	var updated types.Deployment
+	err := store.WithTx(ctx, c.store, func(txCtx context.Context, tx Store) error {
+		var err error
+		updated, err = tx.UpdateDeploymentStatus(txCtx, deployment.ID, status, deployment.UpdatedAt)
+		if err != nil {
+			return err
+		}
+		return events.Emit(txCtx, tx, types.Event{
+			Type:              events.TypeRolloutStatusChanged,
+			Severity:          severity,
+			Source:            "rollout",
+			Message:           message,
+			RelatedObjectType: "service",
+			RelatedObjectID:   string(updated.ServiceID),
+			Timestamp:         c.now(),
+		}, c.eventOptions(transactional)...)
+	})
 	if err != nil {
 		return types.Deployment{}, fmt.Errorf("update rollout status: %w", err)
 	}
-	deployment = updated
 	if status == types.DeploymentFailed {
 		c.metrics.IncRolloutFailures()
 	}
-	_ = events.Emit(ctx, c.store, types.Event{
-		Type:              events.TypeRolloutStatusChanged,
-		Severity:          severity,
-		Source:            "rollout",
-		Message:           message,
-		RelatedObjectType: "service",
-		RelatedObjectID:   string(deployment.ServiceID),
-		Timestamp:         c.now(),
-	}, events.WithLogger(c.logger))
-	return deployment, nil
+	return updated, nil
+}
+
+func (c *Controller) transactional() bool {
+	_, ok := any(c.store).(store.Transactor)
+	return ok
+}
+
+func (c *Controller) eventOptions(transactional bool) []events.EmitOption {
+	options := []events.EmitOption{events.WithLogger(c.logger)}
+	if transactional {
+		options = append(options, events.Strict())
+	}
+	return options
 }
 
 type rolloutState struct {
