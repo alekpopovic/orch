@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `29-freeze-api-and-state-machine-contract.md`
-- Last matching commit: `6526b47 Freeze lifecycle state machine contracts`
-- Completed prompt range: `00` through `29`
-- Next prompt to execute: `30-transaction-boundaries-audit.md`
+- Last executed prompt: `30-transaction-boundaries-audit.md`
+- Last matching commit: `72fd9ba Add transaction boundaries for store operations`
+- Completed prompt range: `00` through `30`
+- Next prompt to execute: `31-scheduler-concurrency-safety.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
