@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `50-production-deployment-manifest.md`
-- Last matching commit: `same commit: Add production deployment manifests`
-- Completed prompt range: `00` through `50`
-- Next prompt to execute: `51-security-review.md`
+- Last executed prompt: `51-security-review.md`
+- Last matching commit: `same commit: Add security review and healthcheck hardening`
+- Completed prompt range: `00` through `51`
+- Next prompt to execute: `52-container-security-policy.md`
 - Updated: `2026-07-14`
 
 ## Update Rule

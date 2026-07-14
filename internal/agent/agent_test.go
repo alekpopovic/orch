@@ -538,6 +538,11 @@ func TestReconcileAssignedTaskReportsHealthAfterThresholds(t *testing.T) {
 			HealthyThreshold:   2,
 			UnhealthyThreshold: 2,
 		},
+		Ports: []types.Port{{
+			ContainerPort: 8080,
+			PublishedPort: 18080,
+			Protocol:      types.PortTCP,
+		}},
 	}
 	client := &fakeAgentClient{tasks: []api.AgentTask{task}}
 	runtime := orchdocker.NewFakeRuntime()
@@ -563,6 +568,42 @@ func TestReconcileAssignedTaskReportsHealthAfterThresholds(t *testing.T) {
 	wantStatuses := []types.TaskStatus{types.TaskHealthy, types.TaskUnhealthy}
 	if !equalStatuses(client.statuses, wantStatuses) {
 		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+}
+
+func TestHealthProbeRequiresAssignedPort(t *testing.T) {
+	check := types.Healthcheck{
+		Type: types.HealthcheckHTTP,
+		Path: "/health",
+		Port: 2375,
+	}
+	ports := []types.Port{{
+		ContainerPort: 8080,
+		PublishedPort: 18080,
+		Protocol:      types.PortTCP,
+	}}
+
+	if _, ok := healthProbe(check, ports); ok {
+		t.Fatalf("expected health probe for unassigned host port to be rejected")
+	}
+
+	check.Port = 9090
+	if _, ok := healthProbe(check, []types.Port{{ContainerPort: 9090, Protocol: types.PortTCP}}); ok {
+		t.Fatalf("expected health probe without a published port to be rejected")
+	}
+
+	check.Port = 5353
+	if _, ok := healthProbe(check, []types.Port{{ContainerPort: 5353, PublishedPort: 15353, Protocol: types.PortUDP}}); ok {
+		t.Fatalf("expected health probe for UDP-only port to be rejected")
+	}
+
+	check.Port = 8080
+	probe, ok := healthProbe(check, ports)
+	if !ok {
+		t.Fatalf("expected health probe for assigned container port")
+	}
+	if probe.Target != "http://127.0.0.1:18080/health" {
+		t.Fatalf("expected probe to use published port, got %q", probe.Target)
 	}
 }
 

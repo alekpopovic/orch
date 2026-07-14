@@ -4,8 +4,8 @@ Services may define an optional healthcheck. Health checks are performed by agen
 
 ## Supported Types
 
-- `http`: sends `GET` to the configured path and port.
-- `tcp`: opens a TCP connection to the configured port.
+- `http`: sends `GET` to the configured path and an assigned published TCP task port.
+- `tcp`: opens a TCP connection to an assigned published TCP task port.
 - `none`: disables active probing.
 
 Example deploy YAML:
@@ -25,10 +25,13 @@ healthcheck:
 The server includes healthcheck metadata in task poll responses. For each running task:
 
 1. The agent waits for the configured interval plus jitter.
-2. It performs the HTTP or TCP check with context cancellation and timeout.
-3. It tracks consecutive successes and failures in memory.
-4. It reports `healthy` after `healthyThreshold` consecutive successes.
-5. It reports `unhealthy` after `unhealthyThreshold` consecutive failures.
+2. It verifies that the healthcheck port matches one of the task's assigned published TCP container or host ports.
+3. It performs the HTTP or TCP check against `127.0.0.1:<published-port>` with context cancellation and timeout.
+4. If the service specified a container port, the agent resolves it to the assigned published host port before probing.
+5. If the healthcheck port is not assigned, published, and TCP, the probe is skipped instead of probing an arbitrary host-local port.
+6. It tracks consecutive successes and failures in memory.
+7. It reports `healthy` after `healthyThreshold` consecutive successes.
+8. It reports `unhealthy` after `unhealthyThreshold` consecutive failures.
 
 The agent does not restart containers because of health failures.
 

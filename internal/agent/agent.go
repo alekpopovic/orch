@@ -513,14 +513,8 @@ func (r *Runner) healthJitter(interval time.Duration) time.Duration {
 }
 
 func healthProbe(check types.Healthcheck, ports []types.Port) (health.Check, bool) {
-	port := check.Port
-	if port == 0 && len(ports) > 0 {
-		port = ports[0].PublishedPort
-		if port == 0 {
-			port = ports[0].ContainerPort
-		}
-	}
-	if port == 0 {
+	port, ok := healthcheckProbePort(check.Port, ports)
+	if !ok {
 		return health.Check{}, false
 	}
 	timeout := check.Timeout
@@ -540,6 +534,21 @@ func healthProbe(check types.Healthcheck, ports []types.Port) (health.Check, boo
 	default:
 		return health.Check{}, false
 	}
+}
+
+func healthcheckProbePort(requested int, ports []types.Port) (int, bool) {
+	for _, port := range ports {
+		if port.Protocol != types.PortTCP || port.PublishedPort <= 0 {
+			continue
+		}
+		if requested == 0 || requested == port.PublishedPort {
+			return port.PublishedPort, true
+		}
+		if requested == port.ContainerPort {
+			return port.PublishedPort, true
+		}
+	}
+	return 0, false
 }
 
 func (r *Runner) cleanupUnassigned(ctx context.Context, nodeID types.NodeID, assigned map[types.TaskID]types.Task) error {

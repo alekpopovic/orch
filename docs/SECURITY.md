@@ -2,6 +2,8 @@
 
 `orch` separates user authentication from agent authentication. The current model is appropriate for local and controlled environments; production hardening requires the roadmap items listed below.
 
+The latest repository security review is documented in `docs/SECURITY_REVIEW.md`.
+
 ## User API Authentication
 
 User-facing REST API endpoints support JWT authentication when `ORCH_JWT_SECRET` is configured on `orch-server`.
@@ -64,6 +66,10 @@ Recommended controls:
 - Keep the agent image minimal and pinned.
 - Do not expose the Docker socket to service containers.
 - Monitor Docker operation error metrics and audit task events.
+
+## Healthcheck SSRF Controls
+
+Agents run HTTP and TCP healthchecks from the node. To avoid service specs causing arbitrary host-local probes, healthchecks are only performed against published TCP ports assigned to the task. A configured container port is resolved to the assigned published host port before probing. Unassigned, unpublished, or UDP-only ports are skipped.
 
 ## Secret Handling
 
