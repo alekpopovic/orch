@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `35-basic-service-discovery.md`
-- Last matching commit: `03f8c30 Add basic service discovery`
-- Completed prompt range: `00` through `35`
-- Next prompt to execute: `36-traefik-integration.md`
+- Last executed prompt: `36-traefik-integration.md`
+- Last matching commit: `ea0760e Add optional Traefik integration`
+- Completed prompt range: `00` through `36`
+- Next prompt to execute: `37-secrets-mvp.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
