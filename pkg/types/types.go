@@ -160,6 +160,7 @@ type ServiceSpec struct {
 	Ports                []Port                `json:"ports,omitempty"`
 	ResourceRequirements ResourceRequirements  `json:"resource_requirements"`
 	SecurityContext      SecurityContext       `json:"security_context,omitempty"`
+	Autoscaling          AutoscalingPolicy     `json:"autoscaling,omitempty"`
 	Healthcheck          *Healthcheck          `json:"healthcheck,omitempty"`
 	RestartPolicy        RestartPolicy         `json:"restart_policy"`
 	PlacementConstraints []PlacementConstraint `json:"placement_constraints,omitempty"`
@@ -184,6 +185,9 @@ func (spec ServiceSpec) Validate() error {
 		return err
 	}
 	if err := spec.SecurityContext.Validate(); err != nil {
+		return err
+	}
+	if err := spec.Autoscaling.Validate(); err != nil {
 		return err
 	}
 	for i, port := range spec.Ports {
@@ -437,6 +441,45 @@ func validateCapabilityName(capability string) error {
 type ResourceRequirements struct {
 	Requests Resources `json:"requests"`
 	Limits   Resources `json:"limits"`
+}
+
+type AutoscalingPolicy struct {
+	Enabled              bool          `json:"enabled,omitempty"`
+	MinReplicas          int           `json:"min_replicas,omitempty"`
+	MaxReplicas          int           `json:"max_replicas,omitempty"`
+	TargetCPUUtilization int           `json:"target_cpu_utilization,omitempty"`
+	Cooldown             time.Duration `json:"cooldown,omitempty"`
+	StabilizationWindow  time.Duration `json:"stabilization_window,omitempty"`
+}
+
+func (policy AutoscalingPolicy) Validate() error {
+	if policy.MinReplicas < 0 {
+		return fmt.Errorf("autoscaling min replicas cannot be negative")
+	}
+	if policy.MaxReplicas < 0 {
+		return fmt.Errorf("autoscaling max replicas cannot be negative")
+	}
+	if policy.Enabled {
+		if policy.MaxReplicas == 0 {
+			return fmt.Errorf("autoscaling max replicas is required when autoscaling is enabled")
+		}
+		if policy.TargetCPUUtilization <= 0 {
+			return fmt.Errorf("autoscaling target CPU utilization must be positive")
+		}
+	}
+	if policy.MaxReplicas > 0 && policy.MinReplicas > policy.MaxReplicas {
+		return fmt.Errorf("autoscaling min replicas cannot exceed max replicas")
+	}
+	if policy.TargetCPUUtilization < 0 || policy.TargetCPUUtilization > 1000 {
+		return fmt.Errorf("autoscaling target CPU utilization must be between 1 and 1000")
+	}
+	if policy.Cooldown < 0 {
+		return fmt.Errorf("autoscaling cooldown cannot be negative")
+	}
+	if policy.StabilizationWindow < 0 {
+		return fmt.Errorf("autoscaling stabilization window cannot be negative")
+	}
+	return nil
 }
 
 type ResourceDefaults struct {

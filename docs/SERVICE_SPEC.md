@@ -59,6 +59,21 @@ securityContext:
 
 By default, `orch` rejects privileged containers, host networking, host PID, host path mounts outside configured prefixes, and capability additions outside the cluster allowlist. If `capDrop` is omitted, the Docker runtime drops `NET_RAW` by default.
 
+## Autoscaling
+
+`autoscaling` enables CPU-based replica autoscaling through the autoscaler controller:
+
+```yaml
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilization: 70
+  cooldown: 60s
+```
+
+The controller updates desired replicas through the normal service scale path, clamps decisions to min/max replicas, respects cooldown, and skips services with an active rollout.
+
 ## Validation
 
 Validate locally without creating a service:

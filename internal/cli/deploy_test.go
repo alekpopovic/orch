@@ -33,6 +33,12 @@ securityContext:
   readOnlyRootFilesystem: true
   capDrop:
     - NET_RAW
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilization: 70
+  cooldown: 60s
 healthcheck:
   type: http
   scheme: http
@@ -74,6 +80,9 @@ placement:
 	}
 	if spec.SecurityContext.User != "1000:1000" || !spec.SecurityContext.ReadOnlyRootFilesystem || len(spec.SecurityContext.CapDrop) != 1 {
 		t.Fatalf("unexpected security context %#v", spec.SecurityContext)
+	}
+	if !spec.Autoscaling.Enabled || spec.Autoscaling.MinReplicas != 2 || spec.Autoscaling.MaxReplicas != 10 || spec.Autoscaling.TargetCPUUtilization != 70 {
+		t.Fatalf("unexpected autoscaling %#v", spec.Autoscaling)
 	}
 	if spec.Healthcheck == nil || spec.Healthcheck.Port != 8080 || spec.Healthcheck.Path != "/health" || spec.Healthcheck.Scheme != "http" {
 		t.Fatalf("unexpected healthcheck %#v", spec.Healthcheck)

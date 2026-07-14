@@ -29,6 +29,9 @@ type Server struct {
 	tasksFailed         prometheus.Counter
 	rollouts            prometheus.Counter
 	rolloutFailures     prometheus.Counter
+	autoscalerDecisions *prometheus.CounterVec
+	autoscalerErrors    prometheus.Counter
+	autoscalerRecommend *prometheus.GaugeVec
 }
 
 func NewServer() *Server {
@@ -101,6 +104,18 @@ func NewServer() *Server {
 			Name: "rollout_failures_total",
 			Help: "Total rollouts marked failed.",
 		}),
+		autoscalerDecisions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "autoscaler_decisions_total",
+			Help: "Total autoscaler decisions by decision type.",
+		}, []string{"decision"}),
+		autoscalerErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "autoscaler_errors_total",
+			Help: "Total autoscaler controller errors.",
+		}),
+		autoscalerRecommend: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "autoscaler_recommendation_replicas",
+			Help: "Latest autoscaler replica recommendation by service.",
+		}, []string{"service_id"}),
 	}
 	m.registry.MustRegister(
 		m.apiRequests,
@@ -119,6 +134,9 @@ func NewServer() *Server {
 		m.tasksFailed,
 		m.rollouts,
 		m.rolloutFailures,
+		m.autoscalerDecisions,
+		m.autoscalerErrors,
+		m.autoscalerRecommend,
 	)
 	return m
 }
@@ -189,6 +207,18 @@ func (m *Server) IncRollouts() {
 
 func (m *Server) IncRolloutFailures() {
 	m.rolloutFailures.Inc()
+}
+
+func (m *Server) IncAutoscalerDecision(decision string) {
+	m.autoscalerDecisions.WithLabelValues(decision).Inc()
+}
+
+func (m *Server) IncAutoscalerErrors() {
+	m.autoscalerErrors.Inc()
+}
+
+func (m *Server) SetAutoscalerRecommendation(serviceID string, replicas int) {
+	m.autoscalerRecommend.WithLabelValues(serviceID).Set(float64(replicas))
 }
 
 func (m *Server) add(counter prometheus.Counter, count int) {

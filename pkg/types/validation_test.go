@@ -108,6 +108,13 @@ func TestServiceSpecValidate(t *testing.T) {
 			ReadOnlyRootFilesystem: true,
 			CapDrop:                []string{"NET_RAW"},
 		},
+		Autoscaling: AutoscalingPolicy{
+			Enabled:              true,
+			MinReplicas:          1,
+			MaxReplicas:          5,
+			TargetCPUUtilization: 70,
+			Cooldown:             time.Minute,
+		},
 		PlacementConstraints: []PlacementConstraint{
 			{Key: "region", Operator: ConstraintEquals, Value: "us-east"},
 		},
@@ -229,6 +236,24 @@ func TestServiceSpecValidate(t *testing.T) {
 				return spec
 			}(),
 			wantErr: "security_context.host_path_mounts[0]",
+		},
+		{
+			name: "autoscaling max required",
+			spec: func() ServiceSpec {
+				spec := cloneServiceSpec(valid)
+				spec.Autoscaling.MaxReplicas = 0
+				return spec
+			}(),
+			wantErr: "autoscaling max replicas is required",
+		},
+		{
+			name: "autoscaling min exceeds max",
+			spec: func() ServiceSpec {
+				spec := cloneServiceSpec(valid)
+				spec.Autoscaling.MinReplicas = 6
+				return spec
+			}(),
+			wantErr: "autoscaling min replicas cannot exceed max replicas",
 		},
 		{
 			name: "invalid placement constraint",

@@ -22,6 +22,7 @@ type DeployFile struct {
 	Env             DeployEnv             `yaml:"env"`
 	Resources       DeployResources       `yaml:"resources"`
 	SecurityContext DeploySecurityContext `yaml:"securityContext"`
+	Autoscaling     DeployAutoscaling     `yaml:"autoscaling"`
 	Healthcheck     DeployHealthcheck     `yaml:"healthcheck"`
 	Restart         DeployRestart         `yaml:"restart"`
 	Placement       DeployPlacement       `yaml:"placement"`
@@ -83,6 +84,15 @@ type DeployHostPathMount struct {
 	ReadOnly      bool   `yaml:"readOnly"`
 }
 
+type DeployAutoscaling struct {
+	Enabled              bool   `yaml:"enabled"`
+	MinReplicas          int    `yaml:"minReplicas"`
+	MaxReplicas          int    `yaml:"maxReplicas"`
+	TargetCPUUtilization int    `yaml:"targetCPUUtilization"`
+	Cooldown             string `yaml:"cooldown"`
+	StabilizationWindow  string `yaml:"stabilizationWindow"`
+}
+
 type DeployHealthcheck struct {
 	Type               string `yaml:"type"`
 	Scheme             string `yaml:"scheme"`
@@ -131,6 +141,10 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 	if err != nil {
 		return types.ServiceSpec{}, err
 	}
+	autoscaling, err := deploy.Autoscaling.toDomain()
+	if err != nil {
+		return types.ServiceSpec{}, err
+	}
 
 	spec := types.ServiceSpec{
 		Name:            strings.TrimSpace(deploy.Name),
@@ -143,6 +157,7 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 			Limits:   requests,
 		},
 		SecurityContext:      deploy.SecurityContext.toDomain(),
+		Autoscaling:          autoscaling,
 		RestartPolicy:        restartPolicy(deploy.Restart.Policy),
 		PlacementConstraints: placementConstraints(deploy.Placement.Labels),
 	}
@@ -204,6 +219,25 @@ func (context DeploySecurityContext) toDomain() types.SecurityContext {
 		HostPID:                context.HostPID,
 		HostPathMounts:         mounts,
 	}
+}
+
+func (autoscaling DeployAutoscaling) toDomain() (types.AutoscalingPolicy, error) {
+	cooldown, err := parseOptionalDuration(autoscaling.Cooldown)
+	if err != nil {
+		return types.AutoscalingPolicy{}, fmt.Errorf("invalid autoscaling cooldown: %w", err)
+	}
+	stabilization, err := parseOptionalDuration(autoscaling.StabilizationWindow)
+	if err != nil {
+		return types.AutoscalingPolicy{}, fmt.Errorf("invalid autoscaling stabilization window: %w", err)
+	}
+	return types.AutoscalingPolicy{
+		Enabled:              autoscaling.Enabled,
+		MinReplicas:          autoscaling.MinReplicas,
+		MaxReplicas:          autoscaling.MaxReplicas,
+		TargetCPUUtilization: autoscaling.TargetCPUUtilization,
+		Cooldown:             cooldown,
+		StabilizationWindow:  stabilization,
+	}, nil
 }
 
 func (deploy DeployFile) Validate() error {

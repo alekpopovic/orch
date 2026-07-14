@@ -38,6 +38,9 @@ const (
 	TypeRolloutTaskCreated     = "rollout.task.created"
 	TypeRolloutTaskStopped     = "rollout.task.stopped"
 	TypeRolloutStatusChanged   = "rollout.status.changed"
+	TypeAutoscalerScaled       = "autoscaler.scaled"
+	TypeAutoscalerSkipped      = "autoscaler.skipped"
+	TypeAutoscalerError        = "autoscaler.error"
 	TypeControllerError        = "controller.error"
 )
 
