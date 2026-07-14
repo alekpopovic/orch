@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -25,6 +26,7 @@ type Client interface {
 	GetNode(ctx context.Context, id string) (types.Node, error)
 	DrainNode(ctx context.Context, id string) (types.Node, error)
 	UncordonNode(ctx context.Context, id string) (types.Node, error)
+	GetNodeDrainStatus(ctx context.Context, id string) (controlplane.NodeDrainStatus, error)
 	CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error)
 	ListServices(ctx context.Context) ([]types.Service, error)
 	GetService(ctx context.Context, id string) (types.Service, error)
@@ -176,6 +178,22 @@ func (a *app) nodeCommand() *cobra.Command {
 	cmd.AddCommand(a.nodeActionCommand("uncordon", "Uncordon a node", func(ctx context.Context, client Client, id string) (types.Node, error) {
 		return client.UncordonNode(ctx, id)
 	}))
+	cmd.AddCommand(&cobra.Command{
+		Use:   "drain-status <node-id>",
+		Short: "Show node drain status",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := a.client()
+			if err != nil {
+				return err
+			}
+			status, err := client.GetNodeDrainStatus(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return writeNodeDrainStatus(a.out, a.output, status)
+		},
+	})
 	return cmd
 }
 

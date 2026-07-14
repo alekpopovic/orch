@@ -27,6 +27,7 @@ type Service interface {
 	GetNode(ctx context.Context, id types.NodeID) (types.Node, error)
 	DrainNode(ctx context.Context, id types.NodeID) (types.Node, error)
 	UncordonNode(ctx context.Context, id types.NodeID) (types.Node, error)
+	GetNodeDrainStatus(ctx context.Context, id types.NodeID) (NodeDrainStatus, error)
 	CreateSecret(ctx context.Context, name string, plaintext string) (types.SecretMetadata, error)
 	ListSecrets(ctx context.Context) ([]types.SecretMetadata, error)
 	GetSecret(ctx context.Context, name string) (types.SecretMetadata, error)
@@ -93,6 +94,27 @@ type RegistryAuth struct {
 	Username      string `json:"username,omitempty"`
 	Password      string `json:"password,omitempty"`
 	ServerAddress string `json:"server_address,omitempty"`
+}
+
+type DrainPhase string
+
+const (
+	DrainNotDraining DrainPhase = "not_draining"
+	DrainPending     DrainPhase = "pending"
+	DrainComplete    DrainPhase = "complete"
+	DrainOffline     DrainPhase = "offline"
+)
+
+type NodeDrainStatus struct {
+	NodeID               types.NodeID     `json:"node_id"`
+	NodeStatus           types.NodeStatus `json:"node_status"`
+	Phase                DrainPhase       `json:"phase"`
+	TotalTasks           int              `json:"total_tasks"`
+	RemainingTasks       int              `json:"remaining_tasks"`
+	ReplacementTasks     int              `json:"replacement_tasks"`
+	ReplacementReady     int              `json:"replacement_ready"`
+	InsufficientCapacity bool             `json:"insufficient_capacity,omitempty"`
+	Message              string           `json:"message,omitempty"`
 }
 
 type TaskStatusReport struct {
@@ -488,6 +510,7 @@ func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusR
 	if status == types.TaskRemoved {
 		s.maybeFinalizeServiceDeletionLocked(task.ServiceID, task.UpdatedAt)
 	}
+	s.reconcileDrainingNodesLocked(task.UpdatedAt)
 	s.appendEventLocked(eventType, severity, "agent", message, "task", string(task.ID), task.UpdatedAt)
 	return task, nil
 }
@@ -530,11 +553,44 @@ func (s *MemoryService) GetNode(ctx context.Context, id types.NodeID) (types.Nod
 }
 
 func (s *MemoryService) DrainNode(ctx context.Context, id types.NodeID) (types.Node, error) {
-	return s.setNodeStatus(ctx, id, types.NodeDraining)
+	if err := ctx.Err(); err != nil {
+		return types.Node{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node, ok := s.nodes[id]
+	if !ok {
+		return types.Node{}, store.ErrNotFound
+	}
+	if err := types.ValidateNodeTransition(node.Status, types.NodeDraining); err != nil {
+		return types.Node{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	now := s.now()
+	node.Status = types.NodeDraining
+	node.UpdatedAt = now
+	s.nodes[id] = node
+	s.reconcileNodeDrainLocked(id, now)
+	s.appendEventLocked(events.TypeNodeStatusChanged, types.EventInfo, "controlplane", "node status changed", "node", string(id), node.UpdatedAt)
+	return node, nil
 }
 
 func (s *MemoryService) UncordonNode(ctx context.Context, id types.NodeID) (types.Node, error) {
 	return s.setNodeStatus(ctx, id, types.NodeReady)
+}
+
+func (s *MemoryService) GetNodeDrainStatus(ctx context.Context, id types.NodeID) (NodeDrainStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return NodeDrainStatus{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	node, ok := s.nodes[id]
+	if !ok {
+		return NodeDrainStatus{}, store.ErrNotFound
+	}
+	return s.nodeDrainStatusLocked(node), nil
 }
 
 func (s *MemoryService) CreateSecret(ctx context.Context, name string, plaintext string) (types.SecretMetadata, error) {
@@ -1401,6 +1457,177 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 			continue
 		}
 	}
+}
+
+func (s *MemoryService) reconcileDrainingNodesLocked(timestamp time.Time) {
+	nodes := make([]types.NodeID, 0)
+	for _, node := range s.nodes {
+		if node.Status == types.NodeDraining {
+			nodes = append(nodes, node.ID)
+		}
+	}
+	slices.Sort(nodes)
+	for _, nodeID := range nodes {
+		s.reconcileNodeDrainLocked(nodeID, timestamp)
+	}
+}
+
+func (s *MemoryService) reconcileNodeDrainLocked(nodeID types.NodeID, timestamp time.Time) {
+	node, ok := s.nodes[nodeID]
+	if !ok || node.Status != types.NodeDraining {
+		return
+	}
+	readyNodes := s.readyNodesLocked()
+	if len(readyNodes) == 0 {
+		if s.nodeDrainStatusLocked(node).RemainingTasks > 0 {
+			s.appendEventLocked(events.TypeNodeDrainPending, types.EventWarning, "controlplane", "node drain is waiting for ready replacement capacity", "node", string(nodeID), timestamp)
+		}
+		return
+	}
+	services := make([]types.Service, 0, len(s.services))
+	for _, service := range s.services {
+		if service.Status != "" && service.Status != types.ServiceActive {
+			continue
+		}
+		services = append(services, service)
+	}
+	slices.SortFunc(services, func(a, b types.Service) int {
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
+		return 0
+	})
+	for _, service := range services {
+		drainingTasks := s.activeServiceTasksOnNodeLocked(service.ID, nodeID)
+		if len(drainingTasks) == 0 {
+			continue
+		}
+		offNodeActive := s.activeServiceTasksOffNodeLocked(service.ID, nodeID)
+		for len(offNodeActive) < service.Spec.Replicas {
+			node := readyNodes[len(offNodeActive)%len(readyNodes)]
+			task := types.Task{
+				ID:            types.TaskID(newUUID()),
+				ServiceID:     service.ID,
+				NodeID:        node.ID,
+				DesiredStatus: types.TaskRunning,
+				ActualStatus:  types.TaskAssigned,
+				Image:         service.Spec.Image,
+				Version:       service.DeploymentVersion,
+				Ports:         s.assignPortsForNodeLocked(service.Spec.Ports, node.ID),
+				CreatedAt:     timestamp,
+				UpdatedAt:     timestamp,
+			}
+			s.tasks[task.ID] = task
+			offNodeActive = append(offNodeActive, task)
+			s.appendEventLocked(events.TypeTaskAssigned, types.EventInfo, "controlplane", "replacement task assigned during node drain", "task", string(task.ID), timestamp)
+		}
+		if availableTaskCount(offNodeActive) < service.Spec.Replicas {
+			continue
+		}
+		for _, task := range drainingTasks {
+			if task.DesiredStatus == types.TaskStopped || task.DesiredStatus == types.TaskRemoved {
+				continue
+			}
+			if err := types.ValidateTaskDesiredTransition(task.DesiredStatus, types.TaskStopped); err != nil {
+				continue
+			}
+			task.DesiredStatus = types.TaskStopped
+			task.UpdatedAt = timestamp
+			s.tasks[task.ID] = task
+		}
+	}
+}
+
+func (s *MemoryService) activeServiceTasksOnNodeLocked(serviceID types.ServiceID, nodeID types.NodeID) []types.Task {
+	tasks := make([]types.Task, 0)
+	for _, task := range s.tasks {
+		if task.ServiceID != serviceID || task.NodeID != nodeID || !types.IsActiveTask(task) {
+			continue
+		}
+		tasks = append(tasks, task)
+	}
+	sortTasksByID(tasks)
+	return tasks
+}
+
+func (s *MemoryService) activeServiceTasksOffNodeLocked(serviceID types.ServiceID, nodeID types.NodeID) []types.Task {
+	tasks := make([]types.Task, 0)
+	for _, task := range s.tasks {
+		if task.ServiceID != serviceID || task.NodeID == nodeID || !types.IsActiveTask(task) {
+			continue
+		}
+		tasks = append(tasks, task)
+	}
+	sortTasksByID(tasks)
+	return tasks
+}
+
+func sortTasksByID(tasks []types.Task) {
+	slices.SortFunc(tasks, func(a, b types.Task) int {
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
+		return 0
+	})
+}
+
+func availableTaskCount(tasks []types.Task) int {
+	count := 0
+	for _, task := range tasks {
+		if types.IsAvailableTaskStatus(task.ActualStatus) {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *MemoryService) nodeDrainStatusLocked(node types.Node) NodeDrainStatus {
+	status := NodeDrainStatus{
+		NodeID:     node.ID,
+		NodeStatus: node.Status,
+	}
+	if node.Status == types.NodeOffline {
+		status.Phase = DrainOffline
+		status.Message = "node is offline during drain"
+		return status
+	}
+	if node.Status != types.NodeDraining {
+		status.Phase = DrainNotDraining
+		status.Message = "node is not draining"
+		return status
+	}
+	for _, task := range s.tasks {
+		if task.NodeID != node.ID || !types.IsActiveTask(task) {
+			continue
+		}
+		status.TotalTasks++
+		if task.DesiredStatus != types.TaskStopped && task.DesiredStatus != types.TaskRemoved {
+			status.RemainingTasks++
+		}
+		service := s.services[task.ServiceID]
+		offNode := s.activeServiceTasksOffNodeLocked(service.ID, node.ID)
+		status.ReplacementTasks += len(offNode)
+		status.ReplacementReady += availableTaskCount(offNode)
+	}
+	if status.RemainingTasks == 0 {
+		status.Phase = DrainComplete
+		status.Message = "node drain completed"
+		return status
+	}
+	status.Phase = DrainPending
+	if len(s.readyNodesLocked()) == 0 {
+		status.InsufficientCapacity = true
+		status.Message = "waiting for ready replacement capacity"
+	} else {
+		status.Message = "waiting for replacement tasks to become healthy"
+	}
+	return status
 }
 
 func countsTowardDesiredReplicas(task types.Task) bool {

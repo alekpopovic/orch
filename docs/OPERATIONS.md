@@ -142,16 +142,32 @@ Rollback requires a previous successful version.
 
 ```sh
 orch node drain <node-id>
-orch node inspect <node-id>
+orch node drain-status <node-id>
 ```
 
-Draining excludes the node from new scheduler placements. Existing task migration away from the node is limited in the current MVP; use service scale/rollout/delete flows to move work intentionally.
+Draining marks the node `draining`, excludes it from new placements, and creates replacement tasks on other ready nodes. Existing tasks on the drained node are stopped only after replacements become `running` or `healthy`.
+
+If there is no ready replacement capacity, drain remains pending and emits a warning event:
+
+```sh
+orch events --type node.drain.pending
+orch node drain-status <node-id> --output json
+```
+
+If a node goes offline during drain, inspect status and events before force-removing workloads:
+
+```sh
+orch node inspect <node-id>
+orch events --type node.status.changed
+```
 
 Uncordon:
 
 ```sh
 orch node uncordon <node-id>
 ```
+
+Uncordon returns the node to `ready` and allows new placements again. If replacements were already created, normal reconciliation may later remove excess tasks.
 
 ### Investigate Task Failure
 

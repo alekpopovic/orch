@@ -143,6 +143,16 @@ func TestDrainNode(t *testing.T) {
 	if body.Node.Status != "draining" {
 		t.Fatalf("expected node to be draining, got %q", body.Node.Status)
 	}
+
+	statusRec := doRequest(t, handler, http.MethodGet, "/v1/nodes/"+string(registered.Node.ID)+"/drain-status", nil)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, statusRec.Code, statusRec.Body.String())
+	}
+	var statusBody NodeDrainStatusResponse
+	decodeResponse(t, statusRec, &statusBody)
+	if statusBody.DrainStatus.NodeID != registered.Node.ID || statusBody.DrainStatus.Phase == "" {
+		t.Fatalf("unexpected drain status %#v", statusBody.DrainStatus)
+	}
 }
 
 func TestSecretsCreateRetrieveMetadataAndRedactPlaintext(t *testing.T) {

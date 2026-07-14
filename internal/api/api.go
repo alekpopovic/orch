@@ -138,6 +138,7 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux.HandleFunc("GET /v1/nodes/{id}", server.getNode)
 	mux.HandleFunc("POST /v1/nodes/{id}/drain", server.drainNode)
 	mux.HandleFunc("POST /v1/nodes/{id}/uncordon", server.uncordonNode)
+	mux.HandleFunc("GET /v1/nodes/{id}/drain-status", server.getNodeDrainStatus)
 	mux.HandleFunc("POST /v1/secrets", server.createSecret)
 	mux.HandleFunc("GET /v1/secrets", server.listSecrets)
 	mux.HandleFunc("GET /v1/secrets/{name...}", server.getSecret)
@@ -224,6 +225,10 @@ type AgentTaskStatusRequest struct {
 
 type NodeResponse struct {
 	Node types.Node `json:"node"`
+}
+
+type NodeDrainStatusResponse struct {
+	DrainStatus controlplane.NodeDrainStatus `json:"drain_status"`
 }
 
 type CreateSecretRequest struct {
@@ -477,6 +482,19 @@ func (s *Server) uncordonNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, NodeResponse{Node: node})
+}
+
+func (s *Server) getNodeDrainStatus(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathNodeID(w, r)
+	if !ok {
+		return
+	}
+	status, err := s.controlPlane.GetNodeDrainStatus(r.Context(), id)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, NodeDrainStatusResponse{DrainStatus: status})
 }
 
 func (s *Server) createSecret(w http.ResponseWriter, r *http.Request) {
@@ -1073,6 +1091,8 @@ func metricRoute(method string, path string) (string, bool) {
 		return "/v1/nodes/{id}/drain", true
 	case strings.HasPrefix(path, "/v1/nodes/") && strings.HasSuffix(path, "/uncordon"):
 		return "/v1/nodes/{id}/uncordon", true
+	case strings.HasPrefix(path, "/v1/nodes/") && strings.HasSuffix(path, "/drain-status"):
+		return "/v1/nodes/{id}/drain-status", true
 	case strings.HasPrefix(path, "/v1/nodes/"):
 		return "/v1/nodes/{id}", true
 	case path == "/v1/secrets":

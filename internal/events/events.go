@@ -13,6 +13,7 @@ const (
 	TypeNodeHeartbeat          = "node.heartbeat"
 	TypeNodeShutdown           = "node.shutdown"
 	TypeNodeStatusChanged      = "node.status.changed"
+	TypeNodeDrainPending       = "node.drain.pending"
 	TypeServiceCreated         = "service.created"
 	TypeServiceUpdated         = "service.updated"
 	TypeServiceDeleted         = "service.deleted"

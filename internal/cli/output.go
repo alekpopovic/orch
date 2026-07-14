@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -37,6 +38,24 @@ func writeNode(w io.Writer, output string, node types.Node) error {
 		return writeValue(w, output, node)
 	}
 	return writeNodes(w, output, []types.Node{node})
+}
+
+func writeNodeDrainStatus(w io.Writer, output string, status controlplane.NodeDrainStatus) error {
+	if output == "json" {
+		return writeValue(w, output, status)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NODE\tNODE_STATUS\tPHASE\tREMAINING\tREPLACEMENTS\tREADY\tMESSAGE")
+	fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\n",
+		status.NodeID,
+		status.NodeStatus,
+		status.Phase,
+		status.RemainingTasks,
+		status.ReplacementTasks,
+		status.ReplacementReady,
+		status.Message,
+	)
+	return tw.Flush()
 }
 
 func writeServices(w io.Writer, output string, services []types.Service) error {

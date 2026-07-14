@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alekpopovic/orch/internal/api"
+	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -74,6 +75,14 @@ func (c *APIClient) UncordonNode(ctx context.Context, id string) (types.Node, er
 		return types.Node{}, err
 	}
 	return out.Node, nil
+}
+
+func (c *APIClient) GetNodeDrainStatus(ctx context.Context, id string) (controlplane.NodeDrainStatus, error) {
+	var out api.NodeDrainStatusResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/nodes/"+id+"/drain-status", nil, &out); err != nil {
+		return controlplane.NodeDrainStatus{}, err
+	}
+	return out.DrainStatus, nil
 }
 
 func (c *APIClient) CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error) {

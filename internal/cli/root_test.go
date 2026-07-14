@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -25,6 +26,7 @@ func TestRootCommandConstruction(t *testing.T) {
 		"node inspect",
 		"node drain",
 		"node uncordon",
+		"node drain-status",
 		"deploy",
 		"service ls",
 		"service inspect",
@@ -330,6 +332,16 @@ func (f *fakeClient) DrainNode(_ context.Context, id string) (types.Node, error)
 
 func (f *fakeClient) UncordonNode(_ context.Context, id string) (types.Node, error) {
 	return types.Node{ID: types.NodeID(id), Status: types.NodeReady}, nil
+}
+
+func (f *fakeClient) GetNodeDrainStatus(_ context.Context, id string) (controlplane.NodeDrainStatus, error) {
+	return controlplane.NodeDrainStatus{
+		NodeID:         types.NodeID(id),
+		NodeStatus:     types.NodeDraining,
+		Phase:          controlplane.DrainPending,
+		RemainingTasks: 1,
+		Message:        "waiting",
+	}, nil
 }
 
 func (f *fakeClient) CreateService(_ context.Context, spec types.ServiceSpec) (types.Service, error) {
