@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `31-scheduler-concurrency-safety.md`
-- Last matching commit: `1a1c216 Add scheduler concurrency-safe assignment`
-- Completed prompt range: `00` through `31`
-- Next prompt to execute: `32-reconciler-idempotency-under-restart.md`
+- Last executed prompt: `32-reconciler-idempotency-under-restart.md`
+- Last matching commit: `a11cec0 Harden reconciler restart idempotency`
+- Completed prompt range: `00` through `32`
+- Next prompt to execute: `33-fake-runtime-for-deterministic-tests.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
