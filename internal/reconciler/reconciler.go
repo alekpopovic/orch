@@ -17,6 +17,7 @@ type Store interface {
 	ListServices(ctx context.Context) ([]types.Service, error)
 	ListTasksByService(ctx context.Context, serviceID types.ServiceID) ([]types.Task, error)
 	ListTasksByStatus(ctx context.Context, status types.TaskStatus) ([]types.Task, error)
+	ListDeploymentsByStatus(ctx context.Context, status types.DeploymentStatus) ([]types.Deployment, error)
 	CreateTask(ctx context.Context, task types.Task) (types.Task, error)
 	StopTask(ctx context.Context, id types.TaskID, expectedUpdatedAt time.Time) (types.Task, error)
 	UpdateServiceStatus(ctx context.Context, id types.ServiceID, status types.ServiceStatus, expectedUpdatedAt time.Time) (types.Service, error)
@@ -167,6 +168,10 @@ func (r *Reconciler) reconcile(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("list services: %w", err)
 	}
+	activeDeployments, err := r.activeDeploymentServices(ctx)
+	if err != nil {
+		return Result{}, err
+	}
 	sort.Slice(services, func(i, j int) bool {
 		return services[i].ID < services[j].ID
 	})
@@ -187,6 +192,9 @@ func (r *Reconciler) reconcile(ctx context.Context) (Result, error) {
 		var err error
 		switch service.Status {
 		case types.ServiceActive:
+			if activeDeployments[service.ID] {
+				continue
+			}
 			serviceResult, err = r.reconcileService(ctx, service)
 		case types.ServiceDeleting:
 			serviceResult, err = r.reconcileDeletingService(ctx, service)
@@ -209,6 +217,24 @@ func (r *Reconciler) reconcile(ctx context.Context) (Result, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+func (r *Reconciler) activeDeploymentServices(ctx context.Context) (map[types.ServiceID]bool, error) {
+	services := make(map[types.ServiceID]bool)
+	for _, status := range []types.DeploymentStatus{
+		types.DeploymentPending,
+		types.DeploymentRunning,
+		types.DeploymentRollingBack,
+	} {
+		deployments, err := r.store.ListDeploymentsByStatus(ctx, status)
+		if err != nil {
+			return nil, fmt.Errorf("list %s deployments: %w", status, err)
+		}
+		for _, deployment := range deployments {
+			services[deployment.ServiceID] = true
+		}
+	}
+	return services, nil
 }
 
 func (r *Reconciler) reconcileDeletingService(ctx context.Context, service types.Service) (Result, error) {

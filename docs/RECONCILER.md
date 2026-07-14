@@ -22,6 +22,22 @@ The reconciler:
 
 A leader-lock abstraction exists, but the current implementation uses a no-op lock. Do not run multiple production reconcilers against the same durable store until real locking is implemented.
 
+## Idempotency And Restarts
+
+Each pass is recomputed from durable service, task, and deployment state. The reconciler does not rely on in-memory generation counters or partially completed operation IDs.
+
+Restart safety comes from these rules:
+
+- pending, assigned, running, healthy, unhealthy, pulling, created, starting, and stopping tasks count as active work;
+- failed restartable tasks do not count, so exactly one replacement is created and then counted on the next pass;
+- failed non-restartable tasks count toward desired replicas for operator inspection;
+- stop decisions use optimistic task `updated_at` guards and skip tasks already marked `stopped` or `removed`;
+- service deletion keeps reconciling `deleting` services until all tasks report `removed`;
+- tasks whose service record is missing are still stopped by status scans after restart;
+- services with active `pending`, `running`, or `rolling_back` deployments are left to the rollout controller.
+
+Events are emitted only for persisted create, stop, and service-deleted transitions. Repeated no-op passes should not create duplicate audit events.
+
 ## Active Service Reconciliation
 
 For each active service:

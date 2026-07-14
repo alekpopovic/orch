@@ -139,6 +139,93 @@ func TestReconcileOnceIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestReconcileRestartBetweenCreationAndSchedulingDoesNotDuplicate(t *testing.T) {
+	store := newFakeStore(
+		[]types.Service{serviceFixture("svc", 2, 1, types.RestartPolicy{})},
+		nil,
+	)
+
+	if err := New(store).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("first reconciler before restart: %v", err)
+	}
+	if err := New(store).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("second reconciler after restart: %v", err)
+	}
+	if got := len(store.created); got != 2 {
+		t.Fatalf("expected two pending tasks after restart, got %d", got)
+	}
+	if got := len(store.events); got != 2 {
+		t.Fatalf("expected create events only for real creates, got %d", got)
+	}
+}
+
+func TestReconcileRepeatedLoopWithSameServiceDoesNotEmitNoopEvents(t *testing.T) {
+	store := newFakeStore(
+		[]types.Service{serviceFixture("svc", 1, 1, types.RestartPolicy{})},
+		[]types.Task{taskFixture("task-a", "svc", 1, types.TaskRunning, types.TaskRunning)},
+	)
+	reconciler := New(store)
+
+	if err := reconciler.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if err := reconciler.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if len(store.created) != 0 || len(store.stopped) != 0 || len(store.events) != 0 {
+		t.Fatalf("expected repeated no-op reconciliation, created=%#v stopped=%#v events=%#v", store.created, store.stopped, store.events)
+	}
+}
+
+func TestReconcileFailedTaskReplacementOnlyOnce(t *testing.T) {
+	store := newFakeStore(
+		[]types.Service{serviceFixture("svc", 2, 1, types.RestartPolicy{Condition: types.RestartOnFailure})},
+		[]types.Task{
+			taskFixture("task-a", "svc", 1, types.TaskRunning, types.TaskRunning),
+			taskFixture("task-b", "svc", 1, types.TaskRunning, types.TaskFailed),
+		},
+	)
+	reconciler := New(store)
+
+	if err := reconciler.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if err := reconciler.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if got := len(store.created); got != 1 {
+		t.Fatalf("expected one failed-task replacement, got %d", got)
+	}
+	if got := len(store.events); got != 1 {
+		t.Fatalf("expected one replacement event, got %d", got)
+	}
+}
+
+func TestReconcileScaleDownRepeatedTwiceIsStable(t *testing.T) {
+	store := newFakeStore(
+		[]types.Service{serviceFixture("svc", 1, 1, types.RestartPolicy{})},
+		[]types.Task{
+			taskFixture("task-a", "svc", 1, types.TaskRunning, types.TaskRunning),
+			taskFixture("task-b", "svc", 1, types.TaskRunning, types.TaskRunning),
+			taskFixture("task-c", "svc", 1, types.TaskRunning, types.TaskRunning),
+		},
+	)
+	reconciler := New(store)
+
+	if err := reconciler.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if err := reconciler.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if !taskIDsEqual(store.stopped, []types.TaskID{"task-c", "task-b"}) {
+		t.Fatalf("expected stable scale-down order, got %#v", store.stopped)
+	}
+	if got := len(store.events); got != 2 {
+		t.Fatalf("expected stop events only for first scale-down, got %d", got)
+	}
+}
+
 func TestReconcileOnceUsesLeaderLock(t *testing.T) {
 	lock := &fakeLeaderLock{}
 	store := newFakeStore(nil, nil)
@@ -225,9 +312,78 @@ func TestReconcileDeletingServiceFinalCleanupAfterAgentReturns(t *testing.T) {
 	}
 }
 
+func TestReconcileServiceDeletionRepeatedTwiceContinuesCleanup(t *testing.T) {
+	store := newFakeStore(
+		[]types.Service{serviceFixtureWithStatus("svc", 1, 1, types.RestartPolicy{}, types.ServiceDeleting)},
+		[]types.Task{taskFixture("task-a", "svc", 1, types.TaskRunning, types.TaskRunning)},
+	)
+
+	if err := New(store).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if err := New(store).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("second reconcile after restart: %v", err)
+	}
+	if !taskIDsEqual(store.stopped, []types.TaskID{"task-a"}) {
+		t.Fatalf("expected deletion cleanup stop once, got %#v", store.stopped)
+	}
+	if store.services["svc"].Status != types.ServiceDeleting {
+		t.Fatalf("expected service to remain deleting until task removed, got %q", store.services["svc"].Status)
+	}
+	if got := len(store.events); got != 1 {
+		t.Fatalf("expected one deletion stop event, got %d", got)
+	}
+}
+
+func TestReconcileMissingServiceCleanupSurvivesRestart(t *testing.T) {
+	store := newFakeStore(nil, []types.Task{taskFixture("task-a", "missing-svc", 1, types.TaskRunning, types.TaskRunning)})
+
+	if err := New(store).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if err := New(store).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("second reconcile after restart: %v", err)
+	}
+	if !taskIDsEqual(store.stopped, []types.TaskID{"task-a"}) {
+		t.Fatalf("expected missing service task stopped once, got %#v", store.stopped)
+	}
+	if got := len(store.events); got != 1 {
+		t.Fatalf("expected one cleanup event, got %d", got)
+	}
+}
+
+func TestReconcileSkipsServicesWithActiveRollouts(t *testing.T) {
+	store := newFakeStore(
+		[]types.Service{serviceFixture("svc", 2, 2, types.RestartPolicy{})},
+		[]types.Task{
+			taskFixture("old-a", "svc", 1, types.TaskRunning, types.TaskHealthy),
+			taskFixture("new-a", "svc", 2, types.TaskRunning, types.TaskPending),
+		},
+	)
+	store.deployments = []types.Deployment{{
+		ID:             "deployment-a",
+		ServiceID:      "svc",
+		FromVersion:    1,
+		ToVersion:      2,
+		Strategy:       types.RolloutRollingUpdate,
+		Status:         types.DeploymentRunning,
+		MaxUnavailable: 1,
+		MaxSurge:       1,
+		UpdatedAt:      time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC),
+	}}
+
+	if err := New(store).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcile once: %v", err)
+	}
+	if len(store.created) != 0 || len(store.stopped) != 0 || len(store.events) != 0 {
+		t.Fatalf("expected rollout-owned tasks to be left to rollout controller, created=%#v stopped=%#v events=%#v", store.created, store.stopped, store.events)
+	}
+}
+
 type fakeStore struct {
 	services             map[types.ServiceID]types.Service
 	tasks                map[types.TaskID]types.Task
+	deployments          []types.Deployment
 	created              []types.Task
 	stopped              []types.TaskID
 	serviceStatusUpdates []types.ServiceStatus
@@ -277,6 +433,16 @@ func (s *fakeStore) ListTasksByStatus(_ context.Context, status types.TaskStatus
 		}
 	}
 	return tasks, nil
+}
+
+func (s *fakeStore) ListDeploymentsByStatus(_ context.Context, status types.DeploymentStatus) ([]types.Deployment, error) {
+	deployments := make([]types.Deployment, 0)
+	for _, deployment := range s.deployments {
+		if deployment.Status == status {
+			deployments = append(deployments, deployment)
+		}
+	}
+	return deployments, nil
 }
 
 func (s *fakeStore) CreateTask(_ context.Context, task types.Task) (types.Task, error) {
