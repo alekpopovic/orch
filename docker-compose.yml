@@ -83,5 +83,32 @@ services:
     ports:
       - "18080:80"
 
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    profiles: ["monitoring"]
+    environment:
+      DATA_SOURCE_NAME: postgres://orch:orch@postgres:5432/orch?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:latest}
+    profiles: ["monitoring"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/prometheus-rules.yaml:/etc/prometheus/rules/prometheus-rules.yaml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - orch-server
+      - orch-agent
+      - postgres-exporter
+
 volumes:
   postgres-data:
+  prometheus-data:

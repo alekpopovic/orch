@@ -88,6 +88,9 @@ Labels are intentionally low-cardinality. Do not add service names, task IDs, no
 ## Prometheus Scrape Example
 
 ```yaml
+rule_files:
+  - /etc/prometheus/rules/prometheus-rules.yaml
+
 scrape_configs:
   - job_name: orch-server
     static_configs:
@@ -98,16 +101,34 @@ scrape_configs:
       - targets: ["localhost:8081"]
 ```
 
-## Suggested Alerts
+Local Compose can run Prometheus with the bundled rules:
 
-For an MVP environment:
+```sh
+docker compose --profile local-orch --profile monitoring up -d
+open http://localhost:9090
+```
 
-- API 5xx rate above baseline.
-- Agent heartbeat failures increasing.
-- Docker operation errors increasing.
-- Task failures increasing.
-- Rollout failures non-zero.
-- No events or metrics from an expected node.
+The local monitoring profile starts Prometheus and a PostgreSQL exporter. It loads `deploy/monitoring/prometheus.yml` and `deploy/monitoring/prometheus-rules.yaml`.
+
+## Recommended Alerts
+
+Recommended alert rules live in `deploy/monitoring/prometheus-rules.yaml`.
+
+| Alert | Severity | Meaning | First response |
+| --- | --- | --- | --- |
+| `OrchServerDown` | critical | Prometheus cannot scrape `orch-server`. | Check server process, container status, and port `8080`. |
+| `OrchAgentHeartbeatMissing` | warning | An agent stopped recording successful heartbeats. | Check agent logs, server reachability, token rotation, and clock skew. |
+| `NodeOffline` | critical | Prometheus cannot scrape an agent endpoint. | Treat the node as suspect; inspect `orch node inspect` and Docker health. |
+| `SchedulerErrorsHigh` | warning | Scheduler errors are increasing. | Inspect scheduler logs and pending task placement constraints. |
+| `ReconcilerErrorsHigh` | warning | Reconciler errors are increasing. | Inspect service/task state and control-plane logs. |
+| `RolloutFailed` | critical | A rollout entered failed state. | Run `orch rollout status`, `orch events --service`, and inspect failed tasks. |
+| `TaskFailuresHigh` | warning | Task failures exceeded the recommended baseline. | Check image pulls, healthchecks, port collisions, and node runtime errors. |
+| `DockerOperationErrorsHigh` | warning | Docker API operations are failing across agents. | Check Docker daemon health and socket permissions on affected nodes. |
+| `DatabaseUnavailable` | critical | PostgreSQL exporter cannot be scraped. | Check PostgreSQL, exporter credentials, network path, and migrations. |
+| `APIErrorRateHigh` | warning | More than 5% of API requests are 5xx responses. | Correlate API logs by request ID and inspect recent deploy/rollout activity. |
+| `ReconciliationLatencyHigh` | warning | Reconciler p95 runtime is above 10 seconds. | Check database latency, event backlog, and controller contention. |
+
+Alert labels intentionally stay low-cardinality: `severity` and `component`. Do not add service IDs, task IDs, user IDs, image names, or node labels to alert labels; put those in annotations or linked runbooks.
 
 Roadmap:
 

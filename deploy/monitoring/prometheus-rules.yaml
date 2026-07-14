@@ -1,0 +1,132 @@
+groups:
+  - name: orch.availability
+    rules:
+      - alert: OrchServerDown
+        expr: up{job="orch-server"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: server
+        annotations:
+          summary: "orch-server metrics endpoint is down"
+          description: "Prometheus cannot scrape orch-server at {{ $labels.instance }} for more than 2 minutes."
+          runbook_url: "docs/OBSERVABILITY.md#recommended-alerts"
+
+      - alert: OrchAgentHeartbeatMissing
+        expr: increase(heartbeat_success_total{job="orch-agent"}[2m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: agent
+        annotations:
+          summary: "orch-agent heartbeat success stopped"
+          description: "Agent {{ $labels.instance }} has not recorded a successful heartbeat for more than 5 minutes."
+          runbook_url: "docs/OBSERVABILITY.md#recommended-alerts"
+
+      - alert: NodeOffline
+        expr: up{job="orch-agent"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          component: node
+        annotations:
+          summary: "orch-agent node endpoint is unreachable"
+          description: "Prometheus cannot scrape the agent on {{ $labels.instance }}. Treat the node as suspect/offline until verified."
+          runbook_url: "docs/OBSERVABILITY.md#recommended-alerts"
+
+      - alert: DatabaseUnavailable
+        expr: up{job="postgres"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "PostgreSQL exporter is down"
+          description: "Prometheus cannot scrape PostgreSQL exporter at {{ $labels.instance }}. Check database availability and exporter configuration."
+          runbook_url: "docs/OBSERVABILITY.md#recommended-alerts"
+
+  - name: orch.controllers
+    rules:
+      - alert: SchedulerErrorsHigh
+        expr: rate(scheduler_errors_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: scheduler
+        annotations:
+          summary: "Scheduler errors are elevated"
+          description: "scheduler_errors_total is increasing faster than 0.1/s for 10 minutes."
+          runbook_url: "docs/OBSERVABILITY.md#recommended-alerts"
+
+      - alert: ReconcilerErrorsHigh
+        expr: rate(reconciler_errors_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: reconciler
+        annotations:
+          summary: "Reconciler errors are elevated"
+          description: "reconciler_errors_total is increasing faster than 0.1/s for 10 minutes."
+          runbook_url: "docs/OBSERVABILITY.md#recommended-alerts"
+
+      - alert: ReconciliationLatencyHigh
+        expr: histogram_quantile(0.95, rate(reconciler_duration_seconds_bucket[10m])) > 10
+        for: 15m
+        labels:
+          severity: warning
+          component: reconciler
+        annotations:
+          summary: "Reconciliation latency is high"
+          description: "The p95 reconciler duration is above 10 seconds for 15 minutes."
+          runbook_url: "docs/OBSERVABILITY.md#recommended-alerts"
+
+      - alert: RolloutFailed
+        expr: increase(rollout_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: rollout
+        annotations:
+          summary: "A rollout failed"
+          description: "At least one rollout failed in the last 5 minutes. Inspect rollout events and service tasks."
+          runbook_url: "docs/OBSERVABILITY.md#recommended-alerts"
+
+  - name: orch.runtime
+    rules:
+      - alert: TaskFailuresHigh
+        expr: increase(tasks_failed_total[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: tasks
+        annotations:
+          summary: "Task failures are high"
+          description: "More than 5 tasks failed in the last 10 minutes."
+          runbook_url: "docs/OBSERVABILITY.md#recommended-alerts"
+
+      - alert: DockerOperationErrorsHigh
+        expr: sum(rate(docker_operation_errors_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: docker
+        annotations:
+          summary: "Docker operation errors are elevated"
+          description: "Docker operation errors are increasing faster than 0.1/s across agents."
+          runbook_url: "docs/OBSERVABILITY.md#recommended-alerts"
+
+  - name: orch.api
+    rules:
+      - alert: APIErrorRateHigh
+        expr: |
+          sum(rate(api_requests_total{status=~"5.."}[5m]))
+            /
+          clamp_min(sum(rate(api_requests_total[5m])), 1) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API 5xx error rate is high"
+          description: "More than 5% of API requests are returning 5xx responses for 10 minutes."
+          runbook_url: "docs/OBSERVABILITY.md#recommended-alerts"
