@@ -6,6 +6,8 @@ func TestLoadServerDefaultsAreValid(t *testing.T) {
 	t.Setenv("ORCH_SERVER_ADDR", "")
 	t.Setenv("DATABASE_URL", "")
 	t.Setenv("ORCH_SHUTDOWN_TIMEOUT", "")
+	t.Setenv("ORCH_NODE_HEARTBEAT_TIMEOUT", "")
+	t.Setenv("ORCH_NODE_MONITOR_INTERVAL", "")
 
 	cfg := LoadServer()
 	if err := cfg.Validate(); err != nil {

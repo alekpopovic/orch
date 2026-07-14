@@ -118,6 +118,9 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create service: %v", err)
 	}
+	if !service.Spec.Stateful {
+		t.Fatalf("expected stateful service to round trip")
+	}
 	if _, err := store.CreateService(ctx, serviceSpecFixture()); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("expected duplicate service name, got %v", err)
 	}
@@ -346,6 +349,7 @@ func serviceSpecFixture() types.ServiceSpec {
 	return types.ServiceSpec{
 		Name:     "web",
 		Image:    "nginx:1.27",
+		Stateful: true,
 		Replicas: 2,
 		Env: map[string]string{
 			"APP_ENV": "test",
@@ -383,6 +387,7 @@ func migrate(t *testing.T, ctx context.Context, pool execer) {
 	t.Helper()
 
 	for _, file := range []string{
+		"000006_task_conditions.down.sql",
 		"000005_registry_credentials.down.sql",
 		"000004_secrets.down.sql",
 		"000003_service_routes.down.sql",
@@ -393,6 +398,7 @@ func migrate(t *testing.T, ctx context.Context, pool execer) {
 		"000003_service_routes.up.sql",
 		"000004_secrets.up.sql",
 		"000005_registry_credentials.up.sql",
+		"000006_task_conditions.up.sql",
 	} {
 		sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", file))
 		if err != nil {

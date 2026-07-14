@@ -153,6 +153,7 @@ type ServiceSpec struct {
 	Name                 string                `json:"name"`
 	Image                string                `json:"image"`
 	ImagePullSecret      string                `json:"image_pull_secret,omitempty"`
+	Stateful             bool                  `json:"stateful,omitempty"`
 	Replicas             int                   `json:"replicas"`
 	Env                  map[string]string     `json:"env,omitempty"`
 	SecretRefs           []SecretRef           `json:"secret_refs,omitempty"`
@@ -523,22 +524,35 @@ const (
 )
 
 type Task struct {
-	ID            TaskID     `json:"id"`
-	ServiceID     ServiceID  `json:"service_id"`
-	NodeID        NodeID     `json:"node_id,omitempty"`
-	ContainerID   string     `json:"container_id,omitempty"`
-	DesiredStatus TaskStatus `json:"desired_status"`
-	ActualStatus  TaskStatus `json:"actual_status"`
-	Image         string     `json:"image"`
-	Version       int64      `json:"version"`
-	Ports         []Port     `json:"ports,omitempty"`
-	RestartCount  int        `json:"restart_count"`
-	FailureReason string     `json:"failure_reason,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	StartedAt     time.Time  `json:"started_at,omitempty"`
-	FinishedAt    time.Time  `json:"finished_at,omitempty"`
+	ID            TaskID          `json:"id"`
+	ServiceID     ServiceID       `json:"service_id"`
+	NodeID        NodeID          `json:"node_id,omitempty"`
+	ContainerID   string          `json:"container_id,omitempty"`
+	DesiredStatus TaskStatus      `json:"desired_status"`
+	ActualStatus  TaskStatus      `json:"actual_status"`
+	Image         string          `json:"image"`
+	Version       int64           `json:"version"`
+	Ports         []Port          `json:"ports,omitempty"`
+	RestartCount  int             `json:"restart_count"`
+	FailureReason string          `json:"failure_reason,omitempty"`
+	Conditions    []TaskCondition `json:"conditions,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+	StartedAt     time.Time       `json:"started_at,omitempty"`
+	FinishedAt    time.Time       `json:"finished_at,omitempty"`
 }
+
+type TaskCondition struct {
+	Type               TaskConditionType `json:"type"`
+	Message            string            `json:"message,omitempty"`
+	LastTransitionTime time.Time         `json:"last_transition_time"`
+}
+
+type TaskConditionType string
+
+const (
+	TaskConditionNodeLost TaskConditionType = "node_lost"
+)
 
 type TaskStatus string
 

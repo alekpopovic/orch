@@ -322,7 +322,7 @@ func (s *postgresStore) UpdateServiceStatus(ctx context.Context, id types.Servic
 			updated_at = timezone('utc', now()),
 			version = version + 1
 		WHERE id = $1 AND updated_at = $3
-		RETURNING id, name, image, image_pull_secret, replicas, env, secret_refs, ports,
+		RETURNING id, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 			resource_requirements, healthcheck, restart_policy, placement_constraints, routes,
 			status, deployment_version, created_at, updated_at`,
 		string(id),
@@ -523,14 +523,18 @@ func (s *postgresStore) CreateTask(ctx context.Context, task types.Task) (types.
 	if err != nil {
 		return types.Task{}, err
 	}
+	conditions, err := jsonBytes(defaultSlice(task.Conditions))
+	if err != nil {
+		return types.Task{}, err
+	}
 	row := s.db.QueryRow(ctx, `
 		INSERT INTO tasks (
 			service_id, node_id, container_id, desired_status, actual_status,
-			image, version, ports, restart_count, failure_reason, started_at, finished_at
+			image, version, ports, conditions, restart_count, failure_reason, started_at, finished_at
 		)
-		VALUES ($1, nullif($2, '')::uuid, nullif($3, ''), $4, $5, $6, $7, $8, $9, nullif($10, ''), $11, $12)
+		VALUES ($1, nullif($2, '')::uuid, nullif($3, ''), $4, $5, $6, $7, $8, $9, $10, nullif($11, ''), $12, $13)
 		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, ports, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(task.ServiceID),
 		string(task.NodeID),
 		task.ContainerID,
@@ -539,6 +543,7 @@ func (s *postgresStore) CreateTask(ctx context.Context, task types.Task) (types.
 		task.Image,
 		task.Version,
 		ports,
+		conditions,
 		task.RestartCount,
 		task.FailureReason,
 		nilTime(task.StartedAt),
@@ -597,7 +602,7 @@ func (s *postgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID 
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $5 AND actual_status = 'pending'
 		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, ports, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(nodeID),
 		string(types.TaskAssigned),
@@ -632,7 +637,7 @@ func (s *postgresStore) StopTask(ctx context.Context, id types.TaskID, expectedU
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $3 AND desired_status <> $2
 		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, ports, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(types.TaskStopped),
 		expectedUpdatedAt.UTC(),
@@ -675,7 +680,7 @@ func (s *postgresStore) UpdateTaskStatus(ctx context.Context, id types.TaskID, d
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $6
 		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, ports, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(desired),
 		string(actual),
@@ -902,16 +907,17 @@ func insertService(ctx context.Context, db postgresDB, spec types.ServiceSpec) (
 	}
 	row := db.QueryRow(ctx, `
 		INSERT INTO services (
-			name, image, image_pull_secret, replicas, env, secret_refs, ports,
+			name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 			resource_requirements, healthcheck, restart_policy, placement_constraints, routes
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		RETURNING id, name, image, image_pull_secret, replicas, env, secret_refs, ports,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING id, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 			resource_requirements, healthcheck, restart_policy, placement_constraints, routes, status,
 			deployment_version, created_at, updated_at`,
 		spec.Name,
 		spec.Image,
 		spec.ImagePullSecret,
+		spec.Stateful,
 		spec.Replicas,
 		env,
 		secretRefs,
@@ -939,26 +945,28 @@ func updateService(ctx context.Context, db postgresDB, id types.ServiceID, spec 
 			SET name = $2,
 				image = $3,
 				image_pull_secret = $4,
-				replicas = $5,
-				env = $6,
-				secret_refs = $7,
-				ports = $8,
-				resource_requirements = $9,
-				healthcheck = $10,
-				restart_policy = $11,
-				placement_constraints = $12,
-				routes = $14,
+				stateful = $5,
+				replicas = $6,
+				env = $7,
+				secret_refs = $8,
+				ports = $9,
+				resource_requirements = $10,
+				healthcheck = $11,
+				restart_policy = $12,
+				placement_constraints = $13,
+				routes = $15,
 				deployment_version = deployment_version + 1,
 				updated_at = timezone('utc', now()),
 				version = version + 1
-			WHERE id = $1 AND updated_at = $13
-			RETURNING id, name, image, image_pull_secret, replicas, env, secret_refs, ports,
+			WHERE id = $1 AND updated_at = $14
+			RETURNING id, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 				resource_requirements, healthcheck, restart_policy, placement_constraints, routes,
 				status, deployment_version, created_at, updated_at`,
 		string(id),
 		spec.Name,
 		spec.Image,
 		spec.ImagePullSecret,
+		spec.Stateful,
 		spec.Replicas,
 		env,
 		secretRefs,
@@ -996,14 +1004,14 @@ func insertServiceVersion(ctx context.Context, db postgresDB, serviceID types.Se
 }
 
 func serviceSelectSQL() string {
-	return `SELECT id, name, image, image_pull_secret, replicas, env, secret_refs, ports,
+	return `SELECT id, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 		resource_requirements, healthcheck, restart_policy, placement_constraints, routes,
 		status, deployment_version, created_at, updated_at FROM services`
 }
 
 func taskSelectSQL() string {
 	return `SELECT id, service_id, node_id, container_id, desired_status, actual_status,
-		image, version, ports, restart_count, failure_reason, created_at, updated_at, started_at, finished_at FROM tasks`
+		image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at FROM tasks`
 }
 
 func deploymentSelectSQL() string {
@@ -1067,6 +1075,7 @@ func scanService(row pgx.Row) (types.Service, error) {
 		&service.Spec.Name,
 		&service.Spec.Image,
 		&service.Spec.ImagePullSecret,
+		&service.Spec.Stateful,
 		&service.Spec.Replicas,
 		&env,
 		&secretRefs,
@@ -1100,7 +1109,7 @@ func scanTask(row pgx.Row) (types.Task, error) {
 	var task types.Task
 	var id, serviceID string
 	var nodeID, containerID, failureReason *string
-	var ports []byte
+	var ports, conditions []byte
 	var startedAt, finishedAt *time.Time
 	err := row.Scan(
 		&id,
@@ -1112,6 +1121,7 @@ func scanTask(row pgx.Row) (types.Task, error) {
 		&task.Image,
 		&task.Version,
 		&ports,
+		&conditions,
 		&task.RestartCount,
 		&failureReason,
 		&task.CreatedAt,
@@ -1135,7 +1145,12 @@ func scanTask(row pgx.Row) (types.Task, error) {
 	}
 	if len(ports) > 0 {
 		if err := json.Unmarshal(ports, &task.Ports); err != nil {
-			return types.Task{}, err
+			return types.Task{}, fmt.Errorf("decode task ports: %w", err)
+		}
+	}
+	if len(conditions) > 0 {
+		if err := json.Unmarshal(conditions, &task.Conditions); err != nil {
+			return types.Task{}, fmt.Errorf("decode task conditions: %w", err)
 		}
 	}
 	task.CreatedAt = task.CreatedAt.UTC()

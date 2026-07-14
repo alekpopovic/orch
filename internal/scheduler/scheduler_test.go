@@ -118,6 +118,14 @@ func TestPlanAssignments(t *testing.T) {
 			services: map[types.ServiceID]types.Service{"svc": service},
 		},
 		{
+			name:  "node offline",
+			tasks: []types.Task{pendingTask("task-a", "svc")},
+			nodes: []types.Node{
+				nodeFixture("node-a", types.NodeOffline, nil, types.Resources{CPU: 2000, Memory: 2048}),
+			},
+			services: map[types.ServiceID]types.Service{"svc": service},
+		},
+		{
 			name:  "prefer more free memory",
 			tasks: []types.Task{pendingTask("task-a", "svc")},
 			nodes: []types.Node{

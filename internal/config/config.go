@@ -17,6 +17,8 @@ type ServerConfig struct {
 	Users               string
 	SecretKey           string
 	GracefulShutdownTTL time.Duration
+	HeartbeatTimeout    time.Duration
+	NodeMonitorInterval time.Duration
 }
 
 type AgentConfig struct {
@@ -42,6 +44,8 @@ func LoadServer() ServerConfig {
 		Users:               getenv("ORCH_USERS", ""),
 		SecretKey:           getenv("ORCH_SECRET_KEY", "dev-secret-key-change-me"),
 		GracefulShutdownTTL: durationFromEnv("ORCH_SHUTDOWN_TIMEOUT", 10*time.Second),
+		HeartbeatTimeout:    durationFromEnv("ORCH_NODE_HEARTBEAT_TIMEOUT", 30*time.Second),
+		NodeMonitorInterval: durationFromEnv("ORCH_NODE_MONITOR_INTERVAL", 5*time.Second),
 	}
 }
 
@@ -115,6 +119,12 @@ func (cfg ServerConfig) Validate() error {
 	}
 	if cfg.GracefulShutdownTTL <= 0 {
 		return fmt.Errorf("shutdown timeout must be positive")
+	}
+	if cfg.HeartbeatTimeout <= 0 {
+		return fmt.Errorf("node heartbeat timeout must be positive")
+	}
+	if cfg.NodeMonitorInterval <= 0 {
+		return fmt.Errorf("node monitor interval must be positive")
 	}
 	if strings.TrimSpace(cfg.SecretKey) == "" {
 		return fmt.Errorf("secret encryption key is required")

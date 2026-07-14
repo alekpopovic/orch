@@ -11,6 +11,7 @@ func TestParseDeploy(t *testing.T) {
 name: api
 image: ghcr.io/example/api:1.0.0
 imagePullSecret: ghcr-prod
+stateful: true
 replicas: 3
 ports:
   - container: 8080
@@ -52,6 +53,9 @@ placement:
 	}
 	if spec.ImagePullSecret != "ghcr-prod" {
 		t.Fatalf("unexpected image pull secret %q", spec.ImagePullSecret)
+	}
+	if !spec.Stateful {
+		t.Fatal("expected stateful service")
 	}
 	if spec.Replicas != 3 {
 		t.Fatalf("expected 3 replicas, got %d", spec.Replicas)

@@ -59,7 +59,7 @@ Node operations:
 
 - `drain` marks a node draining, excluding it from new scheduler placements.
 - `uncordon` marks a node ready.
-- Abrupt node heartbeat expiry is not implemented yet.
+- Abrupt heartbeat expiry marks stale ready/draining nodes `offline` through the server node monitor.
 
 ## Services
 
@@ -73,6 +73,7 @@ curl -X POST http://localhost:8080/v1/services \
       "name": "web",
       "image": "nginx:1.27",
       "image_pull_secret": "ghcr-prod",
+      "stateful": false,
       "replicas": 2,
       "env": {"APP_ENV": "local"},
       "secret_refs": [{"name": "prod/database-url", "env": "DATABASE_URL"}],
@@ -206,6 +207,8 @@ Valid task statuses include:
 - `failed`
 
 Lifecycle transition rules are documented in [STATE_MACHINES.md](STATE_MACHINES.md).
+
+Tasks can include `conditions`; `node_lost` means the server detected a stale node heartbeat. Stateless lost tasks are failed/removed so replacements can be created on ready nodes. Stateful lost tasks keep the condition for operator-directed recovery.
 
 ## Agent Registration And Heartbeat
 

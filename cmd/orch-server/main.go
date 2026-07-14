@@ -16,6 +16,7 @@ import (
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/logging"
 	"github.com/alekpopovic/orch/internal/metrics"
+	"github.com/alekpopovic/orch/internal/node"
 	"github.com/alekpopovic/orch/internal/rollout"
 	"github.com/alekpopovic/orch/internal/secrets"
 )
@@ -51,6 +52,12 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 	go func() {
 		if err := rolloutController.Run(ctx, 5*time.Second); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Warn("rollout controller stopped", "error", err)
+		}
+	}()
+	nodeMonitor := node.NewMonitor(controlPlane, logger, cfg.HeartbeatTimeout, cfg.NodeMonitorInterval)
+	go func() {
+		if err := nodeMonitor.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Warn("node monitor stopped", "error", err)
 		}
 	}()
 

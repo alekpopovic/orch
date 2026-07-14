@@ -32,7 +32,6 @@ Before production use:
 - configure JWT auth;
 - protect agent registration token or replace with mTLS;
 - run agents only on trusted nodes with Docker access;
-- add heartbeat expiry;
 - add real leader election before multiple controllers;
 - define backup and restore procedures for PostgreSQL.
 
@@ -47,6 +46,8 @@ Server:
 - `ORCH_USERS`: optional static user role map.
 - `ORCH_LOG_LEVEL`: log level.
 - `ORCH_SHUTDOWN_TIMEOUT`: graceful shutdown timeout.
+- `ORCH_NODE_HEARTBEAT_TIMEOUT`: stale heartbeat timeout before a node is marked offline, default `30s`.
+- `ORCH_NODE_MONITOR_INTERVAL`: node monitor check interval, default `5s`.
 
 Agent:
 

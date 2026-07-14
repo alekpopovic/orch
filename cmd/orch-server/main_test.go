@@ -19,6 +19,8 @@ func TestServerStartsAndStopsCleanly(t *testing.T) {
 			BootstrapToken:      "test-registration-token",
 			SecretKey:           "test-secret-key",
 			GracefulShutdownTTL: time.Second,
+			HeartbeatTimeout:    time.Second,
+			NodeMonitorInterval: 10 * time.Millisecond,
 		})
 	}()
 

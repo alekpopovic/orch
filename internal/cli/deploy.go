@@ -15,6 +15,7 @@ type DeployFile struct {
 	Name            string            `yaml:"name"`
 	Image           string            `yaml:"image"`
 	ImagePullSecret string            `yaml:"imagePullSecret"`
+	Stateful        bool              `yaml:"stateful"`
 	Replicas        int               `yaml:"replicas"`
 	Ports           []DeployPort      `yaml:"ports"`
 	Env             DeployEnv         `yaml:"env"`
@@ -110,6 +111,7 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 		Name:            strings.TrimSpace(deploy.Name),
 		Image:           strings.TrimSpace(deploy.Image),
 		ImagePullSecret: strings.TrimSpace(deploy.ImagePullSecret),
+		Stateful:        deploy.Stateful,
 		Replicas:        deploy.Replicas,
 		ResourceRequirements: types.ResourceRequirements{
 			Requests: requests,

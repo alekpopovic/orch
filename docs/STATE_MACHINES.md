@@ -77,6 +77,8 @@ Desired state transitions:
 
 Retryable behavior is policy-driven. `unhealthy` may recover to `running` or `healthy`; `failed` is terminal for that task, but the reconciler may create a replacement task when the service restart policy allows it.
 
+Task conditions are additive metadata and do not change lifecycle validity. `node_lost` records that the server marked the owning node offline after heartbeat expiry. Stateless `node_lost` tasks are failed/removed for replacement; stateful `node_lost` tasks remain assigned for manual recovery.
+
 ## Node Lifecycle
 
 States:
@@ -94,7 +96,7 @@ Allowed transitions:
 - `offline -> ready`
 - same-state updates are idempotent
 
-`offline -> ready` is the documented recovery path for a returning node that re-registers or is explicitly uncordoned.
+`offline -> ready` is the documented recovery path for a returning node that re-registers, heartbeats after a healed partition, or is explicitly uncordoned.
 
 ## Deployment And Rollout Lifecycle
 

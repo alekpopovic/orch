@@ -38,11 +38,15 @@ Docker calls fail while unavailable. The agent does not create replacement conta
 
 ### Node Goes Offline
 
-Graceful shutdown sends a heartbeat with `shutdown=true`, marking the node `offline`. Abrupt loss is not detected by heartbeat expiry yet.
+Graceful shutdown sends a heartbeat with `shutdown=true`, marking the node `offline`. Abrupt loss is detected by the server node monitor when `last_heartbeat_at` is older than `ORCH_NODE_HEARTBEAT_TIMEOUT` (default `30s`). The monitor runs every `ORCH_NODE_MONITOR_INTERVAL` (default `5s`).
+
+When a node times out, active tasks on that node receive a `node_lost` condition. Stateless services are conservatively replaced after the timeout by marking lost tasks failed/removed and reconciling desired replicas onto ready nodes. Stateful services are not automatically replaced yet; their lost tasks keep the `node_lost` condition for operator recovery.
 
 ### Node Returns
 
 Registration with the same stable node name reuses the node ID in the current control plane and marks offline/unknown nodes ready.
+
+If a partition heals after stateless replacement, the returned node gets no assignment for removed `node_lost` tasks. The agent then reconciles local Docker containers by orch labels and stops/removes stale unassigned containers, avoiding duplicate live replicas.
 
 ### Manual `docker rm`
 
@@ -109,8 +113,8 @@ Every reliability-sensitive change should add tests for:
 ## Roadmap
 
 - Wire server to PostgreSQL.
-- Add heartbeat expiry and node-failure rebalancing.
 - Add real leader election.
+- Add stateful volume-aware replacement policies.
 - Add automatic transaction retries for serialization conflicts and deadlocks.
 - Add progress deadlines for rollouts.
 - Add persistent event export.

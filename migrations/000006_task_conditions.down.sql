@@ -1,0 +1,5 @@
+ALTER TABLE IF EXISTS tasks
+    DROP COLUMN IF EXISTS conditions;
+
+ALTER TABLE IF EXISTS services
+    DROP COLUMN IF EXISTS stateful;

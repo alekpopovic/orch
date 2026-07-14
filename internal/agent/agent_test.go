@@ -293,6 +293,35 @@ func TestReconcileRemovesUnassignedManagedContainers(t *testing.T) {
 	}
 }
 
+func TestReturnedNodeRemovesNodeLostUnassignedContainer(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	lostTaskID := types.TaskID("00000000-0000-4000-8000-000000000004")
+	client := &fakeAgentClient{}
+	runtime := orchdocker.NewFakeRuntime()
+	runtime.AddContainer(orchdocker.ContainerStatus{
+		ID: "lost-container",
+		Labels: map[string]string{
+			orchdocker.ManagedLabel: "true",
+			orchdocker.TaskIDLabel:  string(lostTaskID),
+			orchdocker.NodeIDLabel:  string(nodeID),
+		},
+	})
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
+
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("reconcile returned node: %v", err)
+	}
+
+	wantRuntimeCalls := []string{"list", "stop:lost-container", "remove:lost-container"}
+	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
+	}
+	wantStatuses := []types.TaskStatus{types.TaskRemoved}
+	if !equalStatuses(client.statuses, wantStatuses) {
+		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+}
+
 func TestReconcileRemovesAssignedStoppedTask(t *testing.T) {
 	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
 	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")

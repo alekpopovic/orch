@@ -19,6 +19,7 @@ import (
 type Service interface {
 	RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error)
 	HeartbeatNode(ctx context.Context, heartbeat NodeHeartbeat) (NodeCommand, error)
+	MarkStaleNodesOffline(ctx context.Context, timeout time.Duration) ([]types.Node, error)
 	SetAgentCredential(ctx context.Context, nodeID types.NodeID, tokenHash string, expiresAt time.Time) (types.Node, error)
 	RevokeNode(ctx context.Context, nodeID types.NodeID) (types.Node, error)
 	ListAssignedTasks(ctx context.Context, nodeID types.NodeID) ([]AgentTask, error)
@@ -270,10 +271,18 @@ func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbe
 			return NodeCommand{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
 		}
 		node.Status = types.NodeOffline
+	} else if node.Status == types.NodeOffline {
+		if err := types.ValidateNodeTransition(node.Status, types.NodeReady); err != nil {
+			return NodeCommand{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+		}
+		node.Status = types.NodeReady
 	}
 	node.LastHeartbeatAt = now
 	node.UpdatedAt = now
 	s.nodes[node.ID] = node
+	if node.Status == types.NodeReady {
+		s.reconcileAllServicesLocked(now)
+	}
 
 	eventType := events.TypeNodeHeartbeat
 	message := "node heartbeat"
@@ -283,6 +292,52 @@ func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbe
 	}
 	s.appendEventLocked(eventType, types.EventInfo, "controlplane", message, "node", string(node.ID), now)
 	return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
+}
+
+func (s *MemoryService) MarkStaleNodesOffline(ctx context.Context, timeout time.Duration) ([]types.Node, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if timeout <= 0 {
+		return nil, fmt.Errorf("%w: heartbeat timeout must be positive", store.ErrInvalidState)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now()
+	cutoff := now.Add(-timeout)
+	offline := make([]types.Node, 0)
+	for id, node := range s.nodes {
+		if node.Status != types.NodeReady && node.Status != types.NodeDraining {
+			continue
+		}
+		if node.LastHeartbeatAt.IsZero() || !node.LastHeartbeatAt.Before(cutoff) {
+			continue
+		}
+		if err := types.ValidateNodeTransition(node.Status, types.NodeOffline); err != nil {
+			return nil, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+		}
+		node.Status = types.NodeOffline
+		node.UpdatedAt = now
+		s.nodes[id] = node
+		s.markNodeLostTasksLocked(node.ID, now)
+		s.appendEventLocked(events.TypeNodeOfflineDetected, types.EventWarning, "controlplane", "node heartbeat timed out", "node", string(node.ID), now)
+		offline = append(offline, node)
+	}
+	if len(offline) > 0 {
+		s.reconcileAllServicesLocked(now)
+		slices.SortFunc(offline, func(a, b types.Node) int {
+			if a.ID < b.ID {
+				return -1
+			}
+			if a.ID > b.ID {
+				return 1
+			}
+			return 0
+		})
+	}
+	return offline, nil
 }
 
 func (s *MemoryService) SetAgentCredential(ctx context.Context, nodeID types.NodeID, tokenHash string, expiresAt time.Time) (types.Node, error) {
@@ -1342,6 +1397,42 @@ func (s *MemoryService) setNodeStatus(ctx context.Context, id types.NodeID, stat
 	}
 	s.appendEventLocked(events.TypeNodeStatusChanged, types.EventInfo, "controlplane", "node status changed", "node", string(id), node.UpdatedAt)
 	return node, nil
+}
+
+func (s *MemoryService) markNodeLostTasksLocked(nodeID types.NodeID, timestamp time.Time) {
+	for taskID, task := range s.tasks {
+		if task.NodeID != nodeID || !types.IsActiveTask(task) {
+			continue
+		}
+		task.Conditions = upsertTaskCondition(task.Conditions, types.TaskCondition{
+			Type:               types.TaskConditionNodeLost,
+			Message:            "node heartbeat timed out",
+			LastTransitionTime: timestamp,
+		})
+		service := s.services[task.ServiceID]
+		if !service.Spec.Stateful {
+			task.DesiredStatus = types.TaskRemoved
+			task.ActualStatus = types.TaskFailed
+			task.FailureReason = "node_lost"
+			task.FinishedAt = timestamp
+		}
+		task.UpdatedAt = timestamp
+		s.tasks[taskID] = task
+	}
+}
+
+func upsertTaskCondition(conditions []types.TaskCondition, condition types.TaskCondition) []types.TaskCondition {
+	condition.LastTransitionTime = condition.LastTransitionTime.UTC()
+	for i, existing := range conditions {
+		if existing.Type == condition.Type {
+			if existing.Message == condition.Message {
+				return conditions
+			}
+			conditions[i] = condition
+			return conditions
+		}
+	}
+	return append(conditions, condition)
 }
 
 func (s *MemoryService) appendEventLocked(eventType string, severity types.EventSeverity, source string, message string, objectType string, objectID string, timestamp time.Time) {
