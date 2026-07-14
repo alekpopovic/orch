@@ -1,0 +1,113 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-orch}
+      POSTGRES_USER: ${POSTGRES_USER:-orch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - orch-control
+
+  orch-server:
+    image: ${ORCH_SERVER_IMAGE:?set ORCH_SERVER_IMAGE}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      ORCH_SERVER_ADDR: :8080
+      ORCH_AGENT_REGISTRATION_TOKEN: ${ORCH_AGENT_REGISTRATION_TOKEN:?set ORCH_AGENT_REGISTRATION_TOKEN}
+      ORCH_JWT_SECRET: ${ORCH_JWT_SECRET:?set ORCH_JWT_SECRET}
+      ORCH_SECRET_KEY: ${ORCH_SECRET_KEY:?set ORCH_SECRET_KEY}
+      ORCH_USERS: ${ORCH_USERS:-}
+      ORCH_LOG_LEVEL: ${ORCH_LOG_LEVEL:-info}
+      ORCH_SHUTDOWN_TIMEOUT: ${ORCH_SHUTDOWN_TIMEOUT:-15s}
+      ORCH_NODE_HEARTBEAT_TIMEOUT: ${ORCH_NODE_HEARTBEAT_TIMEOUT:-30s}
+      ORCH_NODE_MONITOR_INTERVAL: ${ORCH_NODE_MONITOR_INTERVAL:-5s}
+      # TLS is normally terminated by a reverse proxy/load balancer.
+      # Mount certificates here only if a future server TLS mode is enabled.
+      ORCH_TLS_CERT_FILE: ${ORCH_TLS_CERT_FILE:-}
+      ORCH_TLS_KEY_FILE: ${ORCH_TLS_KEY_FILE:-}
+    volumes:
+      - ./config/server:/etc/orch:ro
+      - ./tls:/etc/orch/tls:ro
+    ports:
+      - "${ORCH_SERVER_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - orch-control
+
+  orch-agent:
+    image: ${ORCH_AGENT_IMAGE:?set ORCH_AGENT_IMAGE}
+    restart: unless-stopped
+    environment:
+      ORCH_SERVER_URL: ${ORCH_SERVER_URL:?set ORCH_SERVER_URL}
+      ORCH_AGENT_REGISTRATION_TOKEN: ${ORCH_AGENT_REGISTRATION_TOKEN:?set ORCH_AGENT_REGISTRATION_TOKEN}
+      ORCH_NODE_NAME: ${ORCH_NODE_NAME:?set ORCH_NODE_NAME}
+      ORCH_ADVERTISE_ADDRESS: ${ORCH_ADVERTISE_ADDRESS:?set ORCH_ADVERTISE_ADDRESS}
+      ORCH_AGENT_ADDR: :8081
+      ORCH_NODE_LABELS: ${ORCH_NODE_LABELS:-}
+      ORCH_DOCKER_SOCKET: /var/run/docker.sock
+      ORCH_AGENT_HEARTBEAT_INTERVAL: ${ORCH_AGENT_HEARTBEAT_INTERVAL:-5s}
+      ORCH_LOG_LEVEL: ${ORCH_LOG_LEVEL:-info}
+      ORCH_SHUTDOWN_TIMEOUT: ${ORCH_SHUTDOWN_TIMEOUT:-15s}
+    volumes:
+      # WARNING: Docker socket access is equivalent to root on the host.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/agent:/etc/orch:ro
+      - ./tls:/etc/orch/tls:ro
+    ports:
+      - "${ORCH_AGENT_PORT:-8081}:8081"
+    depends_on:
+      - orch-server
+    networks:
+      - orch-control
+
+  postgres-exporter:
+    image: ${POSTGRES_EXPORTER_IMAGE:-prometheuscommunity/postgres-exporter:latest}
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: ${DATABASE_URL:?set DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - orch-control
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:latest}
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ../../deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../deploy/monitoring/prometheus-rules.yaml:/etc/prometheus/rules/prometheus-rules.yaml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - orch-server
+      - orch-agent
+      - postgres-exporter
+    networks:
+      - orch-control
+
+volumes:
+  postgres-data:
+  prometheus-data:
+
+networks:
+  orch-control:
+    driver: bridge

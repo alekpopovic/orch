@@ -25,6 +25,8 @@ Stop:
 
 The codebase is not production-ready as a durable orchestrator until `orch-server` is wired to PostgreSQL. The current server process stores control-plane state in memory.
 
+Production deployment examples are documented in [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md).
+
 Before production use:
 
 - connect `orch-server` to `PostgresStore`;

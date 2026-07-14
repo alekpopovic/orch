@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `49-backup-and-restore-runbook.md`
-- Last matching commit: `same commit: Add backup and restore runbook`
-- Completed prompt range: `00` through `49`
-- Next prompt to execute: `50-production-deployment-manifest.md`
+- Last executed prompt: `50-production-deployment-manifest.md`
+- Last matching commit: `same commit: Add production deployment manifests`
+- Completed prompt range: `00` through `50`
+- Next prompt to execute: `51-security-review.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
