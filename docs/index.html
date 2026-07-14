@@ -35,6 +35,9 @@
     <link rel="stylesheet" href="assets/docs.css" />
   </head>
   <body class="bg-slate-50 text-slate-900 antialiased transition-colors dark:bg-slate-950 dark:text-slate-100">
+    <div class="fixed inset-x-0 top-0 z-[60] h-1 bg-slate-200/60 dark:bg-slate-800/60">
+      <div id="reading-progress" class="h-full w-0 bg-gradient-to-r from-cyan-400 via-orch-500 to-violet-500 transition-[width] duration-150"></div>
+    </div>
     <div class="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
       <div class="absolute left-1/2 top-0 h-80 w-80 -translate-x-1/2 rounded-full bg-orch-500/20 blur-3xl dark:bg-orch-500/10"></div>
       <div class="absolute right-0 top-1/3 h-96 w-96 rounded-full bg-cyan-400/10 blur-3xl dark:bg-cyan-300/10"></div>
@@ -45,7 +48,7 @@
         <button id="sidebar-open" class="rounded-xl border border-slate-200 p-2 text-slate-700 shadow-sm dark:border-slate-800 dark:text-slate-200" aria-label="Open navigation">
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
-        <a href="#README.md" class="flex items-center gap-2 font-semibold tracking-tight">
+        <a href="https://alekpopovic.github.io/orch/#README.md" class="flex items-center gap-2 font-semibold tracking-tight">
           <img class="h-9 w-9 rounded-xl shadow-glow" src="assets/orch-mark.svg" alt="" />
           <span>orch docs</span>
         </a>
@@ -61,7 +64,7 @@
 
     <aside id="sidebar" class="fixed inset-y-0 left-0 z-50 flex w-80 -translate-x-full flex-col border-r border-slate-200 bg-white/95 shadow-2xl backdrop-blur-xl transition-transform dark:border-slate-800 dark:bg-slate-950/95 lg:translate-x-0 lg:shadow-none">
       <div class="flex h-20 items-center justify-between border-b border-slate-200 px-5 dark:border-slate-800">
-        <a href="#README.md" class="flex items-center gap-3">
+        <a href="https://alekpopovic.github.io/orch/#README.md" class="flex items-center gap-3">
           <img class="h-11 w-11 rounded-2xl shadow-glow" src="assets/orch-mark.svg" alt="" />
           <span>
             <span class="block text-base font-bold tracking-tight">orch docs</span>
@@ -94,7 +97,7 @@
           <p class="mt-1">Orbit logo, neon accents, Mermaid charts, and readable ops docs.</p>
         </div>
         <p>Built from Markdown in <code class="rounded bg-slate-100 px-1 dark:bg-slate-900">docs/</code>.</p>
-        <a class="mt-2 inline-flex font-medium text-orch-600 hover:text-orch-700 dark:text-orch-400" href="https://github.com/alekpopovic/orch">View on GitHub →</a>
+        <a class="mt-2 inline-flex font-medium text-orch-600 hover:text-orch-700 dark:text-orch-400" href="https://alekpopovic.github.io/orch/#README.md">Open GitHub Pages home →</a>
       </div>
     </aside>
 
@@ -112,18 +115,18 @@
               <h1 class="text-4xl font-black tracking-tight text-slate-950 dark:text-white sm:text-5xl">a colorful control-plane handbook</h1>
               <p class="mt-4 max-w-3xl text-lg leading-8 text-slate-600 dark:text-slate-300">Release notes, API contracts, operations, security, scheduler internals, rollouts, Mermaid charts, and production workflows in one bright GitHub Pages portal.</p>
               <div class="mt-7 grid gap-3 sm:grid-cols-3">
-                <a class="metric-card" href="#API.md"><span>🔌</span><strong>OpenAPI</strong><small>public API contract</small></a>
-                <a class="metric-card" href="#PRODUCTION_DEPLOYMENT.md"><span>🚢</span><strong>Deploy</strong><small>production runbooks</small></a>
-                <a class="metric-card" href="#OBSERVABILITY.md"><span>📈</span><strong>Signals</strong><small>metrics + dashboards</small></a>
+                <a class="metric-card" href="https://alekpopovic.github.io/orch/#API.md"><span>🔌</span><strong>OpenAPI</strong><small>public API contract</small></a>
+                <a class="metric-card" href="https://alekpopovic.github.io/orch/#PRODUCTION_DEPLOYMENT.md"><span>🚢</span><strong>Deploy</strong><small>production runbooks</small></a>
+                <a class="metric-card" href="https://alekpopovic.github.io/orch/#OBSERVABILITY.md"><span>📈</span><strong>Signals</strong><small>metrics + dashboards</small></a>
               </div>
             </div>
             <div class="brand-panel rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/80">
               <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Quick links</p>
               <div class="mt-4 grid gap-2 text-sm">
-                <a class="quick-link" href="#RELEASE_NOTES.md">🎉 Release notes</a>
-                <a class="quick-link" href="#BRAND.md">🎨 Brand kit</a>
-                <a class="quick-link" href="#CHARTS.md">📊 Charts</a>
-                <a class="quick-link" href="#API.md">🔌 API guide</a>
+                <a class="quick-link" href="https://alekpopovic.github.io/orch/#RELEASE_NOTES.md">🎉 Release notes</a>
+                <a class="quick-link" href="https://alekpopovic.github.io/orch/#BRAND.md">🎨 Brand kit</a>
+                <a class="quick-link" href="https://alekpopovic.github.io/orch/#CHARTS.md">📊 Charts</a>
+                <a class="quick-link" href="https://alekpopovic.github.io/orch/#API.md">🔌 API guide</a>
               </div>
               <div class="mt-5 grid grid-cols-2 gap-3">
                 <div class="mini-stat bg-cyan-500/10 text-cyan-700 dark:text-cyan-200"><strong>36</strong><span>doc pages</span></div>
@@ -137,14 +140,20 @@
       <section class="px-6 py-8 sm:px-10 lg:px-12">
         <div class="mx-auto max-w-5xl">
           <div id="doc-meta" class="mb-4 flex flex-wrap items-center gap-3 text-sm text-slate-500 dark:text-slate-400"></div>
-          <article id="doc-content" class="doc-content rounded-3xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/70 sm:p-8 lg:p-10">
-            <div class="animate-pulse space-y-4">
-              <div class="h-8 w-2/3 rounded bg-slate-200 dark:bg-slate-800"></div>
-              <div class="h-4 w-full rounded bg-slate-200 dark:bg-slate-800"></div>
-              <div class="h-4 w-5/6 rounded bg-slate-200 dark:bg-slate-800"></div>
-              <div class="h-4 w-4/6 rounded bg-slate-200 dark:bg-slate-800"></div>
-            </div>
-          </article>
+          <div class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_16rem] xl:items-start">
+            <article id="doc-content" class="doc-content rounded-3xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/70 sm:p-8 lg:p-10">
+              <div class="animate-pulse space-y-4">
+                <div class="h-8 w-2/3 rounded bg-slate-200 dark:bg-slate-800"></div>
+                <div class="h-4 w-full rounded bg-slate-200 dark:bg-slate-800"></div>
+                <div class="h-4 w-5/6 rounded bg-slate-200 dark:bg-slate-800"></div>
+                <div class="h-4 w-4/6 rounded bg-slate-200 dark:bg-slate-800"></div>
+              </div>
+            </article>
+            <aside id="toc-panel" class="toc-panel hidden rounded-3xl border border-slate-200 bg-white/80 p-5 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/70 xl:sticky xl:top-8 xl:block">
+              <p class="text-xs font-bold uppercase tracking-[0.22em] text-slate-400 dark:text-slate-500">On This Page</p>
+              <nav id="toc" class="mt-4 space-y-1"></nav>
+            </aside>
+          </div>
         </div>
       </section>
     </main>

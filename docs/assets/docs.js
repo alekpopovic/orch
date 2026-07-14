@@ -70,9 +70,13 @@ const docsNav = [
 ]
 
 const allDocs = docsNav.flatMap((section) => section.items.map((item) => ({ ...item, group: section.group })))
+const pagesBaseURL = 'https://alekpopovic.github.io/orch/'
 const nav = document.querySelector('#nav')
 const content = document.querySelector('#doc-content')
 const meta = document.querySelector('#doc-meta')
+const toc = document.querySelector('#toc')
+const tocPanel = document.querySelector('#toc-panel')
+const readingProgress = document.querySelector('#reading-progress')
 const search = document.querySelector('#doc-search')
 const sidebar = document.querySelector('#sidebar')
 const backdrop = document.querySelector('#sidebar-backdrop')
@@ -99,8 +103,18 @@ function setTheme(mode) {
 }
 
 function normalizeRoute(route) {
+  return routeParts(route).path
+}
+
+function routeParts(route) {
   const raw = decodeURIComponent((route || '').replace(/^#/, '')).trim()
-  return raw || 'README.md'
+  if (!raw) return { path: 'README.md', anchor: '' }
+  const [path, ...anchorParts] = raw.split('#')
+  return { path: path || 'README.md', anchor: anchorParts.join('#') }
+}
+
+function pageURL(path) {
+  return `${pagesBaseURL}#${encodeURIComponent(path)}`
 }
 
 function activeDoc() {
@@ -123,7 +137,7 @@ function renderNav(filter = '') {
           <h2 class="px-3 text-xs font-bold uppercase tracking-[0.22em] text-slate-400 dark:text-slate-500">${escapeHTML(section.group)}</h2>
           <div class="mt-2 space-y-1">
             ${items.map((item) => `
-              <a class="nav-link ${item.path === current ? 'active' : ''}" href="#${encodeURIComponent(item.path)}">
+              <a class="nav-link ${item.path === current ? 'active' : ''}" href="${pageURL(item.path)}">
                 <span class="grid h-6 w-6 place-items-center rounded-lg bg-slate-100 text-sm dark:bg-slate-900">${escapeHTML(item.icon || '•')}</span>
                 <span>${escapeHTML(item.title)}</span>
               </a>
@@ -154,10 +168,13 @@ async function fetchFirst(paths) {
 
 async function loadDoc() {
   const doc = activeDoc()
+  const route = routeParts(window.location.hash)
   renderNav(search.value)
   meta.innerHTML = `
     <span class="rounded-full bg-slate-100 px-3 py-1 dark:bg-slate-900">${escapeHTML(doc.group)}</span>
     <span>${escapeHTML(doc.path)}</span>
+    <a class="doc-action" href="${pageURL(doc.path)}">↗ GitHub Pages</a>
+    <button class="doc-action" type="button" data-copy-page-link="${pageURL(doc.path)}">⛓ Copy link</button>
   `
   content.innerHTML = `<div class="animate-pulse space-y-4"><div class="h-8 w-2/3 rounded bg-slate-200 dark:bg-slate-800"></div><div class="h-4 w-full rounded bg-slate-200 dark:bg-slate-800"></div><div class="h-4 w-5/6 rounded bg-slate-200 dark:bg-slate-800"></div></div>`
   try {
@@ -173,9 +190,16 @@ async function loadDoc() {
       content.innerHTML = `<pre><code>${escapeHTML(loaded.text)}</code></pre>`
     }
     wireContentLinks()
+    wireCopyLink()
+    renderTOC()
     await renderMermaidDiagrams()
+    updateReadingProgress()
     closeSidebar()
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+    if (route.anchor) {
+      document.getElementById(route.anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
   } catch (error) {
     content.innerHTML = `
       <h1>Document unavailable</h1>
@@ -183,6 +207,41 @@ async function loadDoc() {
       <pre><code>${escapeHTML(error.message || String(error))}</code></pre>
     `
   }
+}
+
+function wireCopyLink() {
+  meta.querySelector('[data-copy-page-link]')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget
+    const link = button.getAttribute('data-copy-page-link')
+    try {
+      await navigator.clipboard.writeText(link)
+      button.textContent = '✅ Copied'
+      setTimeout(() => {
+        button.textContent = '⛓ Copy link'
+      }, 1600)
+    } catch {
+      window.prompt('Copy GitHub Pages link', link)
+    }
+  })
+}
+
+function renderTOC() {
+  const headings = Array.from(content.querySelectorAll('h2, h3'))
+  if (!headings.length) {
+    tocPanel.classList.add('xl:hidden')
+    toc.innerHTML = ''
+    return
+  }
+  tocPanel.classList.remove('xl:hidden')
+  toc.innerHTML = headings
+    .map((heading) => {
+      if (!heading.id) {
+        heading.id = slugify(heading.textContent)
+      }
+      const depth = heading.tagName === 'H3' ? 'depth-3' : 'depth-2'
+      return `<a class="toc-link ${depth}" href="${pageURL(activeDoc().path)}#${encodeURIComponent(heading.id)}">${escapeHTML(heading.textContent)}</a>`
+    })
+    .join('')
 }
 
 async function renderMermaidDiagrams() {
@@ -218,9 +277,25 @@ function wireContentLinks() {
     const cleaned = href.replace(/^\.\//, '').replace(/^docs\//, '').replace(/^api\//, '')
     const target = allDocs.find((item) => item.path === cleaned || item.path === cleaned.split('#')[0])
     if (target) {
-      link.setAttribute('href', `#${encodeURIComponent(target.path)}`)
+      const anchor = cleaned.includes('#') ? `#${cleaned.split('#').slice(1).join('#')}` : ''
+      link.setAttribute('href', `${pageURL(target.path)}${anchor}`)
     }
   })
+}
+
+function slugify(value) {
+  return String(value)
+    .toLowerCase()
+    .trim()
+    .replace(/[`'"().,:/]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+}
+
+function updateReadingProgress() {
+  const max = document.documentElement.scrollHeight - window.innerHeight
+  const percent = max > 0 ? Math.min(100, Math.max(0, (window.scrollY / max) * 100)) : 0
+  readingProgress.style.width = `${percent}%`
 }
 
 function escapeHTML(value) {
@@ -247,6 +322,8 @@ themeSelectMobile.addEventListener('change', (event) => setTheme(event.target.va
 themeMedia.addEventListener('change', () => applyTheme())
 search.addEventListener('input', (event) => renderNav(event.target.value))
 window.addEventListener('hashchange', loadDoc)
+window.addEventListener('scroll', updateReadingProgress, { passive: true })
+window.addEventListener('resize', updateReadingProgress)
 openButton.addEventListener('click', openSidebar)
 closeButton.addEventListener('click', closeSidebar)
 backdrop.addEventListener('click', closeSidebar)

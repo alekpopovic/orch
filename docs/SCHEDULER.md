@@ -38,7 +38,7 @@ Free resources are calculated as:
 node.allocatable - requests(non-terminal tasks already on node) - requests(tasks planned earlier in this pass)
 ```
 
-See [RESOURCES.md](RESOURCES.md) for CPU and memory normalization.
+See [RESOURCES.md](https://alekpopovic.github.io/orch/#RESOURCES.md) for CPU and memory normalization.
 
 ## Scoring
 

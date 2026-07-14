@@ -58,7 +58,7 @@ Agent API:
 - Registration returns a short-lived agent credential.
 - Heartbeat, task polling, and task status updates use the issued credential.
 
-See [SECURITY.md](SECURITY.md).
+See [SECURITY.md](https://alekpopovic.github.io/orch/#SECURITY.md).
 
 ## Health And Metrics
 
@@ -161,7 +161,7 @@ Concurrent service operations are guarded per service. Active rollout/rollback b
 
 Resource values are normalized to CPU millicores and memory bytes. The CLI deploy parser accepts strings such as `500m`, `2.5`, `512Mi`, and `1Gi`.
 
-The canonical YAML deployment format is documented in [SERVICE_SPEC.md](SERVICE_SPEC.md), with JSON Schema at `schemas/service.schema.json`.
+The canonical YAML deployment format is documented in [SERVICE_SPEC.md](https://alekpopovic.github.io/orch/#SERVICE_SPEC.md), with JSON Schema at `schemas/service.schema.json`.
 
 ## Secrets
 
@@ -175,7 +175,7 @@ curl http://localhost:8080/v1/secrets/prod%2Fdatabase-url
 curl -X DELETE http://localhost:8080/v1/secrets/prod%2Fdatabase-url
 ```
 
-Secret GET responses include metadata only and never return plaintext. Services can reference secrets with `secret_refs`, and agents receive decrypted values only in assigned task payloads. See [SECRETS.md](SECRETS.md).
+Secret GET responses include metadata only and never return plaintext. Services can reference secrets with `secret_refs`, and agents receive decrypted values only in assigned task payloads. See [SECRETS.md](https://alekpopovic.github.io/orch/#SECRETS.md).
 
 ## Registry Credentials
 
@@ -188,7 +188,7 @@ curl http://localhost:8080/v1/registry-credentials
 curl -X DELETE http://localhost:8080/v1/registry-credentials/ghcr-prod
 ```
 
-Registry credential responses include metadata only. Services can reference credentials with `image_pull_secret`; agents receive decrypted pull auth only for assigned tasks. See [REGISTRIES.md](REGISTRIES.md).
+Registry credential responses include metadata only. Services can reference credentials with `image_pull_secret`; agents receive decrypted pull auth only for assigned tasks. See [REGISTRIES.md](https://alekpopovic.github.io/orch/#REGISTRIES.md).
 
 ## Service Discovery
 
@@ -207,7 +207,7 @@ Discovery endpoints include active services and assigned task ports. By default,
 curl http://localhost:8080/v1/integrations/traefik/config
 ```
 
-The Traefik endpoint returns optional HTTP-provider dynamic config for services with `routes`. It omits unhealthy, stopped, unassigned, non-TCP, and non-matching-port task endpoints. See [TRAEFIK.md](TRAEFIK.md).
+The Traefik endpoint returns optional HTTP-provider dynamic config for services with `routes`. It omits unhealthy, stopped, unassigned, non-TCP, and non-matching-port task endpoints. See [TRAEFIK.md](https://alekpopovic.github.io/orch/#TRAEFIK.md).
 
 ## Tasks
 
@@ -234,7 +234,7 @@ Valid task statuses include:
 - `removed`
 - `failed`
 
-Lifecycle transition rules are documented in [STATE_MACHINES.md](STATE_MACHINES.md).
+Lifecycle transition rules are documented in [STATE_MACHINES.md](https://alekpopovic.github.io/orch/#STATE_MACHINES.md).
 
 Tasks can include `conditions`; `node_lost` means the server detected a stale node heartbeat. Stateless lost tasks are failed/removed so replacements can be created on ready nodes. Stateful lost tasks keep the condition for operator-directed recovery.
 

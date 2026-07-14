@@ -156,7 +156,7 @@ Production PostgreSQL should provide:
 - migration execution before deploying binaries that require new schema;
 - monitoring through `postgres-exporter` or equivalent.
 
-See [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
+See [BACKUP_RESTORE.md](https://alekpopovic.github.io/orch/#BACKUP_RESTORE.md).
 
 ## Prometheus Scraping
 

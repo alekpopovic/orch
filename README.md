@@ -15,11 +15,11 @@
 </p>
 
 <p align="center">
-  <a href="docs/GITHUB_PAGES.md">📚 Docs site</a> ·
-  <a href="docs/API.md">🔌 API</a> ·
-  <a href="docs/PRODUCTION_DEPLOYMENT.md">🚢 Deploy</a> ·
-  <a href="docs/SECURITY.md">🛡️ Security</a> ·
-  <a href="api/openapi.yaml">🧾 OpenAPI</a>
+  <a href="https://alekpopovic.github.io/orch/#GITHUB_PAGES.md">📚 Docs site</a> ·
+  <a href="https://alekpopovic.github.io/orch/#API.md">🔌 API</a> ·
+  <a href="https://alekpopovic.github.io/orch/#PRODUCTION_DEPLOYMENT.md">🚢 Deploy</a> ·
+  <a href="https://alekpopovic.github.io/orch/#SECURITY.md">🛡️ Security</a> ·
+  <a href="https://alekpopovic.github.io/orch/#openapi.yaml">🧾 OpenAPI</a>
 </p>
 
 <p align="center">
@@ -225,11 +225,11 @@ placement:
 
 | Area | Docs |
 | --- | --- |
-| 🌈 Brand + site | [GitHub Pages documentation site](docs/GITHUB_PAGES.md), [Brand kit](docs/BRAND.md), [Charts](docs/CHARTS.md) |
-| 🏗️ Architecture | [Architecture](docs/ARCHITECTURE.md), [State machines](docs/STATE_MACHINES.md) |
-| 🔌 API | [API](docs/API.md), [OpenAPI](api/openapi.yaml) |
-| 🐳 Runtime | [Agent](docs/AGENT.md), [Service spec](docs/SERVICE_SPEC.md), [Resources](docs/RESOURCES.md) |
-| 🧭 Control loops | [Scheduler](docs/SCHEDULER.md), [Reconciler](docs/RECONCILER.md), [Rollouts](docs/ROLLOUTS.md) |
-| 🛡️ Security | [Security](docs/SECURITY.md), [Security review](docs/SECURITY_REVIEW.md), [Secrets](docs/SECRETS.md), [Registries](docs/REGISTRIES.md) |
-| 📈 Operations | [Observability](docs/OBSERVABILITY.md), [Reliability](docs/RELIABILITY.md), [Operations](docs/OPERATIONS.md), [Production deployment](docs/PRODUCTION_DEPLOYMENT.md) |
-| 🧪 Testing | [Load testing](docs/LOAD_TESTING.md), [Chaos testing](docs/CHAOS_TESTING.md), [Development](docs/DEVELOPMENT.md) |
+| 🌈 Brand + site | [GitHub Pages documentation site](https://alekpopovic.github.io/orch/#GITHUB_PAGES.md), [Brand kit](https://alekpopovic.github.io/orch/#BRAND.md), [Charts](https://alekpopovic.github.io/orch/#CHARTS.md) |
+| 🏗️ Architecture | [Architecture](https://alekpopovic.github.io/orch/#ARCHITECTURE.md), [State machines](https://alekpopovic.github.io/orch/#STATE_MACHINES.md) |
+| 🔌 API | [API](https://alekpopovic.github.io/orch/#API.md), [OpenAPI](https://alekpopovic.github.io/orch/#openapi.yaml) |
+| 🐳 Runtime | [Agent](https://alekpopovic.github.io/orch/#AGENT.md), [Service spec](https://alekpopovic.github.io/orch/#SERVICE_SPEC.md), [Resources](https://alekpopovic.github.io/orch/#RESOURCES.md) |
+| 🧭 Control loops | [Scheduler](https://alekpopovic.github.io/orch/#SCHEDULER.md), [Reconciler](https://alekpopovic.github.io/orch/#RECONCILER.md), [Rollouts](https://alekpopovic.github.io/orch/#ROLLOUTS.md) |
+| 🛡️ Security | [Security](https://alekpopovic.github.io/orch/#SECURITY.md), [Security review](https://alekpopovic.github.io/orch/#SECURITY_REVIEW.md), [Secrets](https://alekpopovic.github.io/orch/#SECRETS.md), [Registries](https://alekpopovic.github.io/orch/#REGISTRIES.md) |
+| 📈 Operations | [Observability](https://alekpopovic.github.io/orch/#OBSERVABILITY.md), [Reliability](https://alekpopovic.github.io/orch/#RELIABILITY.md), [Operations](https://alekpopovic.github.io/orch/#OPERATIONS.md), [Production deployment](https://alekpopovic.github.io/orch/#PRODUCTION_DEPLOYMENT.md) |
+| 🧪 Testing | [Load testing](https://alekpopovic.github.io/orch/#LOAD_TESTING.md), [Chaos testing](https://alekpopovic.github.io/orch/#CHAOS_TESTING.md), [Development](https://alekpopovic.github.io/orch/#DEVELOPMENT.md) |

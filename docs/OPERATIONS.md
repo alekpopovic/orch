@@ -25,7 +25,7 @@ Stop:
 
 The codebase is not production-ready as a durable orchestrator until `orch-server` is wired to PostgreSQL. The current server process stores control-plane state in memory.
 
-Production deployment examples are documented in [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md).
+Production deployment examples are documented in [PRODUCTION_DEPLOYMENT.md](https://alekpopovic.github.io/orch/#PRODUCTION_DEPLOYMENT.md).
 
 Before production use:
 
@@ -39,7 +39,7 @@ Before production use:
 
 ## Configuration
 
-Full precedence, YAML file examples, and redacted config output are documented in [CONFIGURATION.md](CONFIGURATION.md).
+Full precedence, YAML file examples, and redacted config output are documented in [CONFIGURATION.md](https://alekpopovic.github.io/orch/#CONFIGURATION.md).
 
 Server:
 
@@ -235,7 +235,7 @@ Logs are proxied from the owning agent. Check:
 
 ## Backups
 
-Detailed backup and restore procedures are documented in [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
+Detailed backup and restore procedures are documented in [BACKUP_RESTORE.md](https://alekpopovic.github.io/orch/#BACKUP_RESTORE.md).
 
 For future PostgreSQL-backed production, back up:
 

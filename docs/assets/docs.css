@@ -82,6 +82,64 @@
   text-transform: uppercase;
 }
 
+.doc-action {
+  align-items: center;
+  background: linear-gradient(135deg, rgb(255 255 255 / 0.94), rgb(239 246 255 / 0.8));
+  border: 1px solid rgb(191 219 254 / 0.72);
+  border-radius: 999px;
+  color: rgb(29 78 216);
+  display: inline-flex;
+  font-weight: 800;
+  gap: 0.4rem;
+  padding: 0.45rem 0.75rem;
+  transition: all 150ms ease;
+}
+
+.doc-action:hover {
+  border-color: rgb(35 116 225 / 0.62);
+  box-shadow: 0 14px 32px -24px rgb(35 116 225 / 0.7);
+  transform: translateY(-1px);
+}
+
+.dark .doc-action {
+  background: linear-gradient(135deg, rgb(15 23 42 / 0.9), rgb(30 41 59 / 0.78));
+  border-color: rgb(51 65 85);
+  color: rgb(147 197 253);
+}
+
+.toc-panel {
+  max-height: calc(100vh - 5rem);
+  overflow: auto;
+}
+
+.toc-link {
+  border-left: 2px solid transparent;
+  color: rgb(100 116 139);
+  display: block;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  padding: 0.45rem 0.5rem 0.45rem 0.75rem;
+  transition: all 150ms ease;
+}
+
+.toc-link:hover {
+  border-color: rgb(35 116 225 / 0.55);
+  color: rgb(29 78 216);
+}
+
+.toc-link.depth-3 {
+  font-size: 0.78rem;
+  padding-left: 1.35rem;
+}
+
+.dark .toc-link {
+  color: rgb(148 163 184);
+}
+
+.dark .toc-link:hover {
+  color: rgb(147 197 253);
+}
+
 .quick-link {
   border-radius: 0.875rem;
   border: 1px solid rgb(226 232 240);
@@ -145,6 +203,16 @@
 
 .doc-content {
   overflow-wrap: anywhere;
+}
+
+.doc-content::before {
+  background: linear-gradient(90deg, #22d3ee, #2374e1, #8b5cf6);
+  border-radius: 999px;
+  content: "";
+  display: block;
+  height: 0.28rem;
+  margin-bottom: 2rem;
+  width: 7rem;
 }
 
 .doc-content > *:first-child {
@@ -273,12 +341,17 @@
 }
 
 .doc-content blockquote {
+  background: linear-gradient(135deg, rgb(239 246 255 / 0.9), rgb(236 254 255 / 0.72));
+  border: 1px solid rgb(191 219 254 / 0.7);
   border-left: 4px solid rgb(35 116 225);
+  border-radius: 1rem;
   color: rgb(71 85 105);
-  padding-left: 1rem;
+  padding: 0.9rem 1rem;
 }
 
 .dark .doc-content blockquote {
+  background: linear-gradient(135deg, rgb(15 23 42 / 0.88), rgb(30 41 59 / 0.68));
+  border-color: rgb(51 65 85);
   color: rgb(203 213 225);
 }
 

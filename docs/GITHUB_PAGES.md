@@ -2,6 +2,14 @@
 
 The documentation portal is a static GitHub Pages site built from Markdown files in `docs/` plus release artifacts from the repository root.
 
+Canonical URL:
+
+```text
+https://alekpopovic.github.io/orch/
+```
+
+Repository README and cross-document documentation links point at this GitHub Pages portal so readers land on the styled documentation experience instead of raw Markdown.
+
 ## What Gets Published
 
 The Pages workflow publishes:
