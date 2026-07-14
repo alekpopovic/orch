@@ -33,6 +33,56 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestOpenAPIDocumentedPublicResponseShapes(t *testing.T) {
+	handler := newTestHandler()
+	assertShape := func(method string, path string, body any, status int, keys ...string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := doRequest(t, handler, method, path, body)
+		if rec.Code != status {
+			t.Fatalf("%s %s expected status %d, got %d: %s", method, path, status, rec.Code, rec.Body.String())
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+			t.Fatalf("%s %s returned invalid JSON %q: %v", method, path, rec.Body.String(), err)
+		}
+		for _, key := range keys {
+			if _, ok := decoded[key]; !ok {
+				t.Fatalf("%s %s missing documented key %q in %v", method, path, key, decoded)
+			}
+		}
+		return rec
+	}
+
+	assertShape(http.MethodGet, "/healthz", nil, http.StatusOK, "status", "time")
+	assertShape(http.MethodGet, "/readyz", nil, http.StatusOK, "status", "time")
+	assertShape(http.MethodGet, "/v1/nodes", nil, http.StatusOK, "nodes")
+	assertShape(http.MethodGet, "/v1/secrets", nil, http.StatusOK, "secrets")
+	assertShape(http.MethodGet, "/v1/registry-credentials", nil, http.StatusOK, "credentials")
+	assertShape(http.MethodGet, "/v1/tasks", nil, http.StatusOK, "tasks")
+	assertShape(http.MethodGet, "/v1/events", nil, http.StatusOK, "events")
+	assertShape(http.MethodGet, "/v1/audit", nil, http.StatusOK, "audit_logs")
+
+	create := assertShape(http.MethodPost, "/v1/services", `{
+		"spec": {
+			"name": "api",
+			"image": "nginx:1.27",
+			"replicas": 1,
+			"resource_requirements": {"requests": {}, "limits": {}}
+		}
+	}`, http.StatusCreated, "service")
+	var created ServiceResponse
+	decodeResponse(t, create, &created)
+	assertShape(http.MethodGet, "/v1/services", nil, http.StatusOK, "services")
+	assertShape(http.MethodGet, "/v1/services/"+string(created.Service.ID), nil, http.StatusOK, "service")
+	assertShape(http.MethodPost, "/v1/services/"+string(created.Service.ID)+"/scale", `{"replicas": 2}`, http.StatusOK, "service")
+
+	rollout := assertShape(http.MethodPost, "/v1/services/"+string(created.Service.ID)+"/rollout", `{"image":"nginx:1.28","maxUnavailable":1,"maxSurge":1}`, http.StatusAccepted, "deployment")
+	var started DeploymentResponse
+	decodeResponse(t, rollout, &started)
+	assertShape(http.MethodGet, "/v1/services/"+string(created.Service.ID)+"/rollout", nil, http.StatusOK, "deployment")
+	assertShape(http.MethodGet, "/v1/rollouts/"+string(started.Deployment.ID), nil, http.StatusOK, "deployment")
+}
+
 func TestMetricsEndpoint(t *testing.T) {
 	serverMetrics := metrics.NewServer()
 	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithRequestMetrics(serverMetrics), WithMetricsHandler(serverMetrics.Handler()))

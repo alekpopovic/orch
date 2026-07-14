@@ -19,6 +19,7 @@ import (
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
+	orchclient "github.com/alekpopovic/orch/pkg/client"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -61,15 +62,15 @@ func (e *APIError) Error() string {
 }
 
 func NewAPIClient(serverURL string) (*APIClient, error) {
-	serverURL = strings.TrimRight(strings.TrimSpace(serverURL), "/")
-	if serverURL == "" {
+	normalized, err := orchclient.NormalizeServerURL(serverURL)
+	if err != nil && strings.TrimSpace(serverURL) == "" {
 		return nil, fmt.Errorf("server URL is required; pass --server, set ORCH_SERVER_URL, or configure the CLI")
 	}
-	if _, err := url.ParseRequestURI(serverURL); err != nil {
+	if err != nil {
 		return nil, fmt.Errorf("invalid server URL %q: %w", serverURL, err)
 	}
 	return &APIClient{
-		baseURL: serverURL,
+		baseURL: normalized,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},

@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `60-release-hardening-v0-2-0.md`
-- Last matching commit: `same commit: Prepare v0.2.0 release hardening`
-- Completed prompt range: `00` through `60`
-- Next prompt to execute: `61-openapi-specification-and-generated-clients.md`
+- Last executed prompt: `61-openapi-specification-and-generated-clients.md`
+- Last matching commit: `same commit: Add OpenAPI spec and client`
+- Completed prompt range: `00` through `61`
+- Next prompt to execute: `62-api-versioning-strategy.md`
 - Updated: `2026-07-14`
 
 ## Update Rule

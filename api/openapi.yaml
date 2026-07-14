@@ -1,0 +1,930 @@
+openapi: 3.0.3
+info:
+  title: orch API
+  version: v1
+  description: Public user-facing API for the orch control plane.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: Server is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /readyz:
+    get:
+      summary: Readiness check
+      security: []
+      responses:
+        "200":
+          description: Server is ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /v1/nodes:
+    get:
+      summary: List nodes
+      responses:
+        "200":
+          description: Node list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListNodesResponse"
+  /v1/nodes/{id}:
+    get:
+      summary: Get node
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: Node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeResponse"
+  /v1/nodes/{id}/drain:
+    post:
+      summary: Drain node
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: Drained node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeResponse"
+  /v1/nodes/{id}/uncordon:
+    post:
+      summary: Uncordon node
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: Ready node
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeResponse"
+  /v1/nodes/{id}/drain-status:
+    get:
+      summary: Get node drain status
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: Drain status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeDrainStatusResponse"
+  /v1/services:
+    post:
+      summary: Create service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateServiceRequest"
+      responses:
+        "201":
+          description: Created service
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceResponse"
+    get:
+      summary: List services
+      responses:
+        "200":
+          description: Service list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListServicesResponse"
+  /v1/services/{id}:
+    get:
+      summary: Get service
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: Service
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceResponse"
+    delete:
+      summary: Delete service
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: Service deletion requested
+  /v1/services/{id}/scale:
+    post:
+      summary: Scale service
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScaleServiceRequest"
+      responses:
+        "200":
+          description: Scaled service
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceResponse"
+  /v1/services/{id}/rollout:
+    post:
+      summary: Start service rollout
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RolloutServiceRequest"
+      responses:
+        "202":
+          description: Rollout accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentResponse"
+    get:
+      summary: Get latest service rollout
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: Latest deployment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentResponse"
+  /v1/services/{id}/rollback:
+    post:
+      summary: Start service rollback
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "202":
+          description: Rollback accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentResponse"
+  /v1/services/{id}/endpoints:
+    get:
+      summary: Get service discovery endpoints
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - name: include_unhealthy
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Service endpoints
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceEndpointsResponse"
+  /v1/rollouts/{id}:
+    get:
+      summary: Get rollout by ID
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: Deployment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentResponse"
+  /v1/tasks:
+    get:
+      summary: List tasks
+      parameters:
+        - name: service_id
+          in: query
+          schema:
+            type: string
+        - name: node_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTasksResponse"
+  /v1/tasks/{id}:
+    get:
+      summary: Get task
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "200":
+          description: Task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+  /v1/events:
+    get:
+      summary: List events
+      parameters:
+        - name: service_id
+          in: query
+          schema:
+            type: string
+        - name: task_id
+          in: query
+          schema:
+            type: string
+        - name: node_id
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: severity
+          in: query
+          schema:
+            type: string
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Event list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEventsResponse"
+  /v1/logs:
+    get:
+      summary: Stream task logs
+      parameters:
+        - name: task_id
+          in: query
+          schema:
+            type: string
+        - name: service_id
+          in: query
+          schema:
+            type: string
+        - name: follow
+          in: query
+          schema:
+            type: boolean
+        - name: tail
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Log stream
+          content:
+            text/plain:
+              schema:
+                type: string
+  /v1/secrets:
+    post:
+      summary: Create secret
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSecretRequest"
+      responses:
+        "201":
+          description: Secret metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecretResponse"
+    get:
+      summary: List secrets
+      responses:
+        "200":
+          description: Secret list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListSecretsResponse"
+  /v1/secrets/{name}:
+    get:
+      summary: Get secret metadata
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Secret metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecretResponse"
+    delete:
+      summary: Delete secret
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Secret deleted
+  /v1/registry-credentials:
+    post:
+      summary: Create registry credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRegistryCredentialRequest"
+      responses:
+        "201":
+          description: Registry credential metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegistryCredentialResponse"
+    get:
+      summary: List registry credentials
+      responses:
+        "200":
+          description: Registry credential list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListRegistryCredentialsResponse"
+  /v1/registry-credentials/{id}:
+    delete:
+      summary: Delete registry credential
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: Registry credential deleted
+  /v1/audit:
+    get:
+      summary: List audit logs
+      parameters:
+        - name: actor_type
+          in: query
+          schema:
+            type: string
+        - name: actor_id
+          in: query
+          schema:
+            type: string
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: target_type
+          in: query
+          schema:
+            type: string
+        - name: target_id
+          in: query
+          schema:
+            type: string
+        - name: outcome
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Audit log list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListAuditLogsResponse"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, time]
+      properties:
+        status:
+          type: string
+        time:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/RequestError"
+    RequestError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [not_found, invalid_argument, conflict, unauthorized, forbidden, failed_precondition, unavailable, internal]
+        message:
+          type: string
+        request_id:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    ResourceQuantity:
+      type: object
+      properties:
+        cpu:
+          type: integer
+          format: int64
+        memory:
+          type: integer
+          format: int64
+    ResourceRequirements:
+      type: object
+      properties:
+        requests:
+          $ref: "#/components/schemas/ResourceQuantity"
+        limits:
+          $ref: "#/components/schemas/ResourceQuantity"
+    Port:
+      type: object
+      properties:
+        name:
+          type: string
+        protocol:
+          type: string
+          enum: [tcp, udp]
+        container_port:
+          type: integer
+        published_port:
+          type: integer
+    Healthcheck:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [none, http, tcp]
+        scheme:
+          type: string
+          enum: [http, https]
+        path:
+          type: string
+        port:
+          type: integer
+        interval:
+          type: integer
+          format: int64
+        timeout:
+          type: integer
+          format: int64
+        healthy_threshold:
+          type: integer
+        unhealthy_threshold:
+          type: integer
+    RestartPolicy:
+      type: object
+      properties:
+        condition:
+          type: string
+          enum: [never, on_failure, always]
+        max_attempts:
+          type: integer
+    SecurityContext:
+      type: object
+      properties:
+        user:
+          type: string
+        read_only_root_filesystem:
+          type: boolean
+        privileged:
+          type: boolean
+        cap_add:
+          type: array
+          items:
+            type: string
+        cap_drop:
+          type: array
+          items:
+            type: string
+        host_network:
+          type: boolean
+        host_pid:
+          type: boolean
+    AutoscalingPolicy:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        min_replicas:
+          type: integer
+        max_replicas:
+          type: integer
+        target_cpu_utilization:
+          type: integer
+        cooldown:
+          type: integer
+          format: int64
+        stabilization_window:
+          type: integer
+          format: int64
+    ServiceSpec:
+      type: object
+      required: [name, image, replicas, resource_requirements]
+      properties:
+        name:
+          type: string
+        image:
+          type: string
+        image_pull_secret:
+          type: string
+        stateful:
+          type: boolean
+        replicas:
+          type: integer
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        secret_refs:
+          type: array
+          items:
+            type: object
+        ports:
+          type: array
+          items:
+            $ref: "#/components/schemas/Port"
+        resource_requirements:
+          $ref: "#/components/schemas/ResourceRequirements"
+        security_context:
+          $ref: "#/components/schemas/SecurityContext"
+        autoscaling:
+          $ref: "#/components/schemas/AutoscalingPolicy"
+        healthcheck:
+          $ref: "#/components/schemas/Healthcheck"
+        restart_policy:
+          $ref: "#/components/schemas/RestartPolicy"
+        placement_constraints:
+          type: array
+          items:
+            type: object
+        routes:
+          type: array
+          items:
+            type: object
+    Service:
+      type: object
+      properties:
+        id:
+          type: string
+        spec:
+          $ref: "#/components/schemas/ServiceSpec"
+        status:
+          type: string
+        deployment_version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+        service_id:
+          type: string
+        node_id:
+          type: string
+        container_id:
+          type: string
+        desired_status:
+          type: string
+        actual_status:
+          type: string
+        image:
+          type: string
+        version:
+          type: integer
+        ports:
+          type: array
+          items:
+            $ref: "#/components/schemas/Port"
+    Node:
+      type: object
+      properties:
+        id:
+          type: string
+        hostname:
+          type: string
+        advertise_address:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        capacity:
+          $ref: "#/components/schemas/ResourceQuantity"
+        allocatable:
+          $ref: "#/components/schemas/ResourceQuantity"
+        status:
+          type: string
+        last_heartbeat_at:
+          type: string
+          format: date-time
+    Deployment:
+      type: object
+      properties:
+        id:
+          type: string
+        service_id:
+          type: string
+        from_version:
+          type: integer
+        to_version:
+          type: integer
+        strategy:
+          type: string
+        status:
+          type: string
+        max_unavailable:
+          type: integer
+        max_surge:
+          type: integer
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        severity:
+          type: string
+        source:
+          type: string
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+    AuditLog:
+      type: object
+      additionalProperties: true
+    SecretMetadata:
+      type: object
+      properties:
+        name:
+          type: string
+        key_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    RegistryCredentialMetadata:
+      type: object
+      properties:
+        id:
+          type: string
+        registry:
+          type: string
+        username:
+          type: string
+        key_id:
+          type: string
+    CreateServiceRequest:
+      type: object
+      required: [spec]
+      properties:
+        spec:
+          $ref: "#/components/schemas/ServiceSpec"
+    ScaleServiceRequest:
+      type: object
+      required: [replicas]
+      properties:
+        replicas:
+          type: integer
+    RolloutServiceRequest:
+      type: object
+      required: [image]
+      properties:
+        image:
+          type: string
+        maxUnavailable:
+          type: integer
+        maxSurge:
+          type: integer
+    CreateSecretRequest:
+      type: object
+      required: [name, value]
+      properties:
+        name:
+          type: string
+        value:
+          type: string
+    CreateRegistryCredentialRequest:
+      type: object
+      required: [id, registry, username, password]
+      properties:
+        id:
+          type: string
+        registry:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+    NodeResponse:
+      type: object
+      properties:
+        node:
+          $ref: "#/components/schemas/Node"
+    ListNodesResponse:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+    NodeDrainStatusResponse:
+      type: object
+      properties:
+        drain_status:
+          $ref: "#/components/schemas/NodeDrainStatus"
+    NodeDrainStatus:
+      type: object
+      properties:
+        node_id:
+          type: string
+        node_status:
+          type: string
+        phase:
+          type: string
+          enum: [none, draining, blocked, complete, offline]
+        total_tasks:
+          type: integer
+        remaining_tasks:
+          type: integer
+        replacement_tasks:
+          type: integer
+        replacement_ready:
+          type: integer
+        insufficient_capacity:
+          type: boolean
+        message:
+          type: string
+    ServiceResponse:
+      type: object
+      properties:
+        service:
+          $ref: "#/components/schemas/Service"
+    ListServicesResponse:
+      type: object
+      properties:
+        services:
+          type: array
+          items:
+            $ref: "#/components/schemas/Service"
+    DeploymentResponse:
+      type: object
+      properties:
+        deployment:
+          $ref: "#/components/schemas/Deployment"
+    ListTasksResponse:
+      type: object
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
+    TaskResponse:
+      type: object
+      properties:
+        task:
+          $ref: "#/components/schemas/Task"
+    ListEventsResponse:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+    ListAuditLogsResponse:
+      type: object
+      properties:
+        audit_logs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLog"
+    SecretResponse:
+      type: object
+      properties:
+        secret:
+          $ref: "#/components/schemas/SecretMetadata"
+    ListSecretsResponse:
+      type: object
+      properties:
+        secrets:
+          type: array
+          items:
+            $ref: "#/components/schemas/SecretMetadata"
+    RegistryCredentialResponse:
+      type: object
+      properties:
+        credential:
+          $ref: "#/components/schemas/RegistryCredentialMetadata"
+    ListRegistryCredentialsResponse:
+      type: object
+      properties:
+        credentials:
+          type: array
+          items:
+            $ref: "#/components/schemas/RegistryCredentialMetadata"
+    ServiceEndpointsResponse:
+      type: object
+      properties:
+        service_id:
+          type: string
+        service_name:
+          type: string
+        endpoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/Endpoint"
+    Endpoint:
+      type: object
+      properties:
+        service_id:
+          type: string
+        service_name:
+          type: string
+        task_id:
+          type: string
+        node_id:
+          type: string
+        node_address:
+          type: string
+        public_host_port:
+          type: integer
+        container_port:
+          type: integer
+        protocol:
+          type: string
+          enum: [tcp, udp]
+        health_status:
+          type: string
+        service_version:
+          type: integer

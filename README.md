@@ -108,6 +108,22 @@ go vet ./...
 go build ./...
 ```
 
+## Go API Client
+
+The public REST contract lives in `api/openapi.yaml`. Go programs can use the hand-written client in `pkg/client`:
+
+```go
+apiClient, err := client.New("http://localhost:8080", client.WithBearerToken(token))
+if err != nil {
+    return err
+}
+services, err := apiClient.ListServices(context.Background())
+if err != nil {
+    return err
+}
+fmt.Println(len(services))
+```
+
 ## CLI Configuration
 
 The CLI resolves the server URL in this order:
