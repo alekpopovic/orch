@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/docker/docker v27.5.1+incompatible
-	github.com/docker/go-connections v0.5.0
+	github.com/docker/go-connections v0.7.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/prometheus/client_golang v1.23.2
