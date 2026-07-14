@@ -14,6 +14,11 @@ replicas: 3
 ports:
   - container: 8080
     public: 80
+routes:
+  - host: api.example.com
+    pathPrefix: /
+    port: 8080
+    tls: true
 env:
   NODE_ENV: production
 resources:
@@ -62,6 +67,9 @@ placement:
 	}
 	if len(spec.PlacementConstraints) != 1 || spec.PlacementConstraints[0].Key != "role" {
 		t.Fatalf("unexpected constraints %#v", spec.PlacementConstraints)
+	}
+	if len(spec.Routes) != 1 || spec.Routes[0].Host != "api.example.com" || !spec.Routes[0].TLS {
+		t.Fatalf("unexpected routes %#v", spec.Routes)
 	}
 }
 

@@ -1,0 +1,2 @@
+ALTER TABLE IF EXISTS services
+    DROP COLUMN IF EXISTS routes;

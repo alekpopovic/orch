@@ -20,6 +20,7 @@ type DeployFile struct {
 	Healthcheck DeployHealthcheck `yaml:"healthcheck"`
 	Restart     DeployRestart     `yaml:"restart"`
 	Placement   DeployPlacement   `yaml:"placement"`
+	Routes      []DeployRoute     `yaml:"routes"`
 }
 
 type DeployPort struct {
@@ -47,6 +48,13 @@ type DeployRestart struct {
 
 type DeployPlacement struct {
 	Labels map[string]string `yaml:"labels"`
+}
+
+type DeployRoute struct {
+	Host       string `yaml:"host"`
+	PathPrefix string `yaml:"pathPrefix"`
+	Port       int    `yaml:"port"`
+	TLS        bool   `yaml:"tls"`
 }
 
 func ParseDeployFile(path string) (types.ServiceSpec, error) {
@@ -86,6 +94,14 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 			Protocol:      types.PortTCP,
 			ContainerPort: port.Container,
 			PublishedPort: port.Public,
+		})
+	}
+	for _, route := range deploy.Routes {
+		spec.Routes = append(spec.Routes, types.Route{
+			Host:       strings.TrimSpace(route.Host),
+			PathPrefix: strings.TrimSpace(route.PathPrefix),
+			Port:       route.Port,
+			TLS:        route.TLS,
 		})
 	}
 

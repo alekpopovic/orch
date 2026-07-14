@@ -323,7 +323,7 @@ func (s *postgresStore) UpdateServiceStatus(ctx context.Context, id types.Servic
 			version = version + 1
 		WHERE id = $1 AND updated_at = $3
 		RETURNING id, name, image, replicas, env, secret_refs, ports,
-			resource_requirements, healthcheck, restart_policy, placement_constraints,
+			resource_requirements, healthcheck, restart_policy, placement_constraints, routes,
 			status, deployment_version, created_at, updated_at`,
 		string(id),
 		string(status),
@@ -726,18 +726,18 @@ func (s *postgresStore) ListEvents(ctx context.Context, filter events.Filter) ([
 }
 
 func insertService(ctx context.Context, db postgresDB, spec types.ServiceSpec) (types.Service, error) {
-	env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, err := serviceJSON(spec)
+	env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, routes, err := serviceJSON(spec)
 	if err != nil {
 		return types.Service{}, err
 	}
 	row := db.QueryRow(ctx, `
 		INSERT INTO services (
 			name, image, replicas, env, secret_refs, ports,
-			resource_requirements, healthcheck, restart_policy, placement_constraints
+			resource_requirements, healthcheck, restart_policy, placement_constraints, routes
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, name, image, replicas, env, secret_refs, ports,
-			resource_requirements, healthcheck, restart_policy, placement_constraints, status,
+			resource_requirements, healthcheck, restart_policy, placement_constraints, routes, status,
 			deployment_version, created_at, updated_at`,
 		spec.Name,
 		spec.Image,
@@ -749,6 +749,7 @@ func insertService(ctx context.Context, db postgresDB, spec types.ServiceSpec) (
 		healthcheck,
 		restartPolicy,
 		constraints,
+		routes,
 	)
 	service, err := scanService(row)
 	if err != nil {
@@ -758,7 +759,7 @@ func insertService(ctx context.Context, db postgresDB, spec types.ServiceSpec) (
 }
 
 func updateService(ctx context.Context, db postgresDB, id types.ServiceID, spec types.ServiceSpec, expectedUpdatedAt time.Time) (types.Service, error) {
-	env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, err := serviceJSON(spec)
+	env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, routes, err := serviceJSON(spec)
 	if err != nil {
 		return types.Service{}, err
 	}
@@ -774,12 +775,13 @@ func updateService(ctx context.Context, db postgresDB, id types.ServiceID, spec 
 			healthcheck = $9,
 			restart_policy = $10,
 			placement_constraints = $11,
+			routes = $13,
 			deployment_version = deployment_version + 1,
 			updated_at = timezone('utc', now()),
 			version = version + 1
 		WHERE id = $1 AND updated_at = $12
 		RETURNING id, name, image, replicas, env, secret_refs, ports,
-			resource_requirements, healthcheck, restart_policy, placement_constraints,
+			resource_requirements, healthcheck, restart_policy, placement_constraints, routes,
 			status, deployment_version, created_at, updated_at`,
 		string(id),
 		spec.Name,
@@ -793,6 +795,7 @@ func updateService(ctx context.Context, db postgresDB, id types.ServiceID, spec 
 		restartPolicy,
 		constraints,
 		expectedUpdatedAt.UTC(),
+		routes,
 	)
 	service, err := scanService(row)
 	if err != nil {
@@ -821,7 +824,7 @@ func insertServiceVersion(ctx context.Context, db postgresDB, serviceID types.Se
 
 func serviceSelectSQL() string {
 	return `SELECT id, name, image, replicas, env, secret_refs, ports,
-		resource_requirements, healthcheck, restart_policy, placement_constraints,
+		resource_requirements, healthcheck, restart_policy, placement_constraints, routes,
 		status, deployment_version, created_at, updated_at FROM services`
 }
 
@@ -884,7 +887,7 @@ func scanNode(row pgx.Row) (types.Node, error) {
 func scanService(row pgx.Row) (types.Service, error) {
 	var service types.Service
 	var id string
-	var env, secretRefs, ports, requirements, restartPolicy, constraints []byte
+	var env, secretRefs, ports, requirements, restartPolicy, constraints, routes []byte
 	var healthcheck []byte
 	err := row.Scan(
 		&id,
@@ -898,6 +901,7 @@ func scanService(row pgx.Row) (types.Service, error) {
 		&healthcheck,
 		&restartPolicy,
 		&constraints,
+		&routes,
 		&service.Status,
 		&service.DeploymentVersion,
 		&service.CreatedAt,
@@ -910,7 +914,7 @@ func scanService(row pgx.Row) (types.Service, error) {
 	if service.Status == "" {
 		service.Status = types.ServiceActive
 	}
-	if err := decodeServiceJSON(&service.Spec, env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints); err != nil {
+	if err := decodeServiceJSON(&service.Spec, env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, routes); err != nil {
 		return types.Service{}, err
 	}
 	service.CreatedAt = service.CreatedAt.UTC()
@@ -1033,42 +1037,46 @@ func scanEvent(row pgx.Row) (types.Event, error) {
 	return event, nil
 }
 
-func serviceJSON(spec types.ServiceSpec) ([]byte, []byte, []byte, []byte, []byte, []byte, []byte, error) {
+func serviceJSON(spec types.ServiceSpec) ([]byte, []byte, []byte, []byte, []byte, []byte, []byte, []byte, error) {
 	env, err := jsonBytes(defaultMap(spec.Env))
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 	secretRefs, err := jsonBytes(defaultSlice(spec.SecretRefs))
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 	ports, err := jsonBytes(defaultSlice(spec.Ports))
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 	requirements, err := jsonBytes(spec.ResourceRequirements)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 	var healthcheck []byte
 	if spec.Healthcheck != nil {
 		healthcheck, err = jsonBytes(spec.Healthcheck)
 		if err != nil {
-			return nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
 	restartPolicy, err := jsonBytes(spec.RestartPolicy)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 	constraints, err := jsonBytes(defaultSlice(spec.PlacementConstraints))
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
-	return env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, nil
+	routes, err := jsonBytes(defaultSlice(spec.Routes))
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, nil, err
+	}
+	return env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, routes, nil
 }
 
-func decodeServiceJSON(spec *types.ServiceSpec, env []byte, secretRefs []byte, ports []byte, requirements []byte, healthcheck []byte, restartPolicy []byte, constraints []byte) error {
+func decodeServiceJSON(spec *types.ServiceSpec, env []byte, secretRefs []byte, ports []byte, requirements []byte, healthcheck []byte, restartPolicy []byte, constraints []byte, routes []byte) error {
 	if err := json.Unmarshal(env, &spec.Env); err != nil {
 		return fmt.Errorf("decode service env: %w", err)
 	}
@@ -1093,6 +1101,9 @@ func decodeServiceJSON(spec *types.ServiceSpec, env []byte, secretRefs []byte, p
 	}
 	if err := json.Unmarshal(constraints, &spec.PlacementConstraints); err != nil {
 		return fmt.Errorf("decode service placement constraints: %w", err)
+	}
+	if err := json.Unmarshal(routes, &spec.Routes); err != nil {
+		return fmt.Errorf("decode service routes: %w", err)
 	}
 	return nil
 }

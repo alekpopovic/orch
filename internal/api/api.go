@@ -19,6 +19,7 @@ import (
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/store"
+	"github.com/alekpopovic/orch/internal/traefik"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -151,6 +152,7 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux.HandleFunc("GET /v1/tasks/{id}", server.getTask)
 	mux.HandleFunc("GET /v1/discovery/services", server.discoveryServices)
 	mux.HandleFunc("GET /v1/discovery/services/{name}", server.discoveryServiceByName)
+	mux.HandleFunc("GET /v1/integrations/traefik/config", server.traefikConfig)
 	mux.HandleFunc("GET /v1/events", server.listEvents)
 	mux.HandleFunc("GET /v1/logs", server.streamLogs)
 
@@ -234,6 +236,8 @@ type ServiceEndpointsResponse = discovery.ServiceEndpoints
 type DiscoveryServicesResponse struct {
 	Services []discovery.ServiceEndpoints `json:"services"`
 }
+
+type TraefikConfigResponse = traefik.Config
 
 type ScaleServiceRequest struct {
 	Replicas int `json:"replicas"`
@@ -685,6 +689,16 @@ func (s *Server) discoveryServiceByName(w http.ResponseWriter, r *http.Request) 
 	s.writeError(w, r, fmt.Errorf("%w: service %q not found", store.ErrNotFound, name))
 }
 
+func (s *Server) traefikConfig(w http.ResponseWriter, r *http.Request) {
+	services, tasks, nodes, err := s.discoverySnapshot(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	endpointSets := discovery.BuildAllServiceEndpoints(services, tasks, nodes, false)
+	writeJSON(w, http.StatusOK, TraefikConfigResponse(traefik.BuildConfig(services, endpointSets)))
+}
+
 func (s *Server) discoverySnapshot(ctx context.Context) ([]types.Service, []types.Task, []types.Node, error) {
 	services, err := s.controlPlane.ListServices(ctx)
 	if err != nil {
@@ -808,6 +822,10 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 			return auth.RoleViewer, true
 		case path == "/v1/tasks" || strings.HasPrefix(path, "/v1/tasks/"):
 			return auth.RoleViewer, true
+		case strings.HasPrefix(path, "/v1/discovery/"):
+			return auth.RoleViewer, true
+		case path == "/v1/integrations/traefik/config":
+			return auth.RoleViewer, true
 		case path == "/v1/events":
 			return auth.RoleViewer, true
 		case path == "/v1/logs":
@@ -929,6 +947,12 @@ func metricRoute(method string, path string) (string, bool) {
 		return "/v1/tasks", true
 	case strings.HasPrefix(path, "/v1/tasks/"):
 		return "/v1/tasks/{id}", true
+	case path == "/v1/discovery/services":
+		return "/v1/discovery/services", true
+	case strings.HasPrefix(path, "/v1/discovery/services/"):
+		return "/v1/discovery/services/{name}", true
+	case path == "/v1/integrations/traefik/config":
+		return "/v1/integrations/traefik/config", true
 	case path == "/v1/events":
 		return "/v1/events", true
 	case path == "/v1/logs":

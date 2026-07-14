@@ -76,6 +76,7 @@ curl -X POST http://localhost:8080/v1/services \
       "env": {"APP_ENV": "local"},
       "secret_refs": [{"name": "registry-creds", "key": "password"}],
       "ports": [{"protocol": "tcp", "container_port": 8080, "published_port": 18080}],
+      "routes": [{"host": "web.localhost", "path_prefix": "/", "port": 8080, "tls": false}],
       "resource_requirements": {
         "requests": {"cpu": 100, "memory": 134217728},
         "limits": {"cpu": 500, "memory": 536870912}
@@ -131,6 +132,25 @@ curl -X POST http://localhost:8080/v1/services/{service_id}/rollback
 ```
 
 Resource values are normalized to CPU millicores and memory bytes. The CLI deploy parser accepts strings such as `500m`, `2.5`, `512Mi`, and `1Gi`.
+
+## Service Discovery
+
+```sh
+curl http://localhost:8080/v1/services/{service_id}/endpoints
+curl http://localhost:8080/v1/discovery/services
+curl http://localhost:8080/v1/discovery/services/{service_name}
+curl 'http://localhost:8080/v1/discovery/services/{service_name}?include_unhealthy=true'
+```
+
+Discovery endpoints include active services and assigned task ports. By default, only tasks whose desired state is `running` and whose actual state is `running` or `healthy` are returned.
+
+## Traefik
+
+```sh
+curl http://localhost:8080/v1/integrations/traefik/config
+```
+
+The Traefik endpoint returns optional HTTP-provider dynamic config for services with `routes`. It omits unhealthy, stopped, unassigned, non-TCP, and non-matching-port task endpoints. See [TRAEFIK.md](TRAEFIK.md).
 
 ## Tasks
 

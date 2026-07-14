@@ -1,0 +1,19 @@
+name: traefik-demo
+image: nginx:1.27-alpine
+replicas: 2
+ports:
+  - container: 80
+    public: 0
+routes:
+  - host: demo.localhost
+    pathPrefix: /
+    port: 80
+    tls: false
+resources:
+  cpu: 100m
+  memory: 128Mi
+restart:
+  policy: always
+placement:
+  labels:
+    role: worker

@@ -160,6 +160,7 @@ type ServiceSpec struct {
 	Healthcheck          *Healthcheck          `json:"healthcheck,omitempty"`
 	RestartPolicy        RestartPolicy         `json:"restart_policy"`
 	PlacementConstraints []PlacementConstraint `json:"placement_constraints,omitempty"`
+	Routes               []Route               `json:"routes,omitempty"`
 }
 
 func (spec ServiceSpec) Validate() error {
@@ -193,6 +194,11 @@ func (spec ServiceSpec) Validate() error {
 	for i, constraint := range spec.PlacementConstraints {
 		if err := constraint.Validate(); err != nil {
 			return fmt.Errorf("placement_constraints[%d]: %w", i, err)
+		}
+	}
+	for i, route := range spec.Routes {
+		if err := route.Validate(); err != nil {
+			return fmt.Errorf("routes[%d]: %w", i, err)
 		}
 	}
 	return nil
@@ -232,6 +238,29 @@ const (
 	PortTCP PortProtocol = "tcp"
 	PortUDP PortProtocol = "udp"
 )
+
+type Route struct {
+	Host       string `json:"host"`
+	PathPrefix string `json:"path_prefix"`
+	Port       int    `json:"port"`
+	TLS        bool   `json:"tls,omitempty"`
+}
+
+func (route Route) Validate() error {
+	if strings.TrimSpace(route.Host) == "" {
+		return fmt.Errorf("host is required")
+	}
+	if strings.TrimSpace(route.PathPrefix) == "" {
+		return fmt.Errorf("path_prefix is required")
+	}
+	if !strings.HasPrefix(route.PathPrefix, "/") {
+		return fmt.Errorf("path_prefix must start with /")
+	}
+	if route.Port < 1 || route.Port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
+	}
+	return nil
+}
 
 type ResourceRequirements struct {
 	Requests Resources `json:"requests"`

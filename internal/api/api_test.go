@@ -15,6 +15,7 @@ import (
 	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/metrics"
+	"github.com/alekpopovic/orch/internal/traefik"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -341,6 +342,71 @@ func TestServiceDiscoveryEndpointsFilterUnhealthyTasks(t *testing.T) {
 	decodeResponse(t, all, &allBody)
 	if len(allBody.Services) != 1 || allBody.Services[0].ServiceName != "api" {
 		t.Fatalf("expected api discovery service, got %#v", allBody)
+	}
+}
+
+func TestTraefikConfigUsesHealthyServiceRouteEndpoints(t *testing.T) {
+	controlPlane := controlplane.NewMemoryService()
+	handler := NewHandler(slog.Default(), controlPlane, WithBootstrapToken("secret"))
+	registered := registerTestNode(t, handler)
+	service, err := controlPlane.CreateService(context.Background(), types.ServiceSpec{
+		Name:     "api",
+		Image:    "nginx:1.27",
+		Replicas: 3,
+		Ports:    []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080}},
+		Routes: []types.Route{{
+			Host:       "api.localhost",
+			PathPrefix: "/",
+			Port:       8080,
+			TLS:        true,
+		}},
+		ResourceRequirements: types.ResourceRequirements{
+			Requests: types.Resources{CPU: 100, Memory: 128},
+			Limits:   types.Resources{CPU: 100, Memory: 128},
+		},
+		RestartPolicy: types.RestartPolicy{Condition: types.RestartNever},
+	})
+	if err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+	tasks, err := controlPlane.ListTasks(context.Background(), controlplane.TaskFilter{ServiceID: service.ID})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 3 {
+		t.Fatalf("expected three assigned tasks, got %#v", tasks)
+	}
+	for taskIndex, status := range []types.TaskStatus{types.TaskRunning, types.TaskHealthy, types.TaskUnhealthy} {
+		if _, err := controlPlane.ReportTaskStatus(context.Background(), controlplane.TaskStatusReport{
+			TaskID:      tasks[taskIndex].ID,
+			NodeID:      registered.Node.ID,
+			Status:      status,
+			ContainerID: "container-" + string(rune('a'+taskIndex)),
+		}); err != nil {
+			t.Fatalf("report task status %s: %v", status, err)
+		}
+	}
+
+	rec := doRequest(t, handler, http.MethodGet, "/v1/integrations/traefik/config", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var body traefik.Config
+	decodeResponse(t, rec, &body)
+	if len(body.HTTP.Routers) != 1 {
+		t.Fatalf("expected one Traefik router, got %#v", body.HTTP.Routers)
+	}
+	for _, router := range body.HTTP.Routers {
+		if router.Rule != `Host("api.localhost") && PathPrefix("/")` {
+			t.Fatalf("unexpected router rule %q", router.Rule)
+		}
+		if router.TLS == nil {
+			t.Fatalf("expected TLS router config")
+		}
+		loadBalancer := body.HTTP.Services[router.Service].LoadBalancer
+		if len(loadBalancer.Servers) != 2 {
+			t.Fatalf("expected only healthy running servers, got %#v", loadBalancer.Servers)
+		}
 	}
 }
 

@@ -52,7 +52,7 @@ func TestMapPostgresError(t *testing.T) {
 
 func TestServiceJSONRoundTrip(t *testing.T) {
 	spec := serviceSpecFixture()
-	env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, err := serviceJSON(spec)
+	env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, routes, err := serviceJSON(spec)
 	if err != nil {
 		t.Fatalf("encode service json: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestServiceJSONRoundTrip(t *testing.T) {
 	got.Name = spec.Name
 	got.Image = spec.Image
 	got.Replicas = spec.Replicas
-	if err := decodeServiceJSON(&got, env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints); err != nil {
+	if err := decodeServiceJSON(&got, env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, routes); err != nil {
 		t.Fatalf("decode service json: %v", err)
 	}
 
@@ -73,6 +73,9 @@ func TestServiceJSONRoundTrip(t *testing.T) {
 	}
 	if len(got.Ports) != 1 || got.Ports[0].ContainerPort != 8080 {
 		t.Fatalf("expected ports to round trip, got %#v", got.Ports)
+	}
+	if len(got.Routes) != 1 || got.Routes[0].Host != "api.example.com" {
+		t.Fatalf("expected routes to round trip, got %#v", got.Routes)
 	}
 }
 
@@ -353,6 +356,9 @@ func serviceSpecFixture() types.ServiceSpec {
 		Ports: []types.Port{
 			{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080},
 		},
+		Routes: []types.Route{
+			{Host: "api.example.com", PathPrefix: "/", Port: 8080, TLS: true},
+		},
 		ResourceRequirements: types.ResourceRequirements{
 			Requests: types.Resources{CPU: 100, Memory: 128 * 1024 * 1024},
 			Limits:   types.Resources{CPU: 500, Memory: 512 * 1024 * 1024},
@@ -377,10 +383,12 @@ func migrate(t *testing.T, ctx context.Context, pool execer) {
 	t.Helper()
 
 	for _, file := range []string{
+		"000003_service_routes.down.sql",
 		"000002_task_ports.down.sql",
 		"000001_initial_schema.down.sql",
 		"000001_initial_schema.up.sql",
 		"000002_task_ports.up.sql",
+		"000003_service_routes.up.sql",
 	} {
 		sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", file))
 		if err != nil {
