@@ -58,6 +58,10 @@ In local Compose:
 - `api_request_duration_seconds{method,route,status}`
 - `scheduler_runs_total`
 - `scheduler_errors_total`
+- `scheduler_scheduling_attempts_total`
+- `scheduler_scheduling_failures_total`
+- `scheduler_tasks_claimed_total`
+- `scheduler_assignment_conflicts_total`
 - `scheduler_duration_seconds`
 - `reconciler_runs_total`
 - `reconciler_errors_total`

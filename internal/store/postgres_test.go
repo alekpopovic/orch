@@ -134,12 +134,8 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign task: %v", err)
 	}
-	assignedAgain, err := store.AssignTask(ctx, task.ID, updatedNode.ID, task.UpdatedAt)
-	if err != nil {
-		t.Fatalf("idempotent assign task: %v", err)
-	}
-	if assignedAgain.ID != assigned.ID || assignedAgain.NodeID != updatedNode.ID {
-		t.Fatalf("expected idempotent assignment to return existing task, got %#v", assignedAgain)
+	if _, err := store.AssignTask(ctx, task.ID, updatedNode.ID, task.UpdatedAt); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected stale duplicate assignment to conflict, got %v", err)
 	}
 	running, err := store.UpdateTaskStatus(ctx, task.ID, types.TaskRunning, types.TaskRunning, "container-1", "", assigned.UpdatedAt)
 	if err != nil {

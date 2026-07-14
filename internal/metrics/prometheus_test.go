@@ -16,6 +16,10 @@ func TestServerMetricsExposeExpectedCollectors(t *testing.T) {
 	metrics.ObserveAPIRequest(http.MethodGet, "/healthz", http.StatusOK, 10*time.Millisecond)
 	metrics.IncSchedulerRuns()
 	metrics.IncSchedulerErrors()
+	metrics.IncSchedulingAttempts()
+	metrics.IncSchedulingFailures()
+	metrics.IncTasksClaimed()
+	metrics.IncAssignmentConflicts()
 	metrics.ObserveSchedulerDuration(20 * time.Millisecond)
 	metrics.IncReconciliationRuns()
 	metrics.IncReconciliationErrors()
@@ -31,6 +35,10 @@ func TestServerMetricsExposeExpectedCollectors(t *testing.T) {
 		"api_request_duration_seconds",
 		"scheduler_runs_total",
 		"scheduler_errors_total",
+		"scheduler_scheduling_attempts_total 1",
+		"scheduler_scheduling_failures_total 1",
+		"scheduler_tasks_claimed_total 1",
+		"scheduler_assignment_conflicts_total 1",
 		"scheduler_duration_seconds",
 		"reconciler_runs_total",
 		"reconciler_errors_total",

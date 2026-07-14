@@ -13,18 +13,22 @@ import (
 type Server struct {
 	registry *prometheus.Registry
 
-	apiRequests        *prometheus.CounterVec
-	apiRequestDuration *prometheus.HistogramVec
-	schedulerRuns      prometheus.Counter
-	schedulerErrors    prometheus.Counter
-	schedulerDuration  prometheus.Histogram
-	reconcilerRuns     prometheus.Counter
-	reconcilerErrors   prometheus.Counter
-	reconcilerDuration prometheus.Histogram
-	tasksCreated       prometheus.Counter
-	tasksFailed        prometheus.Counter
-	rollouts           prometheus.Counter
-	rolloutFailures    prometheus.Counter
+	apiRequests         *prometheus.CounterVec
+	apiRequestDuration  *prometheus.HistogramVec
+	schedulerRuns       prometheus.Counter
+	schedulerErrors     prometheus.Counter
+	schedulerAttempts   prometheus.Counter
+	schedulerFailures   prometheus.Counter
+	tasksClaimed        prometheus.Counter
+	assignmentConflicts prometheus.Counter
+	schedulerDuration   prometheus.Histogram
+	reconcilerRuns      prometheus.Counter
+	reconcilerErrors    prometheus.Counter
+	reconcilerDuration  prometheus.Histogram
+	tasksCreated        prometheus.Counter
+	tasksFailed         prometheus.Counter
+	rollouts            prometheus.Counter
+	rolloutFailures     prometheus.Counter
 }
 
 func NewServer() *Server {
@@ -46,6 +50,22 @@ func NewServer() *Server {
 		schedulerErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "scheduler_errors_total",
 			Help: "Total scheduler run errors.",
+		}),
+		schedulerAttempts: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "scheduler_scheduling_attempts_total",
+			Help: "Total scheduler attempts to compute and persist assignments.",
+		}),
+		schedulerFailures: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "scheduler_scheduling_failures_total",
+			Help: "Total scheduler attempts that failed before completion.",
+		}),
+		tasksClaimed: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "scheduler_tasks_claimed_total",
+			Help: "Total pending tasks atomically claimed by the scheduler.",
+		}),
+		assignmentConflicts: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "scheduler_assignment_conflicts_total",
+			Help: "Total scheduler assignment claim conflicts.",
 		}),
 		schedulerDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "scheduler_duration_seconds",
@@ -87,6 +107,10 @@ func NewServer() *Server {
 		m.apiRequestDuration,
 		m.schedulerRuns,
 		m.schedulerErrors,
+		m.schedulerAttempts,
+		m.schedulerFailures,
+		m.tasksClaimed,
+		m.assignmentConflicts,
 		m.schedulerDuration,
 		m.reconcilerRuns,
 		m.reconcilerErrors,
@@ -119,6 +143,22 @@ func (m *Server) IncSchedulerErrors() {
 
 func (m *Server) ObserveSchedulerDuration(duration time.Duration) {
 	m.schedulerDuration.Observe(duration.Seconds())
+}
+
+func (m *Server) IncSchedulingAttempts() {
+	m.schedulerAttempts.Inc()
+}
+
+func (m *Server) IncSchedulingFailures() {
+	m.schedulerFailures.Inc()
+}
+
+func (m *Server) IncTasksClaimed() {
+	m.tasksClaimed.Inc()
+}
+
+func (m *Server) IncAssignmentConflicts() {
+	m.assignmentConflicts.Inc()
 }
 
 func (m *Server) IncReconciliationRuns() {

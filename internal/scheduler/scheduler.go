@@ -22,8 +22,10 @@ type Store interface {
 }
 
 type Assignment struct {
-	TaskID types.TaskID `json:"task_id"`
-	NodeID types.NodeID `json:"node_id"`
+	TaskID            types.TaskID `json:"task_id"`
+	NodeID            types.NodeID `json:"node_id"`
+	AssignedAt        time.Time    `json:"assigned_at,omitempty"`
+	ExpectedUpdatedAt time.Time    `json:"expected_updated_at,omitempty"`
 }
 
 type PlanInput struct {
@@ -43,6 +45,10 @@ type Metrics interface {
 	IncSchedulerRuns()
 	IncSchedulerErrors()
 	ObserveSchedulerDuration(duration time.Duration)
+	IncSchedulingAttempts()
+	IncSchedulingFailures()
+	IncTasksClaimed()
+	IncAssignmentConflicts()
 }
 
 type NoopMetrics struct{}
@@ -52,6 +58,14 @@ func (NoopMetrics) IncSchedulerRuns() {}
 func (NoopMetrics) IncSchedulerErrors() {}
 
 func (NoopMetrics) ObserveSchedulerDuration(time.Duration) {}
+
+func (NoopMetrics) IncSchedulingAttempts() {}
+
+func (NoopMetrics) IncSchedulingFailures() {}
+
+func (NoopMetrics) IncTasksClaimed() {}
+
+func (NoopMetrics) IncAssignmentConflicts() {}
 
 type Option func(*Scheduler)
 
@@ -78,36 +92,37 @@ func New(store Store, opts ...Option) *Scheduler {
 func (s *Scheduler) RunOnce(ctx context.Context) ([]Assignment, error) {
 	started := s.now()
 	s.metrics.IncSchedulerRuns()
+	s.metrics.IncSchedulingAttempts()
 	defer func() {
 		s.metrics.ObserveSchedulerDuration(s.now().Sub(started))
 	}()
 	if s.store == nil {
-		s.metrics.IncSchedulerErrors()
+		s.recordSchedulingFailure()
 		return nil, fmt.Errorf("scheduler store is required")
 	}
 	if err := ctx.Err(); err != nil {
-		s.metrics.IncSchedulerErrors()
+		s.recordSchedulingFailure()
 		return nil, err
 	}
 
 	pending, err := s.store.ListTasksByStatus(ctx, types.TaskPending)
 	if err != nil {
-		s.metrics.IncSchedulerErrors()
+		s.recordSchedulingFailure()
 		return nil, fmt.Errorf("list pending tasks: %w", err)
 	}
 	nodes, err := s.store.ListNodesByStatus(ctx, types.NodeReady)
 	if err != nil {
-		s.metrics.IncSchedulerErrors()
+		s.recordSchedulingFailure()
 		return nil, fmt.Errorf("list ready nodes: %w", err)
 	}
 	running, err := s.loadRunningTasks(ctx, nodes)
 	if err != nil {
-		s.metrics.IncSchedulerErrors()
+		s.recordSchedulingFailure()
 		return nil, err
 	}
 	services, err := s.loadServices(ctx, pending, running)
 	if err != nil {
-		s.metrics.IncSchedulerErrors()
+		s.recordSchedulingFailure()
 		return nil, err
 	}
 
@@ -123,28 +138,38 @@ func (s *Scheduler) RunOnce(ctx context.Context) ([]Assignment, error) {
 		if !ok {
 			continue
 		}
-		assigned, err := s.persistAssignment(ctx, task, assignment)
+		claimed, assigned, err := s.persistAssignment(ctx, task, assignment)
 		if err != nil {
-			s.metrics.IncSchedulerErrors()
+			s.recordSchedulingFailure()
 			return assignments, err
 		}
 		if assigned {
-			assignments = append(assignments, assignment)
+			assignments = append(assignments, claimed)
 		}
 	}
 	return assignments, nil
 }
 
-func (s *Scheduler) persistAssignment(ctx context.Context, task types.Task, assignment Assignment) (bool, error) {
+func (s *Scheduler) persistAssignment(ctx context.Context, task types.Task, assignment Assignment) (Assignment, bool, error) {
+	assignment.ExpectedUpdatedAt = assignment.ExpectedUpdatedAt.UTC()
+	if assignment.ExpectedUpdatedAt.IsZero() {
+		assignment.ExpectedUpdatedAt = task.UpdatedAt.UTC()
+	}
 	transactional := false
 	if _, ok := any(s.store).(store.Transactor); ok {
 		transactional = true
 	}
 	assigned := false
 	err := store.WithTx(ctx, s.store, func(txCtx context.Context, tx Store) error {
-		if _, err := tx.AssignTask(txCtx, assignment.TaskID, assignment.NodeID, task.UpdatedAt); err != nil {
+		assignedTask, err := tx.AssignTask(txCtx, assignment.TaskID, assignment.NodeID, assignment.ExpectedUpdatedAt)
+		if err != nil {
 			return err
 		}
+		assignedAt := assignedTask.UpdatedAt.UTC()
+		if assignedAt.IsZero() {
+			assignedAt = s.now().UTC()
+		}
+		assignment.AssignedAt = assignedAt
 		options := []events.EmitOption(nil)
 		if transactional {
 			options = append(options, events.Strict())
@@ -156,7 +181,7 @@ func (s *Scheduler) persistAssignment(ctx context.Context, task types.Task, assi
 			Message:           "task assigned to node",
 			RelatedObjectType: "task",
 			RelatedObjectID:   string(assignment.TaskID),
-			Timestamp:         s.now(),
+			Timestamp:         assignment.AssignedAt,
 		}, options...); err != nil {
 			return fmt.Errorf("emit task assignment event: %w", err)
 		}
@@ -164,12 +189,21 @@ func (s *Scheduler) persistAssignment(ctx context.Context, task types.Task, assi
 		return nil
 	})
 	if errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
-		return false, nil
+		s.metrics.IncAssignmentConflicts()
+		return Assignment{}, false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("assign task %s: %w", assignment.TaskID, err)
+		return Assignment{}, false, fmt.Errorf("assign task %s: %w", assignment.TaskID, err)
 	}
-	return assigned, nil
+	if assigned {
+		s.metrics.IncTasksClaimed()
+	}
+	return assignment, assigned, nil
+}
+
+func (s *Scheduler) recordSchedulingFailure() {
+	s.metrics.IncSchedulerErrors()
+	s.metrics.IncSchedulingFailures()
 }
 
 func (s *Scheduler) loadRunningTasks(ctx context.Context, nodes []types.Node) ([]types.Task, error) {
@@ -233,7 +267,11 @@ func Plan(input PlanInput) []Assignment {
 		if !ok {
 			continue
 		}
-		assignments = append(assignments, Assignment{TaskID: task.ID, NodeID: node.ID})
+		assignments = append(assignments, Assignment{
+			TaskID:            task.ID,
+			NodeID:            node.ID,
+			ExpectedUpdatedAt: task.UpdatedAt.UTC(),
+		})
 		state.addPlanned(node.ID, task.ServiceID, service.Spec.ResourceRequirements.Requests)
 	}
 	return assignments
