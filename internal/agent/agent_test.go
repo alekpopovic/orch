@@ -35,7 +35,7 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 			},
 		}},
 	}
-	runtime := &fakeRuntime{createdID: orchdocker.ContainerID("container-1")}
+	runtime := orchdocker.NewFakeRuntime(orchdocker.WithFakeContainerIDs("container-1"))
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
@@ -43,8 +43,8 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 	}
 
 	wantRuntimeCalls := []string{"list", "pull:nginx:1.27", "create:" + string(taskID), "start:container-1", "list"}
-	if !equalStrings(runtime.calls, wantRuntimeCalls) {
-		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.calls)
+	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
 	}
 	wantStatuses := []types.TaskStatus{types.TaskPulling, types.TaskCreated, types.TaskRunning}
 	if !equalStatuses(client.statuses, wantStatuses) {
@@ -67,18 +67,15 @@ func TestReconcileAssignedTaskRecreatesManuallyDeletedContainer(t *testing.T) {
 			Version:       1,
 		},
 	}}}
-	runtime := &fakeRuntime{
-		inspect:   map[orchdocker.ContainerID]orchdocker.ContainerStatus{},
-		createdID: "replacement-container",
-	}
+	runtime := orchdocker.NewFakeRuntime(orchdocker.WithFakeContainerIDs("replacement-container"))
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
 		t.Fatalf("reconcile assigned tasks: %v", err)
 	}
 	wantRuntimeCalls := []string{"inspect:missing-container", "list", "pull:nginx:1.27", "create:" + string(taskID), "start:replacement-container", "list"}
-	if !equalStrings(runtime.calls, wantRuntimeCalls) {
-		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.calls)
+	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
 	}
 	wantStatuses := []types.TaskStatus{types.TaskPulling, types.TaskCreated, types.TaskRunning}
 	if !equalStatuses(client.statuses, wantStatuses) {
@@ -100,7 +97,8 @@ func TestReconcileAssignedTaskReReportsRunningContainerAfterAgentRestart(t *test
 			Version:       1,
 		},
 	}}}
-	runtime := &fakeRuntime{managed: []orchdocker.ContainerStatus{{
+	runtime := orchdocker.NewFakeRuntime()
+	runtime.AddContainer(orchdocker.ContainerStatus{
 		ID:      "container-1",
 		Running: true,
 		Labels: map[string]string{
@@ -108,15 +106,15 @@ func TestReconcileAssignedTaskReReportsRunningContainerAfterAgentRestart(t *test
 			orchdocker.TaskIDLabel:  string(taskID),
 			orchdocker.NodeIDLabel:  string(nodeID),
 		},
-	}}}
+	})
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
 		t.Fatalf("reconcile assigned tasks: %v", err)
 	}
 	wantRuntimeCalls := []string{"list", "list"}
-	if !equalStrings(runtime.calls, wantRuntimeCalls) {
-		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.calls)
+	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
 	}
 	wantStatuses := []types.TaskStatus{types.TaskRunning}
 	if !equalStatuses(client.statuses, wantStatuses) {
@@ -142,15 +140,18 @@ func TestReconcileAssignedTaskDoesNotRecreateWhenDockerUnavailable(t *testing.T)
 			Version:       1,
 		},
 	}}}
-	runtime := &fakeRuntime{inspectErr: errDockerUnavailable, listErr: errDockerUnavailable}
+	runtime := orchdocker.NewFakeRuntime(
+		orchdocker.WithFakeInspectFailure(errDockerUnavailable),
+		orchdocker.WithFakeListFailure(errDockerUnavailable),
+	)
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != errDockerUnavailable {
 		t.Fatalf("expected docker unavailable error, got %v", err)
 	}
 	wantRuntimeCalls := []string{"inspect:container-1", "list", "list"}
-	if !equalStrings(runtime.calls, wantRuntimeCalls) {
-		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.calls)
+	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
 	}
 	if len(client.statuses) != 0 {
 		t.Fatalf("expected no status reports while Docker availability is unknown, got %#v", client.statuses)
@@ -172,9 +173,8 @@ func TestReconcileAssignedTaskReportsExitedContainerFailed(t *testing.T) {
 			Version:       1,
 		},
 	}}}
-	runtime := &fakeRuntime{inspect: map[orchdocker.ContainerID]orchdocker.ContainerStatus{
-		"container-1": {ID: "container-1", Running: false, ExitCode: 2},
-	}}
+	runtime := orchdocker.NewFakeRuntime()
+	runtime.AddContainer(orchdocker.ContainerStatus{ID: "container-1", Running: false, ExitCode: 2})
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err == nil {
@@ -194,21 +194,21 @@ func TestReconcileAssignedTaskReportsPullAndCreateFailures(t *testing.T) {
 	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
 	tests := []struct {
 		name         string
-		runtime      *fakeRuntime
+		runtime      *orchdocker.FakeRuntime
 		wantCalls    []string
 		wantReason   string
 		wantStatuses []types.TaskStatus
 	}{
 		{
 			name:         "pull failure",
-			runtime:      &fakeRuntime{pullErr: errors.New("pull failed")},
+			runtime:      orchdocker.NewFakeRuntime(orchdocker.WithFakePullFailure(errors.New("pull failed"))),
 			wantCalls:    []string{"list", "pull:nginx:1.27", "list"},
 			wantReason:   "pull failed",
 			wantStatuses: []types.TaskStatus{types.TaskPulling, types.TaskFailed},
 		},
 		{
 			name:         "create failure",
-			runtime:      &fakeRuntime{createErr: errors.New("port is already allocated")},
+			runtime:      orchdocker.NewFakeRuntime(orchdocker.WithFakeCreateFailure(errors.New("port is already allocated"))),
 			wantCalls:    []string{"list", "pull:nginx:1.27", "create:" + string(taskID), "list"},
 			wantReason:   "port is already allocated",
 			wantStatuses: []types.TaskStatus{types.TaskPulling, types.TaskFailed},
@@ -232,8 +232,8 @@ func TestReconcileAssignedTaskReportsPullAndCreateFailures(t *testing.T) {
 			if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err == nil {
 				t.Fatalf("expected task execution error")
 			}
-			if !equalStrings(tt.runtime.calls, tt.wantCalls) {
-				t.Fatalf("expected runtime calls %#v, got %#v", tt.wantCalls, tt.runtime.calls)
+			if !equalStrings(tt.runtime.OperationStrings(), tt.wantCalls) {
+				t.Fatalf("expected runtime calls %#v, got %#v", tt.wantCalls, tt.runtime.OperationStrings())
 			}
 			if !equalStatuses(client.statuses, tt.wantStatuses) {
 				t.Fatalf("expected statuses %#v, got %#v", tt.wantStatuses, client.statuses)
@@ -249,15 +249,15 @@ func TestReconcileRemovesUnassignedManagedContainers(t *testing.T) {
 	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
 	staleTaskID := types.TaskID("00000000-0000-4000-8000-000000000004")
 	client := &fakeAgentClient{}
-	runtime := &fakeRuntime{
-		managed: []orchdocker.ContainerStatus{{
-			ID: orchdocker.ContainerID("stale-container"),
-			Labels: map[string]string{
-				orchdocker.TaskIDLabel: string(staleTaskID),
-				orchdocker.NodeIDLabel: string(nodeID),
-			},
-		}},
-	}
+	runtime := orchdocker.NewFakeRuntime()
+	runtime.AddContainer(orchdocker.ContainerStatus{
+		ID: orchdocker.ContainerID("stale-container"),
+		Labels: map[string]string{
+			orchdocker.ManagedLabel: "true",
+			orchdocker.TaskIDLabel:  string(staleTaskID),
+			orchdocker.NodeIDLabel:  string(nodeID),
+		},
+	})
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
@@ -265,8 +265,8 @@ func TestReconcileRemovesUnassignedManagedContainers(t *testing.T) {
 	}
 
 	wantRuntimeCalls := []string{"list", "stop:stale-container", "remove:stale-container"}
-	if !equalStrings(runtime.calls, wantRuntimeCalls) {
-		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.calls)
+	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
 	}
 	wantStatuses := []types.TaskStatus{types.TaskRemoved}
 	if !equalStatuses(client.statuses, wantStatuses) {
@@ -291,7 +291,7 @@ func TestReconcileRemovesAssignedStoppedTask(t *testing.T) {
 			},
 		}},
 	}
-	runtime := &fakeRuntime{}
+	runtime := orchdocker.NewFakeRuntime()
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
@@ -299,8 +299,8 @@ func TestReconcileRemovesAssignedStoppedTask(t *testing.T) {
 	}
 
 	wantRuntimeCalls := []string{"stop:container-1", "remove:container-1", "list"}
-	if !equalStrings(runtime.calls, wantRuntimeCalls) {
-		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.calls)
+	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
 	}
 	wantStatuses := []types.TaskStatus{types.TaskRemoved}
 	if !equalStatuses(client.statuses, wantStatuses) {
@@ -331,9 +331,8 @@ func TestReconcileAssignedTaskReportsHealthAfterThresholds(t *testing.T) {
 		},
 	}
 	client := &fakeAgentClient{tasks: []api.AgentTask{task}}
-	runtime := &fakeRuntime{inspect: map[orchdocker.ContainerID]orchdocker.ContainerStatus{
-		"container-1": {ID: "container-1", Running: true},
-	}}
+	runtime := orchdocker.NewFakeRuntime()
+	runtime.AddContainer(orchdocker.ContainerStatus{ID: "container-1", Running: true})
 	checker := &fakeHealthChecker{results: []bool{true, true, false, false}}
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).
 		WithRuntime(runtime).
@@ -359,16 +358,15 @@ func TestReconcileAssignedTaskReportsHealthAfterThresholds(t *testing.T) {
 }
 
 func TestLogHandlerStopsOnCancellation(t *testing.T) {
-	runtime := &fakeRuntime{
-		managed: []orchdocker.ContainerStatus{{
-			ID: "container-1",
-			Labels: map[string]string{
-				orchdocker.TaskIDLabel: "task-1",
-			},
-		}},
-		logStarted: make(chan struct{}),
-		logBlock:   true,
-	}
+	logStarted := make(chan struct{})
+	runtime := orchdocker.NewFakeRuntime(orchdocker.WithFakeLogBlock(logStarted))
+	runtime.AddContainer(orchdocker.ContainerStatus{
+		ID: "container-1",
+		Labels: map[string]string{
+			orchdocker.ManagedLabel: "true",
+			orchdocker.TaskIDLabel:  "task-1",
+		},
+	})
 	handler := NewLogHandler(runtime, "secret", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/v1/agent/logs?task_id=task-1&follow=true", nil).WithContext(ctx)
@@ -380,7 +378,7 @@ func TestLogHandlerStopsOnCancellation(t *testing.T) {
 		close(done)
 	}()
 
-	<-runtime.logStarted
+	<-logStarted
 	cancel()
 	select {
 	case <-done:
@@ -391,7 +389,7 @@ func TestLogHandlerStopsOnCancellation(t *testing.T) {
 
 func TestLogHandlerExposesMetrics(t *testing.T) {
 	agentMetrics := metrics.NewAgent()
-	handler := NewLogHandler(&fakeRuntime{}, "secret", slog.New(slog.NewTextHandler(io.Discard, nil)), WithMetricsHandler(agentMetrics.Handler()))
+	handler := NewLogHandler(orchdocker.NewFakeRuntime(), "secret", slog.New(slog.NewTextHandler(io.Discard, nil)), WithMetricsHandler(agentMetrics.Handler()))
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -435,90 +433,6 @@ func (c *fakeAgentClient) ReportTaskStatus(_ context.Context, taskID types.TaskI
 		ContainerID:   req.ContainerID,
 		FailureReason: req.FailureReason,
 	}, nil
-}
-
-type fakeRuntime struct {
-	calls      []string
-	createdID  orchdocker.ContainerID
-	managed    []orchdocker.ContainerStatus
-	inspect    map[orchdocker.ContainerID]orchdocker.ContainerStatus
-	inspectErr error
-	listErr    error
-	pullErr    error
-	createErr  error
-	logStarted chan struct{}
-	logBlock   bool
-}
-
-func (r *fakeRuntime) PullImage(_ context.Context, image string, _ *orchdocker.RegistryAuth) error {
-	r.calls = append(r.calls, "pull:"+image)
-	return r.pullErr
-}
-
-func (r *fakeRuntime) CreateContainer(_ context.Context, spec orchdocker.ContainerSpec) (orchdocker.ContainerID, error) {
-	r.calls = append(r.calls, "create:"+spec.TaskID)
-	if r.createErr != nil {
-		return "", r.createErr
-	}
-	return r.createdID, nil
-}
-
-func (r *fakeRuntime) StartContainer(_ context.Context, id orchdocker.ContainerID) error {
-	r.calls = append(r.calls, "start:"+string(id))
-	return nil
-}
-
-func (r *fakeRuntime) StopContainer(_ context.Context, id orchdocker.ContainerID, _ time.Duration) error {
-	r.calls = append(r.calls, "stop:"+string(id))
-	return nil
-}
-
-func (r *fakeRuntime) RemoveContainer(_ context.Context, id orchdocker.ContainerID, _ bool) error {
-	r.calls = append(r.calls, "remove:"+string(id))
-	return nil
-}
-
-func (r *fakeRuntime) InspectContainer(_ context.Context, id orchdocker.ContainerID) (orchdocker.ContainerStatus, error) {
-	r.calls = append(r.calls, "inspect:"+string(id))
-	if r.inspectErr != nil {
-		return orchdocker.ContainerStatus{}, r.inspectErr
-	}
-	if r.inspect == nil {
-		return orchdocker.ContainerStatus{}, errFakeNotFound{}
-	}
-	status, ok := r.inspect[id]
-	if !ok {
-		return orchdocker.ContainerStatus{}, errFakeNotFound{}
-	}
-	return status, nil
-}
-
-func (r *fakeRuntime) ListManagedContainers(_ context.Context, _ map[string]string) ([]orchdocker.ContainerStatus, error) {
-	r.calls = append(r.calls, "list")
-	if r.listErr != nil {
-		return nil, r.listErr
-	}
-	return r.managed, nil
-}
-
-func (r *fakeRuntime) StreamLogs(context.Context, orchdocker.ContainerID, orchdocker.LogOptions) (<-chan orchdocker.LogLine, <-chan error) {
-	lines := make(chan orchdocker.LogLine)
-	errs := make(chan error)
-	if r.logStarted != nil {
-		close(r.logStarted)
-	}
-	if r.logBlock {
-		return lines, errs
-	}
-	close(lines)
-	close(errs)
-	return lines, errs
-}
-
-type errFakeNotFound struct{}
-
-func (errFakeNotFound) Error() string {
-	return "not found"
 }
 
 var errDockerUnavailable = errors.New("docker unavailable")

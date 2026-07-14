@@ -4,14 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -27,7 +25,7 @@ import (
 )
 
 func TestOrchestratorMVPE2EWithFakeRuntime(t *testing.T) {
-	runOrchestratorMVP(t, newFakeRuntime())
+	runOrchestratorMVP(t, orchdocker.NewFakeRuntime())
 }
 
 func TestOrchestratorMVPE2EWithRealDocker(t *testing.T) {
@@ -225,150 +223,6 @@ func waitFor(t *testing.T, name string, condition func() bool) {
 		}
 	}
 }
-
-type fakeRuntime struct {
-	mu         sync.Mutex
-	next       int
-	containers map[orchdocker.ContainerID]orchdocker.ContainerStatus
-	byTask     map[string]orchdocker.ContainerID
-	logs       map[orchdocker.ContainerID][]orchdocker.LogLine
-}
-
-func newFakeRuntime() *fakeRuntime {
-	return &fakeRuntime{
-		containers: make(map[orchdocker.ContainerID]orchdocker.ContainerStatus),
-		byTask:     make(map[string]orchdocker.ContainerID),
-		logs:       make(map[orchdocker.ContainerID][]orchdocker.LogLine),
-	}
-}
-
-func (r *fakeRuntime) PullImage(context.Context, string, *orchdocker.RegistryAuth) error {
-	return nil
-}
-
-func (r *fakeRuntime) CreateContainer(_ context.Context, spec orchdocker.ContainerSpec) (orchdocker.ContainerID, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if id := r.byTask[spec.TaskID]; id != "" {
-		return id, nil
-	}
-	r.next++
-	id := orchdocker.ContainerID(fmt.Sprintf("fake-container-%d", r.next))
-	r.byTask[spec.TaskID] = id
-	r.containers[id] = orchdocker.ContainerStatus{
-		ID:        id,
-		Name:      spec.Name,
-		Image:     spec.Image,
-		State:     "created",
-		Labels:    managedLabels(spec),
-		CreatedAt: time.Now().UTC(),
-	}
-	return id, nil
-}
-
-func (r *fakeRuntime) StartContainer(_ context.Context, id orchdocker.ContainerID) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	status, ok := r.containers[id]
-	if !ok {
-		return fmt.Errorf("container %s not found", id)
-	}
-	status.State = "running"
-	status.Running = true
-	status.StartedAt = time.Now().UTC()
-	r.containers[id] = status
-	r.logs[id] = append(r.logs[id], orchdocker.LogLine{Stream: "stdout", Line: "started " + string(id), Timestamp: status.StartedAt})
-	return nil
-}
-
-func (r *fakeRuntime) StopContainer(_ context.Context, id orchdocker.ContainerID, _ time.Duration) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	status, ok := r.containers[id]
-	if !ok {
-		return nil
-	}
-	status.State = "exited"
-	status.Running = false
-	status.FinishedAt = time.Now().UTC()
-	r.containers[id] = status
-	return nil
-}
-
-func (r *fakeRuntime) RemoveContainer(_ context.Context, id orchdocker.ContainerID, _ bool) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	status, ok := r.containers[id]
-	if !ok {
-		return nil
-	}
-	delete(r.byTask, status.Labels[orchdocker.TaskIDLabel])
-	delete(r.containers, id)
-	return nil
-}
-
-func (r *fakeRuntime) InspectContainer(_ context.Context, id orchdocker.ContainerID) (orchdocker.ContainerStatus, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	status, ok := r.containers[id]
-	if !ok {
-		return orchdocker.ContainerStatus{}, fmt.Errorf("container %s not found", id)
-	}
-	return status, nil
-}
-
-func (r *fakeRuntime) ListManagedContainers(_ context.Context, labels map[string]string) ([]orchdocker.ContainerStatus, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	statuses := make([]orchdocker.ContainerStatus, 0, len(r.containers))
-	for _, status := range r.containers {
-		if !matchesLabels(status, labels) {
-			continue
-		}
-		statuses = append(statuses, status)
-	}
-	return statuses, nil
-}
-
-func (r *fakeRuntime) StreamLogs(_ context.Context, id orchdocker.ContainerID, _ orchdocker.LogOptions) (<-chan orchdocker.LogLine, <-chan error) {
-	lines := make(chan orchdocker.LogLine)
-	errs := make(chan error, 1)
-	r.mu.Lock()
-	logs := append([]orchdocker.LogLine(nil), r.logs[id]...)
-	r.mu.Unlock()
-	go func() {
-		defer close(lines)
-		defer close(errs)
-		for _, line := range logs {
-			lines <- line
-		}
-	}()
-	return lines, errs
-}
-
-func managedLabels(spec orchdocker.ContainerSpec) map[string]string {
-	return map[string]string{
-		orchdocker.ManagedLabel:   "true",
-		orchdocker.ServiceIDLabel: spec.ServiceID,
-		orchdocker.TaskIDLabel:    spec.TaskID,
-		orchdocker.NodeIDLabel:    spec.NodeID,
-		orchdocker.VersionLabel:   fmt.Sprintf("%d", spec.Version),
-	}
-}
-
-func matchesLabels(status orchdocker.ContainerStatus, labels map[string]string) bool {
-	if status.Labels[orchdocker.ManagedLabel] != "true" {
-		return false
-	}
-	for key, value := range labels {
-		if status.Labels[key] != value {
-			return false
-		}
-	}
-	return true
-}
-
-var _ orchdocker.Runtime = (*fakeRuntime)(nil)
 
 func TestPostgresMigrationsE2E(t *testing.T) {
 	databaseURL := os.Getenv("ORCH_E2E_DATABASE_URL")

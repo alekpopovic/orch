@@ -40,6 +40,8 @@ Fast unit tests must run with:
 go test ./...
 ```
 
+Most controller, agent, and E2E tests use `internal/docker.FakeRuntime`. It implements the same runtime interface as the Docker Engine adapter, records operations for assertions, supports deterministic logs, and can inject pull/create/start/health failures or containers that exit immediately after start.
+
 Integration tests that require PostgreSQL are skipped unless `ORCH_INTEGRATION_DATABASE_URL` is set:
 
 ```sh
@@ -56,6 +58,12 @@ ORCH_DOCKER_INTEGRATION=1 go test ./internal/docker -run Integration
 ```
 
 These tests talk to the Docker daemon configured by the standard Docker environment variables such as `DOCKER_HOST`, `DOCKER_TLS_VERIFY`, and `DOCKER_CERT_PATH`.
+
+The full orchestrator E2E defaults to `FakeRuntime`. Run the real Docker variant explicitly:
+
+```sh
+ORCH_E2E_DOCKER=1 go test ./internal/e2e -run RealDocker
+```
 
 ## Docker Daemon Access
 
