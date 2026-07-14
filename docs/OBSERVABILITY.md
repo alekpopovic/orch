@@ -110,6 +110,19 @@ open http://localhost:9090
 
 The local monitoring profile starts Prometheus and a PostgreSQL exporter. It loads `deploy/monitoring/prometheus.yml` and `deploy/monitoring/prometheus-rules.yaml`.
 
+## Grafana Dashboard
+
+A starter dashboard is available at `deploy/monitoring/grafana/orchestrator-dashboard.json`.
+
+Import it in Grafana:
+
+1. Create or select a Prometheus datasource that can query the `orch-server`, `orch-agent`, and PostgreSQL exporter metrics.
+2. In Grafana, choose **Dashboards → New → Import**.
+3. Upload `deploy/monitoring/grafana/orchestrator-dashboard.json`.
+4. Select the Prometheus datasource in the dashboard variable prompt.
+
+The dashboard is intentionally generic and uses a datasource variable named `datasource`. It avoids service IDs, task IDs, image names, node labels, and user-controlled labels in PromQL grouping. Current task and node panels use available counters/scrape status as proxies until current-state gauges are added.
+
 ## Recommended Alerts
 
 Recommended alert rules live in `deploy/monitoring/prometheus-rules.yaml`.

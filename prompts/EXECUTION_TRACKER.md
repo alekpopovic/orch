@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `47-prometheus-alert-rules.md`
-- Last matching commit: `same commit: Add Prometheus alert rules`
-- Completed prompt range: `00` through `47`
-- Next prompt to execute: `48-grafana-dashboard-json.md`
+- Last executed prompt: `48-grafana-dashboard-json.md`
+- Last matching commit: `same commit: Add Grafana dashboard`
+- Completed prompt range: `00` through `48`
+- Next prompt to execute: `49-backup-and-restore-runbook.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
