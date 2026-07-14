@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `33-fake-runtime-for-deterministic-tests.md`
-- Last matching commit: `c69f9ff Add deterministic fake container runtime`
-- Completed prompt range: `00` through `33`
-- Next prompt to execute: `34-port-allocation-and-collision-handling.md`
+- Last executed prompt: `34-port-allocation-and-collision-handling.md`
+- Last matching commit: `3bfcef8 Add host port allocation awareness`
+- Completed prompt range: `00` through `34`
+- Next prompt to execute: `35-basic-service-discovery.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
