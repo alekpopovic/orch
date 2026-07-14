@@ -935,6 +935,7 @@ func (s *MemoryService) DeleteService(ctx context.Context, id types.ServiceID) e
 		return fmt.Errorf("%w: %v", store.ErrInvalidState, err)
 	}
 	now := s.now()
+	s.cancelActiveDeploymentsLocked(id, now, "service deletion requested")
 	service.Status = types.ServiceDeleting
 	service.UpdatedAt = now
 	s.services[id] = service
@@ -971,7 +972,10 @@ func (s *MemoryService) ScaleService(ctx context.Context, id types.ServiceID, re
 		return types.Service{}, store.ErrNotFound
 	}
 	if service.Status != "" && service.Status != types.ServiceActive {
-		return types.Service{}, fmt.Errorf("%w: service is %s", store.ErrInvalidState, service.Status)
+		return types.Service{}, operationConflict("delete")
+	}
+	if active := s.activeDeploymentLocked(id); active.ID != "" {
+		return types.Service{}, operationConflict(string(operationForDeployment(active)))
 	}
 	service.Spec.Replicas = replicas
 	service.UpdatedAt = s.now()
@@ -1007,7 +1011,16 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 		return types.Deployment{}, store.ErrNotFound
 	}
 	if service.Status != "" && service.Status != types.ServiceActive {
-		return types.Deployment{}, fmt.Errorf("%w: service is %s", store.ErrInvalidState, service.Status)
+		return types.Deployment{}, operationConflict("delete")
+	}
+	if active := s.activeDeploymentLocked(id); active.ID != "" {
+		if operationForDeployment(active) == serviceOperationRollout &&
+			service.Spec.Image == spec.Image &&
+			active.MaxUnavailable == spec.MaxUnavailable &&
+			active.MaxSurge == spec.MaxSurge {
+			return active, nil
+		}
+		return types.Deployment{}, operationConflict(string(operationForDeployment(active)))
 	}
 	now := s.now()
 	fromVersion := service.DeploymentVersion
@@ -1086,10 +1099,13 @@ func (s *MemoryService) RollbackService(ctx context.Context, id types.ServiceID)
 		return types.Deployment{}, store.ErrNotFound
 	}
 	if service.Status != "" && service.Status != types.ServiceActive {
-		return types.Deployment{}, fmt.Errorf("%w: service is %s", store.ErrInvalidState, service.Status)
+		return types.Deployment{}, operationConflict("delete")
 	}
 	if active := s.activeRollbackLocked(id); active.ID != "" {
 		return active, nil
+	}
+	if active := s.activeDeploymentLocked(id); active.ID != "" {
+		return types.Deployment{}, operationConflict(string(operationForDeployment(active)))
 	}
 	targetVersion, targetSpec, ok := s.previousSuccessfulVersionLocked(service)
 	if !ok {
@@ -1784,15 +1800,43 @@ type memoryPortKey struct {
 }
 
 func (s *MemoryService) hasActiveDeploymentLocked(serviceID types.ServiceID) bool {
+	return s.activeDeploymentLocked(serviceID).ID != ""
+}
+
+func (s *MemoryService) activeDeploymentLocked(serviceID types.ServiceID) types.Deployment {
+	var latest types.Deployment
 	for _, deployment := range s.deployments {
-		if deployment.ServiceID != serviceID {
+		if deployment.ServiceID != serviceID || !isActiveDeploymentStatus(deployment.Status) {
 			continue
 		}
-		if deployment.Status == types.DeploymentPending || deployment.Status == types.DeploymentRunning {
-			return true
+		if latest.ID == "" || deployment.CreatedAt.After(latest.CreatedAt) || (deployment.CreatedAt.Equal(latest.CreatedAt) && deployment.ID > latest.ID) {
+			latest = deployment
 		}
 	}
-	return false
+	return latest
+}
+
+func (s *MemoryService) cancelActiveDeploymentsLocked(serviceID types.ServiceID, timestamp time.Time, reason string) {
+	deploymentIDs := make([]types.DeploymentID, 0)
+	for _, deployment := range s.deployments {
+		if deployment.ServiceID != serviceID || !isActiveDeploymentStatus(deployment.Status) {
+			continue
+		}
+		deploymentIDs = append(deploymentIDs, deployment.ID)
+	}
+	slices.Sort(deploymentIDs)
+	for _, id := range deploymentIDs {
+		deployment := s.deployments[id]
+		deployment.Status = types.DeploymentFailed
+		deployment.UpdatedAt = timestamp
+		deployment.CompletedAt = timestamp
+		s.deployments[id] = deployment
+		s.appendEventLocked(events.TypeRolloutStatusChanged, types.EventWarning, "controlplane", reason, "service", string(serviceID), timestamp)
+	}
+}
+
+func isActiveDeploymentStatus(status types.DeploymentStatus) bool {
+	return status == types.DeploymentPending || status == types.DeploymentRunning || status == types.DeploymentRollingBack
 }
 
 func (s *MemoryService) maybeFinalizeServiceDeletionLocked(serviceID types.ServiceID, timestamp time.Time) {
@@ -1831,6 +1875,24 @@ func (s *MemoryService) activeRollbackLocked(serviceID types.ServiceID) types.De
 		}
 	}
 	return latest
+}
+
+type serviceOperation string
+
+const (
+	serviceOperationRollout  serviceOperation = "rollout"
+	serviceOperationRollback serviceOperation = "rollback"
+)
+
+func operationForDeployment(deployment types.Deployment) serviceOperation {
+	if deployment.ToVersion < deployment.FromVersion || deployment.Status == types.DeploymentRollingBack {
+		return serviceOperationRollback
+	}
+	return serviceOperationRollout
+}
+
+func operationConflict(operation string) error {
+	return fmt.Errorf("%w: operation already in progress: %s", store.ErrConflict, operation)
 }
 
 func (s *MemoryService) previousSuccessfulVersionLocked(service types.Service) (int64, types.ServiceSpec, bool) {

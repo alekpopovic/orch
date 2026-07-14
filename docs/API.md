@@ -133,6 +133,8 @@ Rollback:
 curl -X POST http://localhost:8080/v1/services/{service_id}/rollback
 ```
 
+Concurrent service operations are guarded per service. Active rollout/rollback blocks scale, rollout, and rollback with `409 conflict` and a message containing `operation already in progress`. Repeating the same in-flight rollout with the same image and limits returns the existing deployment. Delete wins over rollout/rollback/scale by moving the service to `deleting` and cancelling active deployments.
+
 Resource values are normalized to CPU millicores and memory bytes. The CLI deploy parser accepts strings such as `500m`, `2.5`, `512Mi`, and `1Gi`.
 
 ## Secrets

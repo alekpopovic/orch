@@ -23,6 +23,18 @@ curl -X POST http://localhost:8080/v1/services/{service_id}/rollback
 
 `maxUnavailable` and `maxSurge` must not both be zero.
 
+## Operation Locking
+
+Rollout, rollback, scale, and delete are guarded by a service-level operation lock:
+
+- A second rollout conflicts while a different rollout is active.
+- Repeating the same active rollout returns the existing deployment.
+- Rollback conflicts while a rollout is active; forced rollback is not exposed yet.
+- Scale conflicts while rollout or rollback is active.
+- Delete wins and cancels active deployments before moving the service to `deleting`.
+
+Conflicts are returned as `409 conflict` with `operation already in progress`.
+
 ## Deployment Statuses
 
 - `pending`: accepted but not yet processed by the controller.
@@ -71,5 +83,6 @@ Status-change events are emitted only when the deployment status actually change
 
 - No manual pause/resume endpoint yet.
 - No automatic rollback on failed rollout.
+- No forced rollback over an active rollout endpoint yet.
 - No progress deadline.
 - No transaction retry loop for serialization conflicts or deadlocks yet.
