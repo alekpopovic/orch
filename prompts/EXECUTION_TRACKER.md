@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `28-mvp-release-preparation.md`
-- Last matching commit: `990d864 Prepare v0.1.0 MVP release`
-- Completed prompt range: `00` through `28`
-- Next prompt to execute: `29-freeze-api-and-state-machine-contract.md`
+- Last executed prompt: `29-freeze-api-and-state-machine-contract.md`
+- Last matching commit: `6526b47 Freeze lifecycle state machine contracts`
+- Completed prompt range: `00` through `29`
+- Next prompt to execute: `30-transaction-boundaries-audit.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
