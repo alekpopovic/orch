@@ -71,6 +71,8 @@ Recommended controls:
 
 Agents run HTTP and TCP healthchecks from the node. To avoid service specs causing arbitrary host-local probes, healthchecks are only performed against published TCP ports assigned to the task. A configured container port is resolved to the assigned published host port before probing. Unassigned, unpublished, or UDP-only ports are skipped.
 
+HTTP healthchecks accept only a scheme and path, not arbitrary URLs. The agent constructs the target from task networking data, blocks redirects away from the original endpoint, and limits response body reads.
+
 ## Container Security Policy
 
 Services may set `security_context` / `securityContext` fields for runtime hardening, including an explicit non-root `user`, read-only root filesystem, Linux capability drops/additions, host network, host PID, and host path mounts.

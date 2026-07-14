@@ -13,6 +13,7 @@ Example deploy YAML:
 ```yaml
 healthcheck:
   type: http
+  scheme: http
   path: /health
   interval: 10s
   timeout: 2s
@@ -26,7 +27,7 @@ The server includes healthcheck metadata in task poll responses. For each runnin
 
 1. The agent waits for the configured interval plus jitter.
 2. It verifies that the healthcheck port matches one of the task's assigned published TCP container or host ports.
-3. It performs the HTTP or TCP check against `127.0.0.1:<published-port>` with context cancellation and timeout.
+3. It performs the HTTP or TCP check against `<scheme>://127.0.0.1:<published-port><path>` with context cancellation and timeout.
 4. If the service specified a container port, the agent resolves it to the assigned published host port before probing.
 5. If the healthcheck port is not assigned, published, and TCP, the probe is skipped instead of probing an arbitrary host-local port.
 6. It tracks consecutive successes and failures in memory.
@@ -34,6 +35,8 @@ The server includes healthcheck metadata in task poll responses. For each runnin
 8. It reports `unhealthy` after `unhealthyThreshold` consecutive failures.
 
 The agent does not restart containers because of health failures.
+
+HTTP healthchecks never accept arbitrary full URLs. `path` must begin with a single `/`; `scheme` may be `http` or `https` and defaults to `http`. The checker blocks redirects away from the originally constructed endpoint, including redirects to metadata services or external destinations, and reads at most 64 KiB of response body.
 
 ## Server Behavior
 

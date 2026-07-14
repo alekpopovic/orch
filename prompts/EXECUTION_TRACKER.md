@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `52-container-security-policy.md`
-- Last matching commit: `same commit: Add container security policy`
-- Completed prompt range: `00` through `52`
-- Next prompt to execute: `53-healthcheck-ssrf-protection.md`
+- Last executed prompt: `53-healthcheck-ssrf-protection.md`
+- Last matching commit: `same commit: Harden healthcheck SSRF protection`
+- Completed prompt range: `00` through `53`
+- Next prompt to execute: `54-autoscaling-design-doc.md`
 - Updated: `2026-07-14`
 
 ## Update Rule

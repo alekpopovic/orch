@@ -85,6 +85,7 @@ type DeployHostPathMount struct {
 
 type DeployHealthcheck struct {
 	Type               string `yaml:"type"`
+	Scheme             string `yaml:"scheme"`
 	Path               string `yaml:"path"`
 	Interval           string `yaml:"interval"`
 	Timeout            string `yaml:"timeout"`
@@ -303,6 +304,7 @@ func (h DeployHealthcheck) toDomain() (types.Healthcheck, error) {
 
 	check := types.Healthcheck{
 		Type:               types.HealthcheckType(strings.TrimSpace(h.Type)),
+		Scheme:             strings.TrimSpace(h.Scheme),
 		Path:               strings.TrimSpace(h.Path),
 		Interval:           interval,
 		Timeout:            timeout,

@@ -186,6 +186,24 @@ func TestServiceSpecValidate(t *testing.T) {
 			wantErr: "healthcheck path is required for HTTP checks",
 		},
 		{
+			name: "http healthcheck full URL rejected",
+			spec: func() ServiceSpec {
+				spec := cloneServiceSpec(valid)
+				spec.Healthcheck.Path = "http://169.254.169.254/latest"
+				return spec
+			}(),
+			wantErr: "healthcheck path must not be a full URL",
+		},
+		{
+			name: "http healthcheck invalid scheme",
+			spec: func() ServiceSpec {
+				spec := cloneServiceSpec(valid)
+				spec.Healthcheck.Scheme = "ftp"
+				return spec
+			}(),
+			wantErr: "healthcheck scheme must be http or https",
+		},
+		{
 			name: "invalid restart policy",
 			spec: func() ServiceSpec {
 				spec := cloneServiceSpec(valid)

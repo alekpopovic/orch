@@ -35,6 +35,7 @@ securityContext:
     - NET_RAW
 healthcheck:
   type: http
+  scheme: http
   path: /health
   interval: 10s
   timeout: 2s
@@ -74,7 +75,7 @@ placement:
 	if spec.SecurityContext.User != "1000:1000" || !spec.SecurityContext.ReadOnlyRootFilesystem || len(spec.SecurityContext.CapDrop) != 1 {
 		t.Fatalf("unexpected security context %#v", spec.SecurityContext)
 	}
-	if spec.Healthcheck == nil || spec.Healthcheck.Port != 8080 || spec.Healthcheck.Path != "/health" {
+	if spec.Healthcheck == nil || spec.Healthcheck.Port != 8080 || spec.Healthcheck.Path != "/health" || spec.Healthcheck.Scheme != "http" {
 		t.Fatalf("unexpected healthcheck %#v", spec.Healthcheck)
 	}
 	if spec.Healthcheck.HealthyThreshold != 2 || spec.Healthcheck.UnhealthyThreshold != 4 {

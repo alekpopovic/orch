@@ -3,8 +3,10 @@ package health
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -15,6 +17,8 @@ const (
 	NoneProbe ProbeType = "none"
 	HTTPProbe ProbeType = "http"
 	TCPProbe  ProbeType = "tcp"
+
+	MaxHTTPResponseBodyBytes int64 = 64 * 1024
 )
 
 type Check struct {
@@ -72,16 +76,36 @@ func (c *DefaultChecker) checkHTTP(ctx context.Context, target string, timeout t
 	if err != nil {
 		return Result{}, fmt.Errorf("create healthcheck request: %w", err)
 	}
-	client := &http.Client{Timeout: timeout}
+	client := &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: sameOriginRedirect(req.URL),
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return Result{Healthy: false, CheckedAt: c.now(), Message: err.Error()}, nil
 	}
 	defer resp.Body.Close()
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, MaxHTTPResponseBodyBytes)); err != nil {
+		return Result{Healthy: false, CheckedAt: c.now(), Message: err.Error()}, nil
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusBadRequest {
 		return Result{Healthy: false, CheckedAt: c.now(), Message: resp.Status}, nil
 	}
 	return Result{Healthy: true, CheckedAt: c.now(), Message: resp.Status}, nil
+}
+
+func sameOriginRedirect(origin *url.URL) func(*http.Request, []*http.Request) error {
+	originScheme := strings.ToLower(origin.Scheme)
+	originHost := strings.ToLower(origin.Host)
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if strings.ToLower(req.URL.Scheme) != originScheme || strings.ToLower(req.URL.Host) != originHost {
+			return fmt.Errorf("healthcheck redirect blocked: %s", req.URL.Redacted())
+		}
+		return nil
+	}
 }
 
 func (c *DefaultChecker) checkTCP(ctx context.Context, target string, timeout time.Duration) (Result, error) {

@@ -550,7 +550,11 @@ func healthProbe(check types.Healthcheck, ports []types.Port) (health.Check, boo
 		if !strings.HasPrefix(path, "/") {
 			path = "/" + path
 		}
-		return health.Check{Type: health.HTTPProbe, Target: "http://" + target + path, Timeout: timeout}, true
+		scheme := strings.ToLower(strings.TrimSpace(check.Scheme))
+		if scheme == "" {
+			scheme = "http"
+		}
+		return health.Check{Type: health.HTTPProbe, Target: scheme + "://" + target + path, Timeout: timeout}, true
 	case types.HealthcheckTCP:
 		return health.Check{Type: health.TCPProbe, Target: target, Timeout: timeout}, true
 	default:

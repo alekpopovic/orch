@@ -67,4 +67,6 @@ Validate locally without creating a service:
 orch validate deployments/examples/http-api.yaml
 ```
 
+Healthcheck `path` must start with a single `/` and must not be a full URL. Healthcheck `scheme` defaults to `http` and may be `http` or `https`.
+
 The CLI rejects unknown YAML fields, invalid ports, invalid resources, invalid healthcheck settings, invalid placement labels, invalid routes, invalid security context paths or capabilities, and malformed secret references. The server additionally applies the cluster container security policy before creating a service.

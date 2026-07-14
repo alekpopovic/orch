@@ -613,6 +613,15 @@ func TestHealthProbeRequiresAssignedPort(t *testing.T) {
 	if probe.Target != "http://127.0.0.1:18080/health" {
 		t.Fatalf("expected probe to use published port, got %q", probe.Target)
 	}
+
+	check.Scheme = "https"
+	probe, ok = healthProbe(check, ports)
+	if !ok {
+		t.Fatalf("expected https health probe for assigned container port")
+	}
+	if probe.Target != "https://127.0.0.1:18080/health" {
+		t.Fatalf("expected probe to use configured scheme, got %q", probe.Target)
+	}
 }
 
 func TestLogHandlerStopsOnCancellation(t *testing.T) {

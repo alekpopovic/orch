@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,6 +40,93 @@ func TestHTTPHealthCheck(t *testing.T) {
 				t.Fatalf("expected healthy=%v, got %v", tt.wantHealthy, result.Healthy)
 			}
 		})
+	}
+}
+
+func TestHTTPHealthCheckBlocksExternalRedirect(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			t.Fatalf("expected /health path, got %q", r.URL.Path)
+		}
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data", http.StatusFound)
+	}))
+	defer server.Close()
+
+	result, err := NewChecker().Check(context.Background(), Check{
+		Type:    HTTPProbe,
+		Target:  server.URL + "/health",
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("check redirect: %v", err)
+	}
+	if result.Healthy {
+		t.Fatalf("expected external redirect to be unhealthy")
+	}
+	if !strings.Contains(result.Message, "redirect blocked") {
+		t.Fatalf("expected redirect block message, got %q", result.Message)
+	}
+}
+
+func TestHTTPHealthCheckAllowsSameOriginRedirect(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			http.Redirect(w, r, "/ready", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	result, err := NewChecker().Check(context.Background(), Check{
+		Type:    HTTPProbe,
+		Target:  server.URL + "/health",
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("check redirect: %v", err)
+	}
+	if !result.Healthy {
+		t.Fatalf("expected same-origin redirect to be healthy: %#v", result)
+	}
+}
+
+func TestHTTPHealthCheckLimitsHugeResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", int(MaxHTTPResponseBodyBytes*2))))
+	}))
+	defer server.Close()
+
+	result, err := NewChecker().Check(context.Background(), Check{
+		Type:    HTTPProbe,
+		Target:  server.URL + "/health",
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("check huge body: %v", err)
+	}
+	if !result.Healthy {
+		t.Fatalf("expected huge body with 200 status to remain healthy: %#v", result)
+	}
+}
+
+func TestHTTPHealthCheckTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	result, err := NewChecker().Check(context.Background(), Check{
+		Type:    HTTPProbe,
+		Target:  server.URL + "/health",
+		Timeout: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("check timeout: %v", err)
+	}
+	if result.Healthy {
+		t.Fatalf("expected timeout to be unhealthy")
 	}
 }
 

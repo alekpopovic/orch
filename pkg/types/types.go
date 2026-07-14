@@ -532,6 +532,7 @@ func NormalizeServiceSpec(spec ServiceSpec, defaults ResourceDefaults) (ServiceS
 
 type Healthcheck struct {
 	Type               HealthcheckType `json:"type"`
+	Scheme             string          `json:"scheme,omitempty"`
 	Path               string          `json:"path,omitempty"`
 	Port               int             `json:"port"`
 	Interval           time.Duration   `json:"interval"`
@@ -550,8 +551,18 @@ func (check Healthcheck) Validate() error {
 	if check.Port < 1 || check.Port > 65535 {
 		return fmt.Errorf("healthcheck port must be between 1 and 65535")
 	}
-	if check.Type == HealthcheckHTTP && strings.TrimSpace(check.Path) == "" {
-		return fmt.Errorf("healthcheck path is required for HTTP checks")
+	if check.Type == HealthcheckHTTP {
+		if err := validateHealthcheckScheme(check.Scheme); err != nil {
+			return err
+		}
+		if err := validateHealthcheckPath(check.Path); err != nil {
+			return err
+		}
+	} else if strings.TrimSpace(check.Scheme) != "" {
+		return fmt.Errorf("healthcheck scheme is only valid for HTTP checks")
+	}
+	if check.Type == HealthcheckTCP && strings.TrimSpace(check.Path) != "" {
+		return fmt.Errorf("healthcheck path is only valid for HTTP checks")
 	}
 	if check.Interval < 0 {
 		return fmt.Errorf("healthcheck interval cannot be negative")
@@ -564,6 +575,33 @@ func (check Healthcheck) Validate() error {
 	}
 	if check.UnhealthyThreshold < 0 {
 		return fmt.Errorf("unhealthy threshold cannot be negative")
+	}
+	return nil
+}
+
+func validateHealthcheckScheme(scheme string) error {
+	scheme = strings.ToLower(strings.TrimSpace(scheme))
+	if scheme == "" || scheme == "http" || scheme == "https" {
+		return nil
+	}
+	return fmt.Errorf("healthcheck scheme must be http or https")
+}
+
+func validateHealthcheckPath(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("healthcheck path is required for HTTP checks")
+	}
+	if strings.Contains(path, "://") {
+		return fmt.Errorf("healthcheck path must not be a full URL")
+	}
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return fmt.Errorf("healthcheck path must start with a single /")
+	}
+	for _, char := range path {
+		if char < ' ' || char == 0x7f {
+			return fmt.Errorf("healthcheck path contains invalid characters")
+		}
 	}
 	return nil
 }
