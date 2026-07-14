@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -33,6 +34,7 @@ func TestRootCommandConstruction(t *testing.T) {
 		"rollout status",
 		"rollback",
 		"delete",
+		"endpoints",
 		"events",
 		"logs",
 	} {
@@ -172,6 +174,50 @@ func TestLogsCommandStreamsResolvedService(t *testing.T) {
 	}
 }
 
+func TestEndpointsCommandResolvesService(t *testing.T) {
+	client := &fakeClient{
+		services: []types.Service{{
+			ID:                "00000000-0000-4000-8000-000000000010",
+			Spec:              types.ServiceSpec{Name: "api", Image: "nginx", Replicas: 1},
+			DeploymentVersion: 1,
+		}},
+		endpoints: discovery.ServiceEndpoints{
+			ServiceID:   "00000000-0000-4000-8000-000000000010",
+			ServiceName: "api",
+			Endpoints: []discovery.Endpoint{{
+				ServiceName:    "api",
+				TaskID:         "00000000-0000-4000-8000-000000000011",
+				NodeID:         "00000000-0000-4000-8000-000000000001",
+				NodeAddress:    "10.0.0.10",
+				PublicHostPort: 18080,
+				ContainerPort:  8080,
+				Protocol:       types.PortTCP,
+				HealthStatus:   types.TaskHealthy,
+				ServiceVersion: 1,
+			}},
+		},
+	}
+	var out bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Out: &out,
+		Err: &bytes.Buffer{},
+		NewClient: func(string) (Client, error) {
+			return client, nil
+		},
+	})
+	cmd.SetArgs([]string{"--server", "http://server.example", "endpoints", "api", "--include-unhealthy"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute endpoints: %v", err)
+	}
+	if client.endpointServiceID != "00000000-0000-4000-8000-000000000010" || !client.endpointIncludeUnhealthy {
+		t.Fatalf("unexpected endpoint request id=%q include=%v", client.endpointServiceID, client.endpointIncludeUnhealthy)
+	}
+	if !strings.Contains(out.String(), "18080") || !strings.Contains(out.String(), "api") {
+		t.Fatalf("expected endpoint table output, got %q", out.String())
+	}
+}
+
 func TestEventsCommandFiltersByServiceName(t *testing.T) {
 	client := &fakeClient{
 		services: []types.Service{{
@@ -251,20 +297,23 @@ func TestRolloutStatusResolvesService(t *testing.T) {
 }
 
 type fakeClient struct {
-	services              []types.Service
-	created               types.Service
-	scaledID              string
-	scaledReplicas        int
-	rolloutID             string
-	rolloutImage          string
-	rolloutMaxUnavailable int
-	rolloutMaxSurge       int
-	rolloutStatusID       string
-	logServiceID          string
-	logTaskID             string
-	logFollow             bool
-	logTail               string
-	eventFilter           events.Filter
+	services                 []types.Service
+	created                  types.Service
+	scaledID                 string
+	scaledReplicas           int
+	rolloutID                string
+	rolloutImage             string
+	rolloutMaxUnavailable    int
+	rolloutMaxSurge          int
+	rolloutStatusID          string
+	logServiceID             string
+	logTaskID                string
+	logFollow                bool
+	logTail                  string
+	eventFilter              events.Filter
+	endpointServiceID        string
+	endpointIncludeUnhealthy bool
+	endpoints                discovery.ServiceEndpoints
 }
 
 func (f *fakeClient) ListNodes(context.Context) ([]types.Node, error) {
@@ -305,6 +354,12 @@ func (f *fakeClient) GetService(_ context.Context, id string) (types.Service, er
 		}
 	}
 	return types.Service{ID: types.ServiceID(id), Spec: types.ServiceSpec{Name: "api", Image: "nginx"}}, nil
+}
+
+func (f *fakeClient) GetServiceEndpoints(_ context.Context, id string, includeUnhealthy bool) (discovery.ServiceEndpoints, error) {
+	f.endpointServiceID = id
+	f.endpointIncludeUnhealthy = includeUnhealthy
+	return f.endpoints, nil
 }
 
 func (f *fakeClient) DeleteService(context.Context, string) error {

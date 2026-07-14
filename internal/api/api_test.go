@@ -275,6 +275,75 @@ func TestCreateService(t *testing.T) {
 	}
 }
 
+func TestServiceDiscoveryEndpointsFilterUnhealthyTasks(t *testing.T) {
+	controlPlane := controlplane.NewMemoryService()
+	handler := NewHandler(slog.Default(), controlPlane, WithBootstrapToken("secret"))
+	registered := registerTestNode(t, handler)
+	service, err := controlPlane.CreateService(context.Background(), types.ServiceSpec{
+		Name:     "api",
+		Image:    "nginx:1.27",
+		Replicas: 3,
+		Ports:    []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080}},
+		ResourceRequirements: types.ResourceRequirements{
+			Requests: types.Resources{CPU: 100, Memory: 128},
+			Limits:   types.Resources{CPU: 100, Memory: 128},
+		},
+		RestartPolicy: types.RestartPolicy{Condition: types.RestartNever},
+	})
+	if err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+	tasks, err := controlPlane.ListTasks(context.Background(), controlplane.TaskFilter{ServiceID: service.ID})
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 3 {
+		t.Fatalf("expected three assigned tasks, got %#v", tasks)
+	}
+	for i, status := range []types.TaskStatus{types.TaskRunning, types.TaskHealthy, types.TaskUnhealthy} {
+		if _, err := controlPlane.ReportTaskStatus(context.Background(), controlplane.TaskStatusReport{
+			TaskID:      tasks[i].ID,
+			NodeID:      registered.Node.ID,
+			Status:      status,
+			ContainerID: "container-" + string(rune('a'+i)),
+		}); err != nil {
+			t.Fatalf("report task status %s: %v", status, err)
+		}
+	}
+
+	rec := doRequest(t, handler, http.MethodGet, "/v1/services/"+string(service.ID)+"/endpoints", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var body ServiceEndpointsResponse
+	decodeResponse(t, rec, &body)
+	if body.ServiceName != "api" || len(body.Endpoints) != 2 {
+		t.Fatalf("expected two healthy endpoints for api, got %#v", body)
+	}
+	if body.Endpoints[0].NodeAddress != "10.0.0.10" || body.Endpoints[0].PublicHostPort == 0 {
+		t.Fatalf("expected node address and assigned public port, got %#v", body.Endpoints[0])
+	}
+
+	rec = doRequest(t, handler, http.MethodGet, "/v1/discovery/services/api?include_unhealthy=true", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	decodeResponse(t, rec, &body)
+	if len(body.Endpoints) != 3 {
+		t.Fatalf("expected unhealthy endpoint when requested, got %#v", body.Endpoints)
+	}
+
+	all := doRequest(t, handler, http.MethodGet, "/v1/discovery/services", nil)
+	if all.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, all.Code, all.Body.String())
+	}
+	var allBody DiscoveryServicesResponse
+	decodeResponse(t, all, &allBody)
+	if len(allBody.Services) != 1 || allBody.Services[0].ServiceName != "api" {
+		t.Fatalf("expected api discovery service, got %#v", allBody)
+	}
+}
+
 func TestCreateServiceValidationError(t *testing.T) {
 	rec := doRequest(t, newTestHandler(), http.MethodPost, "/v1/services", `{
 		"spec": {

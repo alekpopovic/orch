@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/spf13/cobra"
@@ -27,6 +28,7 @@ type Client interface {
 	CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error)
 	ListServices(ctx context.Context) ([]types.Service, error)
 	GetService(ctx context.Context, id string) (types.Service, error)
+	GetServiceEndpoints(ctx context.Context, id string, includeUnhealthy bool) (discovery.ServiceEndpoints, error)
 	DeleteService(ctx context.Context, id string) error
 	ScaleService(ctx context.Context, id string, replicas int) (types.Service, error)
 	RolloutService(ctx context.Context, id string, image string, maxUnavailable int, maxSurge int) (types.Deployment, error)
@@ -112,6 +114,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(a.rolloutCommand())
 	root.AddCommand(a.rollbackCommand())
 	root.AddCommand(a.deleteCommand())
+	root.AddCommand(a.endpointsCommand())
 	root.AddCommand(a.eventsCommand())
 	root.AddCommand(a.logsCommand())
 	return root
@@ -394,6 +397,28 @@ func (a *app) deleteCommand() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func (a *app) endpointsCommand() *cobra.Command {
+	var includeUnhealthy bool
+	cmd := &cobra.Command{
+		Use:   "endpoints <service-name-or-id>",
+		Short: "List service discovery endpoints",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, service, err := a.clientAndService(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			endpoints, err := client.GetServiceEndpoints(cmd.Context(), string(service.ID), includeUnhealthy)
+			if err != nil {
+				return err
+			}
+			return writeEndpoints(a.out, a.output, endpoints)
+		},
+	}
+	cmd.Flags().BoolVar(&includeUnhealthy, "include-unhealthy", false, "include unhealthy task endpoints")
+	return cmd
 }
 
 func (a *app) eventsCommand() *cobra.Command {

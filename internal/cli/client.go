@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alekpopovic/orch/internal/api"
+	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -97,6 +98,18 @@ func (c *APIClient) GetService(ctx context.Context, id string) (types.Service, e
 		return types.Service{}, err
 	}
 	return out.Service, nil
+}
+
+func (c *APIClient) GetServiceEndpoints(ctx context.Context, id string, includeUnhealthy bool) (discovery.ServiceEndpoints, error) {
+	path := "/v1/services/" + id + "/endpoints"
+	if includeUnhealthy {
+		path += "?include_unhealthy=true"
+	}
+	var out api.ServiceEndpointsResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return discovery.ServiceEndpoints{}, err
+	}
+	return discovery.ServiceEndpoints(out), nil
 }
 
 func (c *APIClient) DeleteService(ctx context.Context, id string) error {

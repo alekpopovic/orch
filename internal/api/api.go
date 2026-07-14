@@ -16,6 +16,7 @@ import (
 
 	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/controlplane"
+	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -139,6 +140,7 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux.HandleFunc("POST /v1/services", server.createService)
 	mux.HandleFunc("GET /v1/services", server.listServices)
 	mux.HandleFunc("GET /v1/services/{id}", server.getService)
+	mux.HandleFunc("GET /v1/services/{id}/endpoints", server.getServiceEndpoints)
 	mux.HandleFunc("DELETE /v1/services/{id}", server.deleteService)
 	mux.HandleFunc("POST /v1/services/{id}/scale", server.scaleService)
 	mux.HandleFunc("POST /v1/services/{id}/rollout", server.rolloutService)
@@ -147,6 +149,8 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux.HandleFunc("POST /v1/services/{id}/rollback", server.rollbackService)
 	mux.HandleFunc("GET /v1/tasks", server.listTasks)
 	mux.HandleFunc("GET /v1/tasks/{id}", server.getTask)
+	mux.HandleFunc("GET /v1/discovery/services", server.discoveryServices)
+	mux.HandleFunc("GET /v1/discovery/services/{name}", server.discoveryServiceByName)
 	mux.HandleFunc("GET /v1/events", server.listEvents)
 	mux.HandleFunc("GET /v1/logs", server.streamLogs)
 
@@ -223,6 +227,12 @@ type ListServicesResponse struct {
 
 type ServiceResponse struct {
 	Service types.Service `json:"service"`
+}
+
+type ServiceEndpointsResponse = discovery.ServiceEndpoints
+
+type DiscoveryServicesResponse struct {
+	Services []discovery.ServiceEndpoints `json:"services"`
 }
 
 type ScaleServiceRequest struct {
@@ -475,6 +485,30 @@ func (s *Server) getService(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ServiceResponse{Service: service})
 }
 
+func (s *Server) getServiceEndpoints(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.pathServiceID(w, r)
+	if !ok {
+		return
+	}
+	includeUnhealthy := includeUnhealthy(r)
+	service, err := s.controlPlane.GetService(r.Context(), id)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	tasks, err := s.controlPlane.ListTasks(r.Context(), controlplane.TaskFilter{ServiceID: id})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	nodes, err := s.controlPlane.ListNodes(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, discovery.BuildServiceEndpoints(service, tasks, nodes, includeUnhealthy))
+}
+
 func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.pathServiceID(w, r)
 	if !ok {
@@ -616,6 +650,60 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, TaskResponse{Task: task})
+}
+
+func (s *Server) discoveryServices(w http.ResponseWriter, r *http.Request) {
+	includeUnhealthy := includeUnhealthy(r)
+	services, tasks, nodes, err := s.discoverySnapshot(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, DiscoveryServicesResponse{
+		Services: discovery.BuildAllServiceEndpoints(services, tasks, nodes, includeUnhealthy),
+	})
+}
+
+func (s *Server) discoveryServiceByName(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" {
+		s.writeError(w, r, fmt.Errorf("%w: service name is required", store.ErrInvalidState))
+		return
+	}
+	includeUnhealthy := includeUnhealthy(r)
+	services, tasks, nodes, err := s.discoverySnapshot(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	for _, service := range services {
+		if service.Spec.Name == name {
+			writeJSON(w, http.StatusOK, discovery.BuildServiceEndpoints(service, tasks, nodes, includeUnhealthy))
+			return
+		}
+	}
+	s.writeError(w, r, fmt.Errorf("%w: service %q not found", store.ErrNotFound, name))
+}
+
+func (s *Server) discoverySnapshot(ctx context.Context) ([]types.Service, []types.Task, []types.Node, error) {
+	services, err := s.controlPlane.ListServices(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	tasks, err := s.controlPlane.ListTasks(ctx, controlplane.TaskFilter{})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	nodes, err := s.controlPlane.ListNodes(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return services, tasks, nodes, nil
+}
+
+func includeUnhealthy(r *http.Request) bool {
+	value := strings.TrimSpace(r.URL.Query().Get("include_unhealthy"))
+	return value == "true" || value == "1"
 }
 
 func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {

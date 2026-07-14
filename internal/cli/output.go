@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -75,6 +76,28 @@ func writeTasks(w io.Writer, output string, tasks []types.Task) error {
 	fmt.Fprintln(tw, "ID\tSERVICE\tNODE\tDESIRED\tACTUAL\tIMAGE\tRESTARTS")
 	for _, task := range tasks {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\n", task.ID, task.ServiceID, task.NodeID, task.DesiredStatus, task.ActualStatus, task.Image, task.RestartCount)
+	}
+	return tw.Flush()
+}
+
+func writeEndpoints(w io.Writer, output string, endpoints discovery.ServiceEndpoints) error {
+	if output == "json" {
+		return writeValue(w, output, endpoints)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "SERVICE\tTASK\tNODE\tADDRESS\tHOST_PORT\tCONTAINER_PORT\tPROTO\tHEALTH\tVERSION")
+	for _, endpoint := range endpoints.Endpoints {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%d\n",
+			endpoint.ServiceName,
+			endpoint.TaskID,
+			endpoint.NodeID,
+			endpoint.NodeAddress,
+			endpoint.PublicHostPort,
+			endpoint.ContainerPort,
+			endpoint.Protocol,
+			endpoint.HealthStatus,
+			endpoint.ServiceVersion,
+		)
 	}
 	return tw.Flush()
 }
