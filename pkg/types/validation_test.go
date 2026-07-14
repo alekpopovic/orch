@@ -136,6 +136,15 @@ func TestServiceSpecValidate(t *testing.T) {
 			wantErr: "image is required",
 		},
 		{
+			name: "image reference invalid",
+			spec: func() ServiceSpec {
+				spec := cloneServiceSpec(valid)
+				spec.Image = "bad image"
+				return spec
+			}(),
+			wantErr: "image reference is invalid",
+		},
+		{
 			name: "replicas cannot be negative",
 			spec: func() ServiceSpec {
 				spec := cloneServiceSpec(valid)

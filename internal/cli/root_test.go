@@ -22,6 +22,7 @@ func TestRootCommandConstruction(t *testing.T) {
 
 	for _, path := range []string{
 		"version",
+		"validate",
 		"node ls",
 		"node inspect",
 		"node drain",
@@ -43,6 +44,51 @@ func TestRootCommandConstruction(t *testing.T) {
 		if _, _, err := root.Find(strings.Fields(path)); err != nil {
 			t.Fatalf("expected command %q: %v", path, err)
 		}
+	}
+}
+
+func TestValidateCommand(t *testing.T) {
+	deployPath := filepath.Join(t.TempDir(), "deploy.yaml")
+	if err := os.WriteFile(deployPath, []byte(`
+name: api
+image: nginx:1.27
+replicas: 1
+ports:
+  - container: 80
+resources:
+  cpu: 100m
+  memory: 128Mi
+`), 0o600); err != nil {
+		t.Fatalf("write deploy file: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := NewRootCommand(Options{Out: &out, Err: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"validate", deployPath})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute validate: %v", err)
+	}
+	if !strings.Contains(out.String(), "api") || !strings.Contains(out.String(), "valid") {
+		t.Fatalf("expected validation output, got %q", out.String())
+	}
+}
+
+func TestValidateCommandRejectsInvalidYAML(t *testing.T) {
+	deployPath := filepath.Join(t.TempDir(), "deploy.yaml")
+	if err := os.WriteFile(deployPath, []byte(`
+name: api
+image: bad image
+replicas: 1
+`), 0o600); err != nil {
+		t.Fatalf("write deploy file: %v", err)
+	}
+
+	cmd := NewRootCommand(Options{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}})
+	cmd.SetArgs([]string{"validate", deployPath})
+
+	if err := cmd.ExecuteContext(context.Background()); err == nil {
+		t.Fatalf("expected validation error")
 	}
 }
 

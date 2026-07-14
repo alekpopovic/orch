@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"sort"
@@ -98,8 +99,13 @@ func ParseDeployFile(path string) (types.ServiceSpec, error) {
 
 func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 	var deploy DeployFile
-	if err := yaml.Unmarshal(data, &deploy); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&deploy); err != nil {
 		return types.ServiceSpec{}, fmt.Errorf("parse deploy YAML: %w", err)
+	}
+	if err := deploy.Validate(); err != nil {
+		return types.ServiceSpec{}, fmt.Errorf("invalid deploy file: %w", err)
 	}
 
 	requests, err := deploy.Resources.toRequests()
@@ -157,6 +163,54 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 		return types.ServiceSpec{}, fmt.Errorf("invalid deploy file: %w", err)
 	}
 	return spec, nil
+}
+
+func (deploy DeployFile) Validate() error {
+	if strings.TrimSpace(deploy.Name) == "" {
+		return fmt.Errorf("name is required")
+	}
+	if strings.TrimSpace(deploy.Image) == "" {
+		return fmt.Errorf("image is required")
+	}
+	if deploy.Replicas < 0 {
+		return fmt.Errorf("replicas cannot be negative")
+	}
+	for i, port := range deploy.Ports {
+		if port.Container < 1 || port.Container > 65535 {
+			return fmt.Errorf("ports[%d].container must be between 1 and 65535", i)
+		}
+		if port.Public < 0 || port.Public > 65535 {
+			return fmt.Errorf("ports[%d].public must be between 0 and 65535", i)
+		}
+	}
+	for key, value := range deploy.Env {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("env keys must not be empty")
+		}
+		if strings.TrimSpace(value.SecretRef) != "" && strings.TrimSpace(value.Value) != "" {
+			return fmt.Errorf("env %q cannot set both value and secretRef", key)
+		}
+	}
+	for key := range deploy.Placement.Labels {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("placement label keys must not be empty")
+		}
+	}
+	for i, route := range deploy.Routes {
+		if strings.TrimSpace(route.Host) == "" {
+			return fmt.Errorf("routes[%d].host is required", i)
+		}
+		if strings.TrimSpace(route.PathPrefix) == "" {
+			return fmt.Errorf("routes[%d].pathPrefix is required", i)
+		}
+		if !strings.HasPrefix(strings.TrimSpace(route.PathPrefix), "/") {
+			return fmt.Errorf("routes[%d].pathPrefix must start with /", i)
+		}
+		if route.Port < 1 || route.Port > 65535 {
+			return fmt.Errorf("routes[%d].port must be between 1 and 65535", i)
+		}
+	}
+	return nil
 }
 
 func (env DeployEnv) toDomain() (map[string]string, []types.SecretRef) {

@@ -137,6 +137,8 @@ Concurrent service operations are guarded per service. Active rollout/rollback b
 
 Resource values are normalized to CPU millicores and memory bytes. The CLI deploy parser accepts strings such as `500m`, `2.5`, `512Mi`, and `1Gi`.
 
+The canonical YAML deployment format is documented in [SERVICE_SPEC.md](SERVICE_SPEC.md), with JSON Schema at `schemas/service.schema.json`.
+
 ## Secrets
 
 ```sh

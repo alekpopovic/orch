@@ -172,6 +172,9 @@ func (spec ServiceSpec) Validate() error {
 	if strings.TrimSpace(spec.Image) == "" {
 		return fmt.Errorf("image is required")
 	}
+	if !validImageReference(spec.Image) {
+		return fmt.Errorf("image reference is invalid")
+	}
 	spec.ImagePullSecret = strings.TrimSpace(spec.ImagePullSecret)
 	if spec.Replicas < 0 {
 		return fmt.Errorf("replicas cannot be negative")
@@ -210,6 +213,19 @@ func (spec ServiceSpec) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validImageReference(image string) bool {
+	image = strings.TrimSpace(image)
+	if image == "" || strings.Contains(image, "://") || strings.HasPrefix(image, "-") {
+		return false
+	}
+	for _, char := range image {
+		if char <= ' ' || char == '"' || char == '\'' {
+			return false
+		}
+	}
+	return true
 }
 
 type SecretRef struct {

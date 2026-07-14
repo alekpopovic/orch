@@ -1,0 +1,15 @@
+name: routed-api
+image: ghcr.io/example/api:1.0.0
+replicas: 2
+ports:
+  - container: 8080
+routes:
+  - host: api.example.com
+    pathPrefix: /
+    port: 8080
+    tls: true
+resources:
+  cpu: 250m
+  memory: 256Mi
+restart:
+  policy: always

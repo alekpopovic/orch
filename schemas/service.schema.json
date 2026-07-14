@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orch.local/schemas/service.schema.json",
+  "title": "orch service deployment YAML",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "image"],
+  "properties": {
+    "name": {"type": "string", "minLength": 1},
+    "image": {"type": "string", "minLength": 1, "pattern": "^[^\\s'\"]+$"},
+    "imagePullSecret": {"type": "string"},
+    "stateful": {"type": "boolean", "default": false},
+    "replicas": {"type": "integer", "minimum": 0, "default": 1},
+    "ports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["container"],
+        "properties": {
+          "container": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "public": {"type": "integer", "minimum": 0, "maximum": 65535, "default": 0}
+        }
+      }
+    },
+    "env": {
+      "type": "object",
+      "propertyNames": {"minLength": 1},
+      "additionalProperties": {
+        "oneOf": [
+          {"type": "string"},
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "value": {"type": "string"},
+              "secretRef": {"type": "string", "minLength": 1}
+            },
+            "oneOf": [
+              {"required": ["value"]},
+              {"required": ["secretRef"]}
+            ]
+          }
+        ]
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {"type": "string"},
+        "memory": {"type": "string"}
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {"enum": ["http", "tcp", "none"]},
+        "path": {"type": "string"},
+        "interval": {"type": "string"},
+        "timeout": {"type": "string"},
+        "healthyThreshold": {"type": "integer", "minimum": 0},
+        "unhealthyThreshold": {"type": "integer", "minimum": 0}
+      }
+    },
+    "restart": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policy": {"enum": ["always", "never", "on_failure", "on-failure"]}
+      }
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "labels": {
+          "type": "object",
+          "propertyNames": {"minLength": 1},
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    },
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["host", "pathPrefix", "port"],
+        "properties": {
+          "host": {"type": "string", "minLength": 1},
+          "pathPrefix": {"type": "string", "pattern": "^/"},
+          "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "tls": {"type": "boolean", "default": false}
+        }
+      }
+    }
+  }
+}

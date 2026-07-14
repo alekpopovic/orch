@@ -90,13 +90,114 @@ placement:
 }
 
 func TestParseDeployValidation(t *testing.T) {
-	_, err := ParseDeploy([]byte(`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing required name",
+			body: `
+image: nginx:1.27
+replicas: 1
+`,
+		},
+		{
+			name: "invalid image",
+			body: `
 name: api
+image: "bad image"
+replicas: 1
+`,
+		},
+		{
+			name: "negative replicas",
+			body: `
+name: api
+image: nginx:1.27
 replicas: -1
+`,
+		},
+		{
+			name: "invalid port",
+			body: `
+name: api
+image: nginx:1.27
+replicas: 1
+ports:
+  - container: 70000
+`,
+		},
+		{
+			name: "invalid resources",
+			body: `
+name: api
+image: nginx:1.27
+replicas: 1
 resources:
   cpu: nope
-`))
-	if err == nil {
-		t.Fatalf("expected validation error")
+`,
+		},
+		{
+			name: "invalid healthcheck",
+			body: `
+name: api
+image: nginx:1.27
+replicas: 1
+healthcheck:
+  type: http
+  interval: definitely-not-a-duration
+`,
+		},
+		{
+			name: "invalid placement labels",
+			body: `
+name: api
+image: nginx:1.27
+replicas: 1
+placement:
+  labels:
+    "": worker
+`,
+		},
+		{
+			name: "invalid routes",
+			body: `
+name: api
+image: nginx:1.27
+replicas: 1
+routes:
+  - host: api.example.com
+    pathPrefix: api
+    port: 8080
+`,
+		},
+		{
+			name: "invalid secret refs",
+			body: `
+name: api
+image: nginx:1.27
+replicas: 1
+env:
+  DATABASE_URL:
+    value: postgres://db
+    secretRef: prod/database-url
+`,
+		},
+		{
+			name: "unknown field",
+			body: `
+name: api
+image: nginx:1.27
+replicas: 1
+definitelyUnknown: true
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseDeploy([]byte(tt.body)); err == nil {
+				t.Fatalf("expected validation error")
+			}
+		})
 	}
 }

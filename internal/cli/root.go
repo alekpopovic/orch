@@ -109,6 +109,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.PersistentFlags().StringVar(&a.configPath, "config", a.configPath, "CLI config file")
 
 	root.AddCommand(a.versionCommand())
+	root.AddCommand(a.validateCommand())
 	root.AddCommand(a.nodeCommand())
 	root.AddCommand(a.deployCommand())
 	root.AddCommand(a.serviceCommand())
@@ -134,6 +135,22 @@ func (a *app) versionCommand() *cobra.Command {
 		Short: "Print the CLI version",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintln(a.out, "orch "+version)
+			return nil
+		},
+	}
+}
+
+func (a *app) validateCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate <file.yaml>",
+		Short: "Validate a service deployment YAML file",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			spec, err := ParseDeployFile(args[0])
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(a.out, "service spec %q is valid\n", spec.Name)
 			return nil
 		},
 	}
