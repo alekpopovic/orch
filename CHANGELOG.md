@@ -15,6 +15,7 @@ Production-hardening release for the MVP orchestrator.
 - Autoscaling design and CPU-based autoscaler MVP with fake metrics provider.
 - HA control-plane design and PostgreSQL advisory-lock leader election MVP.
 - Multi-agent load test command and chaos-style integration scenarios.
+- GitHub Pages documentation portal with release docs, OpenAPI access, sidebar navigation, and auto/light/dark theme support.
 
 ### Changed
 

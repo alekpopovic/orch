@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>orch Documentation</title>
+    <meta name="description" content="Release and operator documentation for orch, a Docker-first Go container orchestrator." />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              orch: {
+                50: '#eef7ff',
+                100: '#d9edff',
+                500: '#2374e1',
+                600: '#1d5fc0',
+                700: '#194d9a'
+              }
+            },
+            boxShadow: {
+              glow: '0 20px 70px -30px rgba(35, 116, 225, 0.45)'
+            }
+          }
+        }
+      }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="assets/docs.css" />
+  </head>
+  <body class="bg-slate-50 text-slate-900 antialiased transition-colors dark:bg-slate-950 dark:text-slate-100">
+    <div class="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+      <div class="absolute left-1/2 top-0 h-80 w-80 -translate-x-1/2 rounded-full bg-orch-500/20 blur-3xl dark:bg-orch-500/10"></div>
+      <div class="absolute right-0 top-1/3 h-96 w-96 rounded-full bg-cyan-400/10 blur-3xl dark:bg-cyan-300/10"></div>
+    </div>
+
+    <header class="sticky top-0 z-40 border-b border-slate-200/80 bg-white/80 backdrop-blur-xl dark:border-slate-800/80 dark:bg-slate-950/80 lg:hidden">
+      <div class="flex h-16 items-center justify-between px-4">
+        <button id="sidebar-open" class="rounded-xl border border-slate-200 p-2 text-slate-700 shadow-sm dark:border-slate-800 dark:text-slate-200" aria-label="Open navigation">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+        </button>
+        <a href="#README.md" class="flex items-center gap-2 font-semibold tracking-tight">
+          <span class="grid h-8 w-8 place-items-center rounded-xl bg-orch-600 text-white shadow-glow">o</span>
+          <span>orch docs</span>
+        </a>
+        <select id="theme-select-mobile" class="rounded-xl border border-slate-200 bg-white px-2 py-1 text-sm dark:border-slate-800 dark:bg-slate-900" aria-label="Theme">
+          <option value="auto">Auto</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </div>
+    </header>
+
+    <div id="sidebar-backdrop" class="fixed inset-0 z-40 hidden bg-slate-950/50 lg:hidden"></div>
+
+    <aside id="sidebar" class="fixed inset-y-0 left-0 z-50 flex w-80 -translate-x-full flex-col border-r border-slate-200 bg-white/95 shadow-2xl backdrop-blur-xl transition-transform dark:border-slate-800 dark:bg-slate-950/95 lg:translate-x-0 lg:shadow-none">
+      <div class="flex h-20 items-center justify-between border-b border-slate-200 px-5 dark:border-slate-800">
+        <a href="#README.md" class="flex items-center gap-3">
+          <span class="grid h-10 w-10 place-items-center rounded-2xl bg-gradient-to-br from-orch-500 to-cyan-400 text-lg font-black text-white shadow-glow">o</span>
+          <span>
+            <span class="block text-base font-bold tracking-tight">orch docs</span>
+            <span class="block text-xs text-slate-500 dark:text-slate-400">release + operator guide</span>
+          </span>
+        </a>
+        <button id="sidebar-close" class="rounded-xl p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-900 lg:hidden" aria-label="Close navigation">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18 18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+
+      <div class="space-y-4 border-b border-slate-200 p-5 dark:border-slate-800">
+        <label class="block text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400" for="doc-search">Search docs</label>
+        <input id="doc-search" type="search" placeholder="Filter pages..." class="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm outline-none ring-orch-500/20 transition focus:border-orch-500 focus:ring-4 dark:border-slate-800 dark:bg-slate-900" />
+        <div class="flex items-center justify-between gap-3">
+          <span class="text-xs text-slate-500 dark:text-slate-400">Theme</span>
+          <select id="theme-select" class="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm dark:border-slate-800 dark:bg-slate-900" aria-label="Theme">
+            <option value="auto">Auto</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+      </div>
+
+      <nav id="nav" class="flex-1 space-y-6 overflow-y-auto px-4 py-5"></nav>
+
+      <div class="border-t border-slate-200 p-5 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
+        <p>Built from Markdown in <code class="rounded bg-slate-100 px-1 dark:bg-slate-900">docs/</code>.</p>
+        <a class="mt-2 inline-flex font-medium text-orch-600 hover:text-orch-700 dark:text-orch-400" href="https://github.com/alekpopovic/orch">View on GitHub →</a>
+      </div>
+    </aside>
+
+    <main class="lg:pl-80">
+      <section class="border-b border-slate-200 bg-white/60 px-6 py-10 backdrop-blur dark:border-slate-800 dark:bg-slate-950/30 sm:px-10 lg:px-12">
+        <div class="mx-auto max-w-5xl">
+          <div class="mb-6 inline-flex items-center gap-2 rounded-full border border-orch-500/20 bg-orch-50 px-3 py-1 text-sm font-medium text-orch-700 dark:border-orch-400/20 dark:bg-orch-500/10 dark:text-orch-200">
+            <span class="h-2 w-2 rounded-full bg-emerald-500"></span>
+            v0.2.0 production-hardening docs
+          </div>
+          <div class="grid gap-8 lg:grid-cols-[1fr_18rem] lg:items-end">
+            <div>
+              <h1 class="text-4xl font-black tracking-tight text-slate-950 dark:text-white sm:text-5xl">orch documentation</h1>
+              <p class="mt-4 max-w-3xl text-lg leading-8 text-slate-600 dark:text-slate-300">A GitHub Pages documentation hub for release notes, API contracts, operations, security, scheduling, rollouts, and production workflows.</p>
+            </div>
+            <div class="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/80">
+              <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Quick links</p>
+              <div class="mt-4 grid gap-2 text-sm">
+                <a class="quick-link" href="#RELEASE_NOTES.md">Release notes</a>
+                <a class="quick-link" href="#API.md">API guide</a>
+                <a class="quick-link" href="#PRODUCTION_DEPLOYMENT.md">Production deploy</a>
+                <a class="quick-link" href="#openapi.yaml">OpenAPI YAML</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="px-6 py-8 sm:px-10 lg:px-12">
+        <div class="mx-auto max-w-5xl">
+          <div id="doc-meta" class="mb-4 flex flex-wrap items-center gap-3 text-sm text-slate-500 dark:text-slate-400"></div>
+          <article id="doc-content" class="doc-content rounded-3xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900/70 sm:p-8 lg:p-10">
+            <div class="animate-pulse space-y-4">
+              <div class="h-8 w-2/3 rounded bg-slate-200 dark:bg-slate-800"></div>
+              <div class="h-4 w-full rounded bg-slate-200 dark:bg-slate-800"></div>
+              <div class="h-4 w-5/6 rounded bg-slate-200 dark:bg-slate-800"></div>
+              <div class="h-4 w-4/6 rounded bg-slate-200 dark:bg-slate-800"></div>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="assets/docs.js"></script>
+  </body>
+</html>

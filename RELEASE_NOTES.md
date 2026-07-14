@@ -72,6 +72,7 @@ This is the first release; no upgrade path is required. For future releases, run
 - Added autoscaling design and CPU-based autoscaler MVP using a metrics provider abstraction.
 - Added HA control-plane design and PostgreSQL advisory-lock leader election primitives.
 - Added multi-agent load testing and chaos-style integration scenarios.
+- Added a GitHub Pages documentation portal with release docs, OpenAPI access, left-sidebar navigation, and auto/light/dark theme support.
 
 ### Compatibility Notes
 

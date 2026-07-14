@@ -4,7 +4,7 @@
 
 All responses use UTC timestamps.
 
-The canonical public API contract is `api/openapi.yaml`. It documents the user-facing health, node, service, task, event, log, rollout, secret, registry credential, and audit log endpoints. Agent-only routes are intentionally excluded from that public spec.
+The canonical public API contract is `api/openapi.yaml`. It is also published in the GitHub Pages documentation portal as `openapi.yaml`. It documents the user-facing health, node, service, task, event, log, rollout, secret, registry credential, and audit log endpoints. Agent-only routes are intentionally excluded from that public spec.
 
 Validate the OpenAPI document with:
 
