@@ -233,6 +233,8 @@ Logs are proxied from the owning agent. Check:
 
 ## Backups
 
+Detailed backup and restore procedures are documented in [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
+
 For future PostgreSQL-backed production, back up:
 
 - `nodes`;
