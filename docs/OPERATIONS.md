@@ -37,6 +37,8 @@ Before production use:
 
 ## Configuration
 
+Full precedence, YAML file examples, and redacted config output are documented in [CONFIGURATION.md](CONFIGURATION.md).
+
 Server:
 
 - `ORCH_SERVER_ADDR`: listen address, default `:8080`.

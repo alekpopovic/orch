@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -19,18 +21,57 @@ import (
 	"github.com/alekpopovic/orch/internal/node"
 	"github.com/alekpopovic/orch/internal/rollout"
 	"github.com/alekpopovic/orch/internal/secrets"
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg := config.LoadServer()
+	cfg, printConfig, err := loadConfig(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if printConfig {
+		if err := yaml.NewEncoder(os.Stdout).Encode(cfg.Redacted()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	logger := logging.NewLogger(cfg.LogLevel)
 	if err := run(ctx, logger, cfg); err != nil {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func loadConfig(args []string) (config.ServerConfig, bool, error) {
+	printConfig := false
+	if len(args) >= 2 && args[0] == "config" && args[1] == "print" {
+		printConfig = true
+		args = args[2:]
+	}
+	var configPath string
+	var overrides config.ServerOverrides
+	fs := flag.NewFlagSet("orch-server", flag.ContinueOnError)
+	fs.StringVar(&configPath, "config", "", "YAML config file")
+	fs.StringVar(&overrides.Addr, "addr", "", "server listen address")
+	fs.StringVar(&overrides.DatabaseURL, "database-url", "", "PostgreSQL database URL")
+	fs.StringVar(&overrides.LogLevel, "log-level", "", "log level")
+	fs.StringVar(&overrides.BootstrapToken, "bootstrap-token", "", "agent bootstrap token")
+	fs.StringVar(&overrides.JWTSecret, "jwt-secret", "", "JWT signing secret")
+	fs.StringVar(&overrides.Users, "users", "", "static user role map")
+	fs.StringVar(&overrides.SecretKey, "secret-key", "", "secret encryption key")
+	fs.StringVar(&overrides.GracefulShutdownTTL, "shutdown-timeout", "", "graceful shutdown timeout")
+	fs.StringVar(&overrides.HeartbeatTimeout, "node-heartbeat-timeout", "", "node heartbeat timeout")
+	fs.StringVar(&overrides.NodeMonitorInterval, "node-monitor-interval", "", "node monitor interval")
+	if err := fs.Parse(args); err != nil {
+		return config.ServerConfig{}, false, err
+	}
+	cfg, err := config.LoadServerWithFile(configPath, overrides)
+	return cfg, printConfig, err
 }
 
 func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) error {

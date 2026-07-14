@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,5 +36,22 @@ func TestServerStartsAndStopsCleanly(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("server did not stop after cancellation")
+	}
+}
+
+func TestServerConfigPrintModeParsesFlags(t *testing.T) {
+	cfg, printConfig, err := loadConfig([]string{"config", "print", "--addr", "127.0.0.1:9090", "--secret-key", "super-secret"})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !printConfig {
+		t.Fatal("expected config print mode")
+	}
+	if cfg.Addr != "127.0.0.1:9090" {
+		t.Fatalf("expected flag addr, got %q", cfg.Addr)
+	}
+	redacted := cfg.Redacted()
+	if got := redacted["secret_key"]; got != "[REDACTED]" || strings.Contains(fmt.Sprint(redacted), "super-secret") {
+		t.Fatalf("expected redacted secret, got %#v", redacted)
 	}
 }

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -11,12 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/config"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 const version = "dev"
@@ -42,10 +41,7 @@ type Client interface {
 	StreamLogs(ctx context.Context, serviceID string, taskID string, follow bool, tail string, out io.Writer) error
 }
 
-type Config struct {
-	ServerURL string `yaml:"server_url" json:"server_url"`
-	Token     string `yaml:"token" json:"token"`
-}
+type Config = config.CLIConfig
 
 type Options struct {
 	Out           io.Writer
@@ -583,13 +579,7 @@ func (a *app) client() (Client, error) {
 }
 
 func (a *app) serverURL() (string, error) {
-	if strings.TrimSpace(a.serverFlag) != "" {
-		return strings.TrimSpace(a.serverFlag), nil
-	}
-	if env := strings.TrimSpace(os.Getenv("ORCH_SERVER_URL")); env != "" {
-		return env, nil
-	}
-	cfg, err := readConfig(a.configPath)
+	cfg, err := config.LoadCLI(a.configPath, config.CLIOverrides{ServerURL: a.serverFlag})
 	if err != nil {
 		return "", err
 	}
@@ -600,32 +590,11 @@ func (a *app) serverURL() (string, error) {
 }
 
 func (a *app) token() string {
-	if strings.TrimSpace(a.tokenFlag) != "" {
-		return strings.TrimSpace(a.tokenFlag)
-	}
-	if env := strings.TrimSpace(os.Getenv("ORCH_TOKEN")); env != "" {
-		return env
-	}
-	cfg, err := readConfig(a.configPath)
+	cfg, err := config.LoadCLI(a.configPath, config.CLIOverrides{Token: a.tokenFlag})
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(cfg.Token)
-}
-
-func readConfig(path string) (Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return Config{}, nil
-		}
-		return Config{}, fmt.Errorf("read config file %q: %w", path, err)
-	}
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return Config{}, fmt.Errorf("parse config file %q: %w", path, err)
-	}
-	return cfg, nil
 }
 
 func defaultConfigPath() string {
