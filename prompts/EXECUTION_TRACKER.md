@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `40-node-offline-detection-and-recovery.md`
-- Last matching commit: `same commit: Add node offline monitor`
-- Completed prompt range: `00` through `40`
-- Next prompt to execute: `41-manual-docker-drift-reconciliation.md`
+- Last executed prompt: `41-manual-docker-drift-reconciliation.md`
+- Last matching commit: `same commit: Add Docker drift reconciliation`
+- Completed prompt range: `00` through `41`
+- Next prompt to execute: `42-deployment-lock-and-concurrent-user-operations.md`
 - Updated: `2026-07-14`
 
 ## Update Rule

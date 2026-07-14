@@ -36,6 +36,7 @@ type Runner struct {
 	runtime      orchdocker.Runtime
 	health       health.Checker
 	metrics      Metrics
+	drift        DriftRecorder
 	healthStates map[types.TaskID]healthState
 	logger       *slog.Logger
 	rand         *rand.Rand
@@ -64,6 +65,26 @@ func (NoopMetrics) IncHealthcheckFailure() {}
 type healthState struct {
 	successes int
 	failures  int
+}
+
+type DriftEventType string
+
+const (
+	DriftManagedContainerMissing       DriftEventType = "managed_container_missing"
+	DriftUnexpectedManagedContainer    DriftEventType = "unexpected_managed_container"
+	DriftManagedContainerStateMismatch DriftEventType = "managed_container_state_mismatch"
+)
+
+type DriftEvent struct {
+	Type        DriftEventType
+	NodeID      types.NodeID
+	TaskID      types.TaskID
+	ContainerID orchdocker.ContainerID
+	Message     string
+}
+
+type DriftRecorder interface {
+	RecordDrift(event DriftEvent)
 }
 
 func NewRunner(cfg config.AgentConfig, client Client, logger *slog.Logger) *Runner {
@@ -95,6 +116,11 @@ func (r *Runner) WithMetrics(metrics Metrics) *Runner {
 	if metrics != nil {
 		r.metrics = metrics
 	}
+	return r
+}
+
+func (r *Runner) WithDriftRecorder(recorder DriftRecorder) *Runner {
+	r.drift = recorder
 	return r
 }
 
@@ -286,7 +312,22 @@ func (r *Runner) currentTaskContainer(ctx context.Context, nodeID types.NodeID, 
 	if task.ContainerID != "" {
 		status, err := r.runtime.InspectContainer(ctx, orchdocker.ContainerID(task.ContainerID))
 		if err == nil {
-			return status, true, nil
+			if containerMatchesTask(status, nodeID, task) {
+				r.recordStoppedDrift(nodeID, task, status)
+				return status, true, nil
+			}
+			r.recordDrift(DriftEvent{
+				Type:        DriftManagedContainerStateMismatch,
+				NodeID:      nodeID,
+				TaskID:      task.ID,
+				ContainerID: status.ID,
+				Message:     "container metadata does not match assigned task",
+			})
+			if shouldRemoveMismatchedContainer(status, nodeID, task) {
+				if err := r.removeLocalContainer(ctx, status.ID); err != nil {
+					return orchdocker.ContainerStatus{}, false, err
+				}
+			}
 		}
 	}
 	containers, err := r.runtime.ListManagedContainers(ctx, map[string]string{
@@ -297,39 +338,99 @@ func (r *Runner) currentTaskContainer(ctx context.Context, nodeID types.NodeID, 
 		return orchdocker.ContainerStatus{}, false, err
 	}
 	if len(containers) == 0 {
+		if taskExpectedContainer(task) {
+			r.recordDrift(DriftEvent{
+				Type:    DriftManagedContainerMissing,
+				NodeID:  nodeID,
+				TaskID:  task.ID,
+				Message: "assigned task container is missing",
+			})
+		}
 		return orchdocker.ContainerStatus{}, false, nil
 	}
-	return containers[0], true, nil
+	for _, status := range containers {
+		if containerMatchesTask(status, nodeID, task) {
+			r.recordStoppedDrift(nodeID, task, status)
+			return status, true, nil
+		}
+		r.recordDrift(DriftEvent{
+			Type:        DriftManagedContainerStateMismatch,
+			NodeID:      nodeID,
+			TaskID:      task.ID,
+			ContainerID: status.ID,
+			Message:     "managed container labels, image, or version do not match assigned task",
+		})
+		if shouldRemoveMismatchedContainer(status, nodeID, task) {
+			if err := r.removeLocalContainer(ctx, status.ID); err != nil {
+				return orchdocker.ContainerStatus{}, false, err
+			}
+		}
+	}
+	return orchdocker.ContainerStatus{}, false, nil
 }
 
 func (r *Runner) removeAssignedTask(ctx context.Context, nodeID types.NodeID, task types.Task) error {
-	containerID := orchdocker.ContainerID(task.ContainerID)
-	if containerID == "" {
-		containers, err := r.runtime.ListManagedContainers(ctx, map[string]string{
-			orchdocker.NodeIDLabel: string(nodeID),
-			orchdocker.TaskIDLabel: string(task.ID),
-		})
-		if err != nil {
-			return err
-		}
-		if len(containers) > 0 {
-			containerID = containers[0].ID
-		}
+	containerID, err := r.assignedContainerForRemoval(ctx, nodeID, task)
+	if err != nil {
+		return err
 	}
 	if containerID != "" {
-		if err := r.runtime.StopContainer(ctx, containerID, 10*time.Second); err != nil {
-			return err
-		}
-		if err := r.runtime.RemoveContainer(ctx, containerID, true); err != nil {
+		if err := r.removeLocalContainer(ctx, containerID); err != nil {
 			return err
 		}
 	}
-	_, err := r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{
+	_, err = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{
 		NodeID:      nodeID,
 		Status:      types.TaskRemoved,
 		ContainerID: string(containerID),
 	})
 	return err
+}
+
+func (r *Runner) assignedContainerForRemoval(ctx context.Context, nodeID types.NodeID, task types.Task) (orchdocker.ContainerID, error) {
+	if task.ContainerID != "" {
+		status, err := r.runtime.InspectContainer(ctx, orchdocker.ContainerID(task.ContainerID))
+		if err == nil {
+			if removableAssignedContainer(status, nodeID, task) {
+				return status.ID, nil
+			}
+			r.recordDrift(DriftEvent{
+				Type:        DriftManagedContainerStateMismatch,
+				NodeID:      nodeID,
+				TaskID:      task.ID,
+				ContainerID: status.ID,
+				Message:     "assigned container id does not belong to this orch task",
+			})
+		}
+	}
+	containers, err := r.runtime.ListManagedContainers(ctx, map[string]string{
+		orchdocker.NodeIDLabel: string(nodeID),
+		orchdocker.TaskIDLabel: string(task.ID),
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(containers) == 0 && taskExpectedContainer(task) {
+		r.recordDrift(DriftEvent{
+			Type:    DriftManagedContainerMissing,
+			NodeID:  nodeID,
+			TaskID:  task.ID,
+			Message: "assigned task container is missing during cleanup",
+		})
+	}
+	for _, status := range containers {
+		if removableAssignedContainer(status, nodeID, task) {
+			return status.ID, nil
+		}
+		r.recordDrift(DriftEvent{
+			Type:        DriftManagedContainerStateMismatch,
+			NodeID:      nodeID,
+			TaskID:      task.ID,
+			ContainerID: status.ID,
+			Message:     "managed container labels do not belong to this orch task",
+		})
+	}
+	return "", nil
 }
 
 func (r *Runner) checkTaskHealth(ctx context.Context, nodeID types.NodeID, assigned api.AgentTask, container orchdocker.ContainerStatus) error {
@@ -448,23 +549,113 @@ func (r *Runner) cleanupUnassigned(ctx context.Context, nodeID types.NodeID, ass
 	}
 	for _, container := range containers {
 		taskID := types.TaskID(container.Labels[orchdocker.TaskIDLabel])
-		if taskID == "" {
-			continue
+		if taskID != "" {
+			if _, ok := assigned[taskID]; ok {
+				continue
+			}
 		}
-		if _, ok := assigned[taskID]; ok {
-			continue
-		}
-		if err := r.runtime.StopContainer(ctx, container.ID, 10*time.Second); err != nil {
-			r.logger.Warn("failed to stop unassigned container", "container_id", container.ID, "task_id", taskID, "error", err)
-			continue
-		}
-		if err := r.runtime.RemoveContainer(ctx, container.ID, true); err != nil {
+		r.recordDrift(DriftEvent{
+			Type:        DriftUnexpectedManagedContainer,
+			NodeID:      nodeID,
+			TaskID:      taskID,
+			ContainerID: container.ID,
+			Message:     "managed container is not assigned to this node",
+		})
+		if err := r.removeLocalContainer(ctx, container.ID); err != nil {
 			r.logger.Warn("failed to remove unassigned container", "container_id", container.ID, "task_id", taskID, "error", err)
 			continue
 		}
-		_, _ = r.reportTaskStatus(ctx, taskID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRemoved, ContainerID: string(container.ID)})
+		if taskID != "" {
+			_, _ = r.reportTaskStatus(ctx, taskID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskRemoved, ContainerID: string(container.ID)})
+		}
 	}
 	return nil
+}
+
+func (r *Runner) removeLocalContainer(ctx context.Context, containerID orchdocker.ContainerID) error {
+	if err := r.runtime.StopContainer(ctx, containerID, 10*time.Second); err != nil {
+		return err
+	}
+	return r.runtime.RemoveContainer(ctx, containerID, true)
+}
+
+func (r *Runner) recordStoppedDrift(nodeID types.NodeID, task types.Task, status orchdocker.ContainerStatus) {
+	if status.Running || status.ExitCode != 0 {
+		return
+	}
+	if task.ActualStatus != types.TaskRunning && task.ActualStatus != types.TaskHealthy && task.ActualStatus != types.TaskUnhealthy {
+		return
+	}
+	r.recordDrift(DriftEvent{
+		Type:        DriftManagedContainerStateMismatch,
+		NodeID:      nodeID,
+		TaskID:      task.ID,
+		ContainerID: status.ID,
+		Message:     "managed container is stopped but task should be running",
+	})
+}
+
+func (r *Runner) recordDrift(event DriftEvent) {
+	if event.Type == "" {
+		return
+	}
+	if r.drift != nil {
+		r.drift.RecordDrift(event)
+	}
+	fields := []any{"drift_type", string(event.Type), "node_id", event.NodeID}
+	if event.TaskID != "" {
+		fields = append(fields, "task_id", event.TaskID)
+	}
+	if event.ContainerID != "" {
+		fields = append(fields, "container_id", event.ContainerID)
+	}
+	if event.Message != "" {
+		fields = append(fields, "message", event.Message)
+	}
+	r.logger.Warn("docker drift detected", fields...)
+}
+
+func taskExpectedContainer(task types.Task) bool {
+	if task.ContainerID != "" {
+		return true
+	}
+	switch task.ActualStatus {
+	case types.TaskCreated, types.TaskStarting, types.TaskRunning, types.TaskHealthy, types.TaskUnhealthy:
+		return true
+	default:
+		return false
+	}
+}
+
+func containerMatchesTask(status orchdocker.ContainerStatus, nodeID types.NodeID, task types.Task) bool {
+	labels := status.Labels
+	if labels[orchdocker.ManagedLabel] != "true" {
+		return false
+	}
+	if labels[orchdocker.NodeIDLabel] != string(nodeID) {
+		return false
+	}
+	if labels[orchdocker.TaskIDLabel] != string(task.ID) {
+		return false
+	}
+	if labels[orchdocker.ServiceIDLabel] != string(task.ServiceID) {
+		return false
+	}
+	if labels[orchdocker.VersionLabel] != strconv.FormatInt(task.Version, 10) {
+		return false
+	}
+	return status.Image == "" || status.Image == task.Image
+}
+
+func shouldRemoveMismatchedContainer(status orchdocker.ContainerStatus, nodeID types.NodeID, task types.Task) bool {
+	return removableAssignedContainer(status, nodeID, task)
+}
+
+func removableAssignedContainer(status orchdocker.ContainerStatus, nodeID types.NodeID, task types.Task) bool {
+	labels := status.Labels
+	return labels[orchdocker.ManagedLabel] == "true" &&
+		labels[orchdocker.NodeIDLabel] == string(nodeID) &&
+		labels[orchdocker.TaskIDLabel] == string(task.ID)
 }
 
 func (r *Runner) registerWithRetry(ctx context.Context, capacity types.Resources) (api.AgentResponse, error) {

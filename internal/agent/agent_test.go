@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -87,10 +88,16 @@ func TestReconcileAssignedTaskRecreatesManuallyDeletedContainer(t *testing.T) {
 		},
 	}}}
 	runtime := orchdocker.NewFakeRuntime(orchdocker.WithFakeContainerIDs("replacement-container"))
-	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
+	drift := &fakeDriftRecorder{}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).
+		WithRuntime(runtime).
+		WithDriftRecorder(drift)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
 		t.Fatalf("reconcile assigned tasks: %v", err)
+	}
+	if !drift.has(DriftManagedContainerMissing) {
+		t.Fatalf("expected missing container drift event, got %#v", drift.events)
 	}
 	wantRuntimeCalls := []string{"inspect:missing-container", "list", "pull:nginx:1.27", "create:" + string(taskID), "start:replacement-container", "list"}
 	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
@@ -117,15 +124,7 @@ func TestReconcileAssignedTaskReReportsRunningContainerAfterAgentRestart(t *test
 		},
 	}}}
 	runtime := orchdocker.NewFakeRuntime()
-	runtime.AddContainer(orchdocker.ContainerStatus{
-		ID:      "container-1",
-		Running: true,
-		Labels: map[string]string{
-			orchdocker.ManagedLabel: "true",
-			orchdocker.TaskIDLabel:  string(taskID),
-			orchdocker.NodeIDLabel:  string(nodeID),
-		},
-	})
+	runtime.AddContainer(managedTaskContainer("container-1", nodeID, taskID, types.ServiceID("00000000-0000-4000-8000-000000000003"), "nginx:1.27", 1, true))
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
@@ -193,7 +192,9 @@ func TestReconcileAssignedTaskReportsExitedContainerFailed(t *testing.T) {
 		},
 	}}}
 	runtime := orchdocker.NewFakeRuntime()
-	runtime.AddContainer(orchdocker.ContainerStatus{ID: "container-1", Running: false, ExitCode: 2})
+	exited := managedTaskContainer("container-1", nodeID, taskID, types.ServiceID("00000000-0000-4000-8000-000000000003"), "nginx:1.27", 1, false)
+	exited.ExitCode = 2
+	runtime.AddContainer(exited)
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err == nil {
@@ -205,6 +206,86 @@ func TestReconcileAssignedTaskReportsExitedContainerFailed(t *testing.T) {
 	}
 	if client.failureReasons[0] != "container exited with code 2" {
 		t.Fatalf("unexpected failure reason %q", client.failureReasons[0])
+	}
+}
+
+func TestReconcileAssignedTaskRestartsManuallyStoppedContainer(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
+	serviceID := types.ServiceID("00000000-0000-4000-8000-000000000003")
+	client := &fakeAgentClient{tasks: []api.AgentTask{{
+		Task: types.Task{
+			ID:            taskID,
+			ServiceID:     serviceID,
+			NodeID:        nodeID,
+			ContainerID:   "container-1",
+			DesiredStatus: types.TaskRunning,
+			ActualStatus:  types.TaskRunning,
+			Image:         "nginx:1.27",
+			Version:       1,
+		},
+	}}}
+	runtime := orchdocker.NewFakeRuntime()
+	runtime.AddContainer(managedTaskContainer("container-1", nodeID, taskID, serviceID, "nginx:1.27", 1, false))
+	drift := &fakeDriftRecorder{}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).
+		WithRuntime(runtime).
+		WithDriftRecorder(drift)
+
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("reconcile stopped container: %v", err)
+	}
+
+	wantRuntimeCalls := []string{"inspect:container-1", "start:container-1", "list"}
+	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
+	}
+	if !drift.has(DriftManagedContainerStateMismatch) {
+		t.Fatalf("expected state mismatch drift event, got %#v", drift.events)
+	}
+	wantStatuses := []types.TaskStatus{types.TaskRunning}
+	if !equalStatuses(client.statuses, wantStatuses) {
+		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+}
+
+func TestReconcileAssignedTaskReplacesMismatchedManagedContainer(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
+	serviceID := types.ServiceID("00000000-0000-4000-8000-000000000003")
+	client := &fakeAgentClient{tasks: []api.AgentTask{{
+		Task: types.Task{
+			ID:            taskID,
+			ServiceID:     serviceID,
+			NodeID:        nodeID,
+			ContainerID:   "container-1",
+			DesiredStatus: types.TaskRunning,
+			ActualStatus:  types.TaskRunning,
+			Image:         "nginx:1.27",
+			Version:       2,
+		},
+	}}}
+	runtime := orchdocker.NewFakeRuntime(orchdocker.WithFakeContainerIDs("replacement-container"))
+	runtime.AddContainer(managedTaskContainer("container-1", nodeID, taskID, serviceID, "nginx:1.26", 1, true))
+	drift := &fakeDriftRecorder{}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).
+		WithRuntime(runtime).
+		WithDriftRecorder(drift)
+
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("reconcile mismatched container: %v", err)
+	}
+
+	wantRuntimeCalls := []string{"inspect:container-1", "stop:container-1", "remove:container-1", "list", "pull:nginx:1.27", "create:" + string(taskID), "start:replacement-container", "list"}
+	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
+	}
+	if !drift.has(DriftManagedContainerStateMismatch) {
+		t.Fatalf("expected state mismatch drift event, got %#v", drift.events)
+	}
+	wantStatuses := []types.TaskStatus{types.TaskPulling, types.TaskCreated, types.TaskRunning}
+	if !equalStatuses(client.statuses, wantStatuses) {
+		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
 	}
 }
 
@@ -277,10 +358,16 @@ func TestReconcileRemovesUnassignedManagedContainers(t *testing.T) {
 			orchdocker.NodeIDLabel:  string(nodeID),
 		},
 	})
-	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
+	drift := &fakeDriftRecorder{}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).
+		WithRuntime(runtime).
+		WithDriftRecorder(drift)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
 		t.Fatalf("reconcile assigned tasks: %v", err)
+	}
+	if !drift.has(DriftUnexpectedManagedContainer) {
+		t.Fatalf("expected unexpected container drift event, got %#v", drift.events)
 	}
 
 	wantRuntimeCalls := []string{"list", "stop:stale-container", "remove:stale-container"}
@@ -290,6 +377,38 @@ func TestReconcileRemovesUnassignedManagedContainers(t *testing.T) {
 	wantStatuses := []types.TaskStatus{types.TaskRemoved}
 	if !equalStatuses(client.statuses, wantStatuses) {
 		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+}
+
+func TestReconcileIgnoresNonManagedContainers(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	client := &fakeAgentClient{}
+	runtime := orchdocker.NewFakeRuntime()
+	runtime.AddContainer(orchdocker.ContainerStatus{
+		ID: "foreign-container",
+		Labels: map[string]string{
+			orchdocker.NodeIDLabel: "00000000-0000-4000-8000-000000000001",
+			orchdocker.TaskIDLabel: "foreign-task",
+		},
+	})
+	drift := &fakeDriftRecorder{}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).
+		WithRuntime(runtime).
+		WithDriftRecorder(drift)
+
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("reconcile assigned tasks: %v", err)
+	}
+
+	wantRuntimeCalls := []string{"list"}
+	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
+	}
+	if len(client.statuses) != 0 {
+		t.Fatalf("expected no status reports, got %#v", client.statuses)
+	}
+	if len(drift.events) != 0 {
+		t.Fatalf("expected no drift events for non-managed container, got %#v", drift.events)
 	}
 }
 
@@ -340,15 +459,57 @@ func TestReconcileRemovesAssignedStoppedTask(t *testing.T) {
 		}},
 	}
 	runtime := orchdocker.NewFakeRuntime()
+	runtime.AddContainer(managedTaskContainer("container-1", nodeID, taskID, types.ServiceID("00000000-0000-4000-8000-000000000003"), "nginx:1.27", 1, true))
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
 
 	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
 		t.Fatalf("reconcile assigned tasks: %v", err)
 	}
 
-	wantRuntimeCalls := []string{"stop:container-1", "remove:container-1", "list"}
+	wantRuntimeCalls := []string{"inspect:container-1", "stop:container-1", "remove:container-1", "list"}
 	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
 		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
+	}
+	wantStatuses := []types.TaskStatus{types.TaskRemoved}
+	if !equalStatuses(client.statuses, wantStatuses) {
+		t.Fatalf("expected statuses %#v, got %#v", wantStatuses, client.statuses)
+	}
+}
+
+func TestReconcileDoesNotRemoveNonManagedAssignedContainerID(t *testing.T) {
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
+	client := &fakeAgentClient{
+		tasks: []api.AgentTask{{
+			Task: types.Task{
+				ID:            taskID,
+				ServiceID:     types.ServiceID("00000000-0000-4000-8000-000000000003"),
+				NodeID:        nodeID,
+				ContainerID:   "foreign-container",
+				DesiredStatus: types.TaskStopped,
+				ActualStatus:  types.TaskRunning,
+				Image:         "nginx:1.27",
+				Version:       1,
+			},
+		}},
+	}
+	runtime := orchdocker.NewFakeRuntime()
+	runtime.AddContainer(orchdocker.ContainerStatus{ID: "foreign-container", Running: true})
+	drift := &fakeDriftRecorder{}
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).
+		WithRuntime(runtime).
+		WithDriftRecorder(drift)
+
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatalf("reconcile assigned tasks: %v", err)
+	}
+
+	wantRuntimeCalls := []string{"inspect:foreign-container", "list", "list"}
+	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
+		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
+	}
+	if !drift.has(DriftManagedContainerStateMismatch) {
+		t.Fatalf("expected state mismatch drift event, got %#v", drift.events)
 	}
 	wantStatuses := []types.TaskStatus{types.TaskRemoved}
 	if !equalStatuses(client.statuses, wantStatuses) {
@@ -380,7 +541,7 @@ func TestReconcileAssignedTaskReportsHealthAfterThresholds(t *testing.T) {
 	}
 	client := &fakeAgentClient{tasks: []api.AgentTask{task}}
 	runtime := orchdocker.NewFakeRuntime()
-	runtime.AddContainer(orchdocker.ContainerStatus{ID: "container-1", Running: true})
+	runtime.AddContainer(managedTaskContainer("container-1", nodeID, taskID, types.ServiceID("00000000-0000-4000-8000-000000000003"), "nginx:1.27", 1, true))
 	checker := &fakeHealthChecker{results: []bool{true, true, false, false}}
 	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).
 		WithRuntime(runtime).
@@ -481,6 +642,46 @@ func (c *fakeAgentClient) ReportTaskStatus(_ context.Context, taskID types.TaskI
 		ContainerID:   req.ContainerID,
 		FailureReason: req.FailureReason,
 	}, nil
+}
+
+type fakeDriftRecorder struct {
+	events []DriftEvent
+}
+
+func (r *fakeDriftRecorder) RecordDrift(event DriftEvent) {
+	r.events = append(r.events, event)
+}
+
+func (r *fakeDriftRecorder) has(eventType DriftEventType) bool {
+	for _, event := range r.events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func managedTaskContainer(id orchdocker.ContainerID, nodeID types.NodeID, taskID types.TaskID, serviceID types.ServiceID, image string, version int64, running bool) orchdocker.ContainerStatus {
+	status := orchdocker.ContainerStatus{
+		ID:      id,
+		Image:   image,
+		Running: running,
+		Labels: map[string]string{
+			orchdocker.ManagedLabel:   "true",
+			orchdocker.TaskIDLabel:    string(taskID),
+			orchdocker.NodeIDLabel:    string(nodeID),
+			orchdocker.ServiceIDLabel: string(serviceID),
+			orchdocker.VersionLabel:   strconv.FormatInt(version, 10),
+		},
+	}
+	if running {
+		status.State = "running"
+		status.Status = "running"
+	} else {
+		status.State = "exited"
+		status.Status = "exited"
+	}
+	return status
 }
 
 var errDockerUnavailable = errors.New("docker unavailable")

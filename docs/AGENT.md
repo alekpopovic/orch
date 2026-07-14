@@ -37,7 +37,7 @@ The agent sends `POST /v1/agent/heartbeat` every interval. The loop supports con
 
 Heartbeats update capacity, allocatable resources, labels, and last heartbeat time. A graceful shutdown heartbeat sets `shutdown=true`; the server marks the node `offline` if it receives it.
 
-Roadmap: a server-side heartbeat expiry controller should mark abruptly lost nodes offline.
+The server node monitor marks abruptly lost nodes offline after the configured heartbeat timeout.
 
 ## Task Polling
 
@@ -60,17 +60,25 @@ For each assigned task whose desired status is `running`, the agent:
    - `orch.task_id`
    - `orch.node_id`
    - `orch.version`
-3. If a running container is found, reports `running` with the recovered container ID.
-4. If a stopped container exited non-zero, reports `failed`.
-5. If no container exists and Docker is reachable, pulls the image, creates the container, starts it, and reports status after each step.
+3. Compares the local container image, version, and orch labels with the assigned task.
+4. If a running matching container is found, reports `running` with the recovered container ID.
+5. If a matching container was manually stopped with exit code `0`, starts it again and reports `running`.
+6. If a stopped container exited non-zero, reports `failed`.
+7. If no matching container exists and Docker is reachable, pulls the image, creates the container, starts it, and reports status after each step.
 
 The agent does not create a replacement if Docker cannot list managed containers. That avoids duplicates during Docker daemon restarts or transient Docker API failures.
+
+Drift observations are logged with stable `drift_type` values:
+
+- `managed_container_missing`: an assigned task's managed container is gone.
+- `managed_container_state_mismatch`: a managed container is stopped or its image/version/labels do not match the assigned task.
+- `unexpected_managed_container`: a local orch-managed container is not assigned to this node.
 
 ## Stop And Cleanup
 
 For tasks whose desired status is `stopped` or `removed`, the agent stops and removes the managed container when possible, then reports terminal status.
 
-On every poll, the agent lists local managed containers for its node. Containers with `orch.managed=true` and no corresponding assigned task are stopped and removed. Cleanup is limited to orchestrator-managed containers for the current node.
+On every poll, the agent lists local managed containers for its node. Containers with `orch.managed=true` and no corresponding assigned task are stopped and removed. Cleanup is limited to orchestrator-managed containers for the current node. Non-orchestrator containers are ignored even when their names or labels look similar.
 
 ## Health Checks
 
