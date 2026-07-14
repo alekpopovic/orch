@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 180" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 180" role="img" aria-labelledby="title desc">
   <title id="title">orch wordmark</title>
   <desc id="desc">The orch logo mark with a modern lowercase wordmark and Docker-first orchestration tagline.</desc>
   <defs>
@@ -12,7 +12,7 @@
       <stop offset="0.54" stop-color="#dff7ff"/>
       <stop offset="1" stop-color="#a7f3d0"/>
     </linearGradient>
-    <linearGradient id="word" x1="205" y1="39" x2="493" y2="126" gradientUnits="userSpaceOnUse">
+    <linearGradient id="word" x1="205" y1="39" x2="530" y2="126" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#0f172a"/>
       <stop offset="1" stop-color="#2374e1"/>
     </linearGradient>
@@ -28,7 +28,7 @@
   </g>
   <text x="202" y="104" fill="url(#word)" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="86" font-weight="900" letter-spacing="-5">orch</text>
   <text x="207" y="139" fill="#64748b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="22" font-weight="700" letter-spacing="2.2">DOCKER-FIRST ORCHESTRATION</text>
-  <g transform="translate(548 54)">
+  <g transform="translate(642 54)">
     <rect width="136" height="72" rx="24" fill="#eff6ff" stroke="#bfdbfe"/>
     <circle cx="35" cy="36" r="10" fill="#22d3ee"/>
     <circle cx="68" cy="36" r="10" fill="#2374e1"/>
