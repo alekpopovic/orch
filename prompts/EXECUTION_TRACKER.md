@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `37-secrets-mvp.md`
-- Last matching commit: `same commit: Add secrets MVP`
-- Completed prompt range: `00` through `37`
-- Next prompt to execute: `38-image-registry-authentication.md`
+- Last executed prompt: `38-image-registry-authentication.md`
+- Last matching commit: `same commit: Add registry credentials support`
+- Completed prompt range: `00` through `38`
+- Next prompt to execute: `39-node-drain-and-reschedule.md`
 - Updated: `2026-07-14`
 
 ## Update Rule

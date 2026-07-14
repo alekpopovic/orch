@@ -54,6 +54,13 @@ type SecretStore interface {
 	DeleteSecret(ctx context.Context, name string) error
 }
 
+type RegistryCredentialStore interface {
+	CreateRegistryCredential(ctx context.Context, credential types.RegistryCredential) (types.RegistryCredential, error)
+	GetRegistryCredential(ctx context.Context, id string) (types.RegistryCredential, error)
+	ListRegistryCredentials(ctx context.Context) ([]types.RegistryCredential, error)
+	DeleteRegistryCredential(ctx context.Context, id string) error
+}
+
 type Store interface {
 	NodeStore
 	ServiceStore
@@ -61,6 +68,7 @@ type Store interface {
 	DeploymentStore
 	EventStore
 	SecretStore
+	RegistryCredentialStore
 }
 
 // TxFunc runs a set of store operations inside one transaction boundary.

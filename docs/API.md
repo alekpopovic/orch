@@ -72,6 +72,7 @@ curl -X POST http://localhost:8080/v1/services \
     "spec": {
       "name": "web",
       "image": "nginx:1.27",
+      "image_pull_secret": "ghcr-prod",
       "replicas": 2,
       "env": {"APP_ENV": "local"},
       "secret_refs": [{"name": "prod/database-url", "env": "DATABASE_URL"}],
@@ -146,6 +147,19 @@ curl -X DELETE http://localhost:8080/v1/secrets/prod%2Fdatabase-url
 ```
 
 Secret GET responses include metadata only and never return plaintext. Services can reference secrets with `secret_refs`, and agents receive decrypted values only in assigned task payloads. See [SECRETS.md](SECRETS.md).
+
+## Registry Credentials
+
+```sh
+curl -X POST http://localhost:8080/v1/registry-credentials \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"ghcr-prod","registry":"ghcr.io","username":"robot","password":"token"}'
+
+curl http://localhost:8080/v1/registry-credentials
+curl -X DELETE http://localhost:8080/v1/registry-credentials/ghcr-prod
+```
+
+Registry credential responses include metadata only. Services can reference credentials with `image_pull_secret`; agents receive decrypted pull auth only for assigned tasks. See [REGISTRIES.md](REGISTRIES.md).
 
 ## Service Discovery
 

@@ -12,16 +12,17 @@ import (
 )
 
 type DeployFile struct {
-	Name        string            `yaml:"name"`
-	Image       string            `yaml:"image"`
-	Replicas    int               `yaml:"replicas"`
-	Ports       []DeployPort      `yaml:"ports"`
-	Env         DeployEnv         `yaml:"env"`
-	Resources   DeployResources   `yaml:"resources"`
-	Healthcheck DeployHealthcheck `yaml:"healthcheck"`
-	Restart     DeployRestart     `yaml:"restart"`
-	Placement   DeployPlacement   `yaml:"placement"`
-	Routes      []DeployRoute     `yaml:"routes"`
+	Name            string            `yaml:"name"`
+	Image           string            `yaml:"image"`
+	ImagePullSecret string            `yaml:"imagePullSecret"`
+	Replicas        int               `yaml:"replicas"`
+	Ports           []DeployPort      `yaml:"ports"`
+	Env             DeployEnv         `yaml:"env"`
+	Resources       DeployResources   `yaml:"resources"`
+	Healthcheck     DeployHealthcheck `yaml:"healthcheck"`
+	Restart         DeployRestart     `yaml:"restart"`
+	Placement       DeployPlacement   `yaml:"placement"`
+	Routes          []DeployRoute     `yaml:"routes"`
 }
 
 type DeployPort struct {
@@ -106,9 +107,10 @@ func ParseDeploy(data []byte) (types.ServiceSpec, error) {
 	}
 
 	spec := types.ServiceSpec{
-		Name:     strings.TrimSpace(deploy.Name),
-		Image:    strings.TrimSpace(deploy.Image),
-		Replicas: deploy.Replicas,
+		Name:            strings.TrimSpace(deploy.Name),
+		Image:           strings.TrimSpace(deploy.Image),
+		ImagePullSecret: strings.TrimSpace(deploy.ImagePullSecret),
+		Replicas:        deploy.Replicas,
 		ResourceRequirements: types.ResourceRequirements{
 			Requests: requests,
 			Limits:   requests,

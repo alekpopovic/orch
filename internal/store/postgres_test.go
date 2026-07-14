@@ -383,6 +383,7 @@ func migrate(t *testing.T, ctx context.Context, pool execer) {
 	t.Helper()
 
 	for _, file := range []string{
+		"000005_registry_credentials.down.sql",
 		"000004_secrets.down.sql",
 		"000003_service_routes.down.sql",
 		"000002_task_ports.down.sql",
@@ -391,6 +392,7 @@ func migrate(t *testing.T, ctx context.Context, pool execer) {
 		"000002_task_ports.up.sql",
 		"000003_service_routes.up.sql",
 		"000004_secrets.up.sql",
+		"000005_registry_credentials.up.sql",
 	} {
 		sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", file))
 		if err != nil {

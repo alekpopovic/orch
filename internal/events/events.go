@@ -20,6 +20,8 @@ const (
 	TypeServiceScaled          = "service.scaled"
 	TypeSecretCreated          = "secret.created"
 	TypeSecretDeleted          = "secret.deleted"
+	TypeRegistryCredCreated    = "registry_credential.created"
+	TypeRegistryCredDeleted    = "registry_credential.deleted"
 	TypeRolloutStarted         = "service.rollout.started"
 	TypeRollbackStarted        = "service.rollback.started"
 	TypeTaskAssigned           = "task.assigned"

@@ -152,6 +152,7 @@ const (
 type ServiceSpec struct {
 	Name                 string                `json:"name"`
 	Image                string                `json:"image"`
+	ImagePullSecret      string                `json:"image_pull_secret,omitempty"`
 	Replicas             int                   `json:"replicas"`
 	Env                  map[string]string     `json:"env,omitempty"`
 	SecretRefs           []SecretRef           `json:"secret_refs,omitempty"`
@@ -170,6 +171,7 @@ func (spec ServiceSpec) Validate() error {
 	if strings.TrimSpace(spec.Image) == "" {
 		return fmt.Errorf("image is required")
 	}
+	spec.ImagePullSecret = strings.TrimSpace(spec.ImagePullSecret)
 	if spec.Replicas < 0 {
 		return fmt.Errorf("replicas cannot be negative")
 	}
@@ -254,6 +256,36 @@ func (secret Secret) Metadata() SecretMetadata {
 
 type SecretMetadata struct {
 	Name      string    `json:"name"`
+	KeyID     string    `json:"key_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type RegistryCredential struct {
+	ID                string    `json:"id"`
+	Registry          string    `json:"registry"`
+	Username          string    `json:"username"`
+	EncryptedPassword []byte    `json:"-"`
+	KeyID             string    `json:"key_id,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+func (credential RegistryCredential) Metadata() RegistryCredentialMetadata {
+	return RegistryCredentialMetadata{
+		ID:        credential.ID,
+		Registry:  credential.Registry,
+		Username:  credential.Username,
+		KeyID:     credential.KeyID,
+		CreatedAt: credential.CreatedAt.UTC(),
+		UpdatedAt: credential.UpdatedAt.UTC(),
+	}
+}
+
+type RegistryCredentialMetadata struct {
+	ID        string    `json:"id"`
+	Registry  string    `json:"registry"`
+	Username  string    `json:"username"`
 	KeyID     string    `json:"key_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -396,6 +428,7 @@ func (requirements ResourceRequirements) ValidateStrict() error {
 
 func NormalizeServiceSpec(spec ServiceSpec, defaults ResourceDefaults) (ServiceSpec, error) {
 	normalized := spec
+	normalized.ImagePullSecret = strings.TrimSpace(normalized.ImagePullSecret)
 	requirements, err := normalized.ResourceRequirements.WithDefaults(defaults)
 	if err != nil {
 		return ServiceSpec{}, err

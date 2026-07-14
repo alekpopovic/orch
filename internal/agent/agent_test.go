@@ -13,6 +13,7 @@ import (
 
 	"github.com/alekpopovic/orch/internal/api"
 	"github.com/alekpopovic/orch/internal/config"
+	"github.com/alekpopovic/orch/internal/controlplane"
 	orchdocker "github.com/alekpopovic/orch/internal/docker"
 	"github.com/alekpopovic/orch/internal/health"
 	"github.com/alekpopovic/orch/internal/metrics"
@@ -33,8 +34,9 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 				Image:         "nginx:1.27",
 				Version:       1,
 			},
-			Ports: []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}},
-			Env:   map[string]string{"DATABASE_URL": "postgres://secret"},
+			Ports:         []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}},
+			Env:           map[string]string{"DATABASE_URL": "postgres://secret"},
+			ImagePullAuth: &controlplane.RegistryAuth{Username: "robot", Password: "token", ServerAddress: "ghcr.io"},
 		}},
 	}
 	runtime := orchdocker.NewFakeRuntime(orchdocker.WithFakeContainerIDs("container-1"))
@@ -47,6 +49,10 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 	wantRuntimeCalls := []string{"list", "pull:nginx:1.27", "create:" + string(taskID), "start:container-1", "list"}
 	if !equalStrings(runtime.OperationStrings(), wantRuntimeCalls) {
 		t.Fatalf("expected runtime calls %#v, got %#v", wantRuntimeCalls, runtime.OperationStrings())
+	}
+	pullAuths := runtime.PullAuths()
+	if len(pullAuths) != 1 || pullAuths[0].Username != "robot" || pullAuths[0].Password != "token" || pullAuths[0].ServerAddress != "ghcr.io" {
+		t.Fatalf("expected Docker pull auth, got %#v", pullAuths)
 	}
 	specs := runtime.CreatedSpecs()
 	if len(specs) != 1 || specs[0].Env["DATABASE_URL"] != "postgres://secret" {

@@ -142,6 +142,9 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux.HandleFunc("GET /v1/secrets", server.listSecrets)
 	mux.HandleFunc("GET /v1/secrets/{name...}", server.getSecret)
 	mux.HandleFunc("DELETE /v1/secrets/{name...}", server.deleteSecret)
+	mux.HandleFunc("POST /v1/registry-credentials", server.createRegistryCredential)
+	mux.HandleFunc("GET /v1/registry-credentials", server.listRegistryCredentials)
+	mux.HandleFunc("DELETE /v1/registry-credentials/{id}", server.deleteRegistryCredential)
 	mux.HandleFunc("POST /v1/services", server.createService)
 	mux.HandleFunc("GET /v1/services", server.listServices)
 	mux.HandleFunc("GET /v1/services/{id}", server.getService)
@@ -234,6 +237,21 @@ type SecretResponse struct {
 
 type ListSecretsResponse struct {
 	Secrets []types.SecretMetadata `json:"secrets"`
+}
+
+type CreateRegistryCredentialRequest struct {
+	ID       string `json:"id"`
+	Registry string `json:"registry"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type RegistryCredentialResponse struct {
+	Credential types.RegistryCredentialMetadata `json:"credential"`
+}
+
+type ListRegistryCredentialsResponse struct {
+	Credentials []types.RegistryCredentialMetadata `json:"credentials"`
 }
 
 type CreateServiceRequest struct {
@@ -508,6 +526,46 @@ func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.controlPlane.DeleteSecret(r.Context(), name); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) createRegistryCredential(w http.ResponseWriter, r *http.Request) {
+	var req CreateRegistryCredentialRequest
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	credential, err := s.controlPlane.CreateRegistryCredential(r.Context(), controlplane.RegistryCredentialSpec{
+		ID:       req.ID,
+		Registry: req.Registry,
+		Username: req.Username,
+		Password: req.Password,
+	})
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, RegistryCredentialResponse{Credential: credential})
+}
+
+func (s *Server) listRegistryCredentials(w http.ResponseWriter, r *http.Request) {
+	credentials, err := s.controlPlane.ListRegistryCredentials(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ListRegistryCredentialsResponse{Credentials: credentials})
+}
+
+func (s *Server) deleteRegistryCredential(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.writeError(w, r, fmt.Errorf("%w: registry credential id is required", store.ErrInvalidState))
+		return
+	}
+	if err := s.controlPlane.DeleteRegistryCredential(r.Context(), id); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -890,6 +948,8 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 			return auth.RoleViewer, true
 		case path == "/v1/secrets" || strings.HasPrefix(path, "/v1/secrets/"):
 			return auth.RoleViewer, true
+		case path == "/v1/registry-credentials" || strings.HasPrefix(path, "/v1/registry-credentials/"):
+			return auth.RoleViewer, true
 		case path == "/v1/services" || strings.HasPrefix(path, "/v1/services/"):
 			return auth.RoleViewer, true
 		case path == "/v1/tasks" || strings.HasPrefix(path, "/v1/tasks/"):
@@ -912,11 +972,16 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 			return auth.RoleAdmin, true
 		case path == "/v1/secrets":
 			return auth.RoleOperator, true
+		case path == "/v1/registry-credentials":
+			return auth.RoleOperator, true
 		case path == "/v1/services" || strings.Contains(path, "/scale") || strings.Contains(path, "/rollout") || strings.Contains(path, "/rollback"):
 			return auth.RoleOperator, true
 		}
 	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/secrets/") {
+		return auth.RoleOperator, true
+	}
+	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/registry-credentials/") {
 		return auth.RoleOperator, true
 	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/services/") {
@@ -1014,6 +1079,10 @@ func metricRoute(method string, path string) (string, bool) {
 		return "/v1/secrets", true
 	case strings.HasPrefix(path, "/v1/secrets/"):
 		return "/v1/secrets/{name}", true
+	case path == "/v1/registry-credentials":
+		return "/v1/registry-credentials", true
+	case strings.HasPrefix(path, "/v1/registry-credentials/"):
+		return "/v1/registry-credentials/{id}", true
 	case path == "/v1/services":
 		return "/v1/services", true
 	case strings.HasPrefix(path, "/v1/services/") && strings.HasSuffix(path, "/scale"):

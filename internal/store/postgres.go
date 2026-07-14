@@ -322,7 +322,7 @@ func (s *postgresStore) UpdateServiceStatus(ctx context.Context, id types.Servic
 			updated_at = timezone('utc', now()),
 			version = version + 1
 		WHERE id = $1 AND updated_at = $3
-		RETURNING id, name, image, replicas, env, secret_refs, ports,
+		RETURNING id, name, image, image_pull_secret, replicas, env, secret_refs, ports,
 			resource_requirements, healthcheck, restart_policy, placement_constraints, routes,
 			status, deployment_version, created_at, updated_at`,
 		string(id),
@@ -409,6 +409,97 @@ func (s *postgresStore) ListSecrets(ctx context.Context) ([]types.Secret, error)
 
 func (s *postgresStore) DeleteSecret(ctx context.Context, name string) error {
 	tag, err := s.db.Exec(ctx, `DELETE FROM secrets WHERE name = $1`, strings.TrimSpace(name))
+	if err != nil {
+		return mapPostgresError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *postgresStore) CreateRegistryCredential(ctx context.Context, credential types.RegistryCredential) (types.RegistryCredential, error) {
+	credential.ID = strings.TrimSpace(credential.ID)
+	credential.Registry = strings.TrimSpace(credential.Registry)
+	credential.Username = strings.TrimSpace(credential.Username)
+	if credential.ID == "" {
+		return types.RegistryCredential{}, fmt.Errorf("%w: registry credential id is required", ErrInvalidState)
+	}
+	if credential.Registry == "" {
+		return types.RegistryCredential{}, fmt.Errorf("%w: registry host is required", ErrInvalidState)
+	}
+	if credential.Username == "" {
+		return types.RegistryCredential{}, fmt.Errorf("%w: registry username is required", ErrInvalidState)
+	}
+	if len(credential.EncryptedPassword) == 0 {
+		return types.RegistryCredential{}, fmt.Errorf("%w: encrypted registry credential password is required", ErrInvalidState)
+	}
+	if strings.TrimSpace(credential.KeyID) == "" {
+		return types.RegistryCredential{}, fmt.Errorf("%w: registry credential key id is required", ErrInvalidState)
+	}
+	row := s.db.QueryRow(ctx, `
+		INSERT INTO registry_credentials (id, registry, username, encrypted_password, key_id)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (id) DO UPDATE
+		SET registry = EXCLUDED.registry,
+			username = EXCLUDED.username,
+			encrypted_password = EXCLUDED.encrypted_password,
+			key_id = EXCLUDED.key_id,
+			updated_at = timezone('utc', now())
+		RETURNING id, registry, username, encrypted_password, key_id, created_at, updated_at`,
+		credential.ID,
+		credential.Registry,
+		credential.Username,
+		credential.EncryptedPassword,
+		credential.KeyID,
+	)
+	created, err := scanRegistryCredential(row)
+	if err != nil {
+		return types.RegistryCredential{}, mapPostgresError(err)
+	}
+	return created, nil
+}
+
+func (s *postgresStore) GetRegistryCredential(ctx context.Context, id string) (types.RegistryCredential, error) {
+	row := s.db.QueryRow(ctx, `
+		SELECT id, registry, username, encrypted_password, key_id, created_at, updated_at
+		FROM registry_credentials
+		WHERE id = $1`,
+		strings.TrimSpace(id),
+	)
+	credential, err := scanRegistryCredential(row)
+	if err != nil {
+		return types.RegistryCredential{}, mapPostgresError(err)
+	}
+	return credential, nil
+}
+
+func (s *postgresStore) ListRegistryCredentials(ctx context.Context) ([]types.RegistryCredential, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, registry, username, encrypted_password, key_id, created_at, updated_at
+		FROM registry_credentials
+		ORDER BY id`)
+	if err != nil {
+		return nil, mapPostgresError(err)
+	}
+	defer rows.Close()
+
+	credentials := make([]types.RegistryCredential, 0)
+	for rows.Next() {
+		credential, err := scanRegistryCredential(rows)
+		if err != nil {
+			return nil, mapPostgresError(err)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapPostgresError(err)
+	}
+	return credentials, nil
+}
+
+func (s *postgresStore) DeleteRegistryCredential(ctx context.Context, id string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM registry_credentials WHERE id = $1`, strings.TrimSpace(id))
 	if err != nil {
 		return mapPostgresError(err)
 	}
@@ -811,15 +902,16 @@ func insertService(ctx context.Context, db postgresDB, spec types.ServiceSpec) (
 	}
 	row := db.QueryRow(ctx, `
 		INSERT INTO services (
-			name, image, replicas, env, secret_refs, ports,
+			name, image, image_pull_secret, replicas, env, secret_refs, ports,
 			resource_requirements, healthcheck, restart_policy, placement_constraints, routes
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		RETURNING id, name, image, replicas, env, secret_refs, ports,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id, name, image, image_pull_secret, replicas, env, secret_refs, ports,
 			resource_requirements, healthcheck, restart_policy, placement_constraints, routes, status,
 			deployment_version, created_at, updated_at`,
 		spec.Name,
 		spec.Image,
+		spec.ImagePullSecret,
 		spec.Replicas,
 		env,
 		secretRefs,
@@ -843,28 +935,30 @@ func updateService(ctx context.Context, db postgresDB, id types.ServiceID, spec 
 		return types.Service{}, err
 	}
 	row := db.QueryRow(ctx, `
-		UPDATE services
-		SET name = $2,
-			image = $3,
-			replicas = $4,
-			env = $5,
-			secret_refs = $6,
-			ports = $7,
-			resource_requirements = $8,
-			healthcheck = $9,
-			restart_policy = $10,
-			placement_constraints = $11,
-			routes = $13,
-			deployment_version = deployment_version + 1,
-			updated_at = timezone('utc', now()),
-			version = version + 1
-		WHERE id = $1 AND updated_at = $12
-		RETURNING id, name, image, replicas, env, secret_refs, ports,
-			resource_requirements, healthcheck, restart_policy, placement_constraints, routes,
-			status, deployment_version, created_at, updated_at`,
+			UPDATE services
+			SET name = $2,
+				image = $3,
+				image_pull_secret = $4,
+				replicas = $5,
+				env = $6,
+				secret_refs = $7,
+				ports = $8,
+				resource_requirements = $9,
+				healthcheck = $10,
+				restart_policy = $11,
+				placement_constraints = $12,
+				routes = $14,
+				deployment_version = deployment_version + 1,
+				updated_at = timezone('utc', now()),
+				version = version + 1
+			WHERE id = $1 AND updated_at = $13
+			RETURNING id, name, image, image_pull_secret, replicas, env, secret_refs, ports,
+				resource_requirements, healthcheck, restart_policy, placement_constraints, routes,
+				status, deployment_version, created_at, updated_at`,
 		string(id),
 		spec.Name,
 		spec.Image,
+		spec.ImagePullSecret,
 		spec.Replicas,
 		env,
 		secretRefs,
@@ -902,7 +996,7 @@ func insertServiceVersion(ctx context.Context, db postgresDB, serviceID types.Se
 }
 
 func serviceSelectSQL() string {
-	return `SELECT id, name, image, replicas, env, secret_refs, ports,
+	return `SELECT id, name, image, image_pull_secret, replicas, env, secret_refs, ports,
 		resource_requirements, healthcheck, restart_policy, placement_constraints, routes,
 		status, deployment_version, created_at, updated_at FROM services`
 }
@@ -972,6 +1066,7 @@ func scanService(row pgx.Row) (types.Service, error) {
 		&id,
 		&service.Spec.Name,
 		&service.Spec.Image,
+		&service.Spec.ImagePullSecret,
 		&service.Spec.Replicas,
 		&env,
 		&secretRefs,
@@ -1070,6 +1165,26 @@ func scanSecret(row pgx.Row) (types.Secret, error) {
 	secret.CreatedAt = secret.CreatedAt.UTC()
 	secret.UpdatedAt = secret.UpdatedAt.UTC()
 	return secret, nil
+}
+
+func scanRegistryCredential(row pgx.Row) (types.RegistryCredential, error) {
+	var credential types.RegistryCredential
+	err := row.Scan(
+		&credential.ID,
+		&credential.Registry,
+		&credential.Username,
+		&credential.EncryptedPassword,
+		&credential.KeyID,
+		&credential.CreatedAt,
+		&credential.UpdatedAt,
+	)
+	if err != nil {
+		return types.RegistryCredential{}, err
+	}
+	credential.EncryptedPassword = append([]byte(nil), credential.EncryptedPassword...)
+	credential.CreatedAt = credential.CreatedAt.UTC()
+	credential.UpdatedAt = credential.UpdatedAt.UTC()
+	return credential, nil
 }
 
 func scanDeployment(row pgx.Row) (types.Deployment, error) {

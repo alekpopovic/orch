@@ -17,6 +17,7 @@ import (
 
 	"github.com/alekpopovic/orch/internal/api"
 	"github.com/alekpopovic/orch/internal/config"
+	"github.com/alekpopovic/orch/internal/controlplane"
 	orchdocker "github.com/alekpopovic/orch/internal/docker"
 	"github.com/alekpopovic/orch/internal/health"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -211,7 +212,7 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 	if _, err := r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskPulling}); err != nil {
 		return err
 	}
-	if err := r.runtime.PullImage(ctx, task.Image, nil); err != nil {
+	if err := r.runtime.PullImage(ctx, task.Image, dockerRegistryAuth(assigned.ImagePullAuth)); err != nil {
 		_, _ = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, FailureReason: err.Error()})
 		return err
 	}
@@ -257,6 +258,17 @@ func dockerPortBindings(ports []types.Port) []orchdocker.PortBinding {
 		})
 	}
 	return bindings
+}
+
+func dockerRegistryAuth(auth *controlplane.RegistryAuth) *orchdocker.RegistryAuth {
+	if auth == nil {
+		return nil
+	}
+	return &orchdocker.RegistryAuth{
+		Username:      auth.Username,
+		Password:      auth.Password,
+		ServerAddress: auth.ServerAddress,
+	}
 }
 
 func runtimeFailureReason(err error) string {

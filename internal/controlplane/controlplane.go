@@ -31,6 +31,9 @@ type Service interface {
 	ListSecrets(ctx context.Context) ([]types.SecretMetadata, error)
 	GetSecret(ctx context.Context, name string) (types.SecretMetadata, error)
 	DeleteSecret(ctx context.Context, name string) error
+	CreateRegistryCredential(ctx context.Context, spec RegistryCredentialSpec) (types.RegistryCredentialMetadata, error)
+	ListRegistryCredentials(ctx context.Context) ([]types.RegistryCredentialMetadata, error)
+	DeleteRegistryCredential(ctx context.Context, id string) error
 	CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error)
 	ListServices(ctx context.Context) ([]types.Service, error)
 	GetService(ctx context.Context, id types.ServiceID) (types.Service, error)
@@ -72,10 +75,24 @@ type AgentDirective struct {
 }
 
 type AgentTask struct {
-	Task        types.Task         `json:"task"`
-	Healthcheck *types.Healthcheck `json:"healthcheck,omitempty"`
-	Ports       []types.Port       `json:"ports,omitempty"`
-	Env         map[string]string  `json:"env,omitempty"`
+	Task          types.Task         `json:"task"`
+	Healthcheck   *types.Healthcheck `json:"healthcheck,omitempty"`
+	Ports         []types.Port       `json:"ports,omitempty"`
+	Env           map[string]string  `json:"env,omitempty"`
+	ImagePullAuth *RegistryAuth      `json:"image_pull_auth,omitempty"`
+}
+
+type RegistryCredentialSpec struct {
+	ID       string
+	Registry string
+	Username string
+	Password string
+}
+
+type RegistryAuth struct {
+	Username      string `json:"username,omitempty"`
+	Password      string `json:"password,omitempty"`
+	ServerAddress string `json:"server_address,omitempty"`
 }
 
 type TaskStatusReport struct {
@@ -106,6 +123,7 @@ type MemoryService struct {
 	tasks       map[types.TaskID]types.Task
 	deployments map[types.DeploymentID]types.Deployment
 	secrets     map[string]types.Secret
+	registries  map[string]types.RegistryCredential
 	envelope    secrets.Envelope
 	events      []types.Event
 	now         func() time.Time
@@ -131,6 +149,7 @@ func NewMemoryService(opts ...Option) *MemoryService {
 		tasks:       make(map[types.TaskID]types.Task),
 		deployments: make(map[types.DeploymentID]types.Deployment),
 		secrets:     make(map[string]types.Secret),
+		registries:  make(map[string]types.RegistryCredential),
 		envelope:    envelope,
 		now:         now,
 	}
@@ -314,11 +333,16 @@ func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.Node
 		if err != nil {
 			return nil, err
 		}
+		auth, err := s.resolveRegistryAuthLocked(ctx, service.Spec.ImagePullSecret)
+		if err != nil {
+			return nil, err
+		}
 		tasks = append(tasks, AgentTask{
-			Task:        task,
-			Healthcheck: service.Spec.Healthcheck,
-			Ports:       taskPortsForAgent(task, service),
-			Env:         env,
+			Task:          task,
+			Healthcheck:   service.Spec.Healthcheck,
+			Ports:         taskPortsForAgent(task, service),
+			Env:           env,
+			ImagePullAuth: auth,
 		})
 	}
 	slices.SortFunc(tasks, func(a, b AgentTask) int {
@@ -371,6 +395,29 @@ func cloneStringMap(values map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func (s *MemoryService) resolveRegistryAuthLocked(ctx context.Context, id string) (*RegistryAuth, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil
+	}
+	credential, ok := s.registries[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: registry credential %q not found", store.ErrInvalidState, id)
+	}
+	if s.envelope == nil {
+		return nil, fmt.Errorf("%w: secret envelope is not configured", store.ErrInvalidState)
+	}
+	plaintext, err := s.envelope.Decrypt(ctx, secrets.Ciphertext{KeyID: credential.KeyID, Data: credential.EncryptedPassword})
+	if err != nil {
+		return nil, fmt.Errorf("%w: decrypt registry credential %q", store.ErrInvalidState, id)
+	}
+	return &RegistryAuth{
+		Username:      credential.Username,
+		Password:      string(plaintext),
+		ServerAddress: credential.Registry,
+	}, nil
 }
 
 func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusReport) (types.Task, error) {
@@ -583,6 +630,96 @@ func (s *MemoryService) DeleteSecret(ctx context.Context, name string) error {
 	return nil
 }
 
+func (s *MemoryService) CreateRegistryCredential(ctx context.Context, spec RegistryCredentialSpec) (types.RegistryCredentialMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return types.RegistryCredentialMetadata{}, err
+	}
+	spec.ID = strings.TrimSpace(spec.ID)
+	spec.Registry = strings.TrimSpace(spec.Registry)
+	spec.Username = strings.TrimSpace(spec.Username)
+	if spec.ID == "" {
+		return types.RegistryCredentialMetadata{}, fmt.Errorf("%w: registry credential id is required", store.ErrInvalidState)
+	}
+	if spec.Registry == "" {
+		return types.RegistryCredentialMetadata{}, fmt.Errorf("%w: registry host is required", store.ErrInvalidState)
+	}
+	if spec.Username == "" {
+		return types.RegistryCredentialMetadata{}, fmt.Errorf("%w: registry username is required", store.ErrInvalidState)
+	}
+	if s.envelope == nil {
+		return types.RegistryCredentialMetadata{}, fmt.Errorf("%w: secret envelope is not configured", store.ErrInvalidState)
+	}
+	ciphertext, err := s.envelope.Encrypt(ctx, []byte(spec.Password))
+	if err != nil {
+		return types.RegistryCredentialMetadata{}, fmt.Errorf("encrypt registry credential %q: %w", spec.ID, err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now()
+	if existing, ok := s.registries[spec.ID]; ok {
+		existing.Registry = spec.Registry
+		existing.Username = spec.Username
+		existing.EncryptedPassword = append([]byte(nil), ciphertext.Data...)
+		existing.KeyID = ciphertext.KeyID
+		existing.UpdatedAt = now
+		s.registries[spec.ID] = existing
+		return existing.Metadata(), nil
+	}
+	credential := types.RegistryCredential{
+		ID:                spec.ID,
+		Registry:          spec.Registry,
+		Username:          spec.Username,
+		EncryptedPassword: append([]byte(nil), ciphertext.Data...),
+		KeyID:             ciphertext.KeyID,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	s.registries[spec.ID] = credential
+	s.appendEventLocked(events.TypeRegistryCredCreated, types.EventInfo, "controlplane", "registry credential created", "registry_credential", "", now)
+	return credential.Metadata(), nil
+}
+
+func (s *MemoryService) ListRegistryCredentials(ctx context.Context) ([]types.RegistryCredentialMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	items := make([]types.RegistryCredentialMetadata, 0, len(s.registries))
+	for _, credential := range s.registries {
+		items = append(items, credential.Metadata())
+	}
+	slices.SortFunc(items, func(a, b types.RegistryCredentialMetadata) int {
+		if a.ID < b.ID {
+			return -1
+		}
+		if a.ID > b.ID {
+			return 1
+		}
+		return 0
+	})
+	return items, nil
+}
+
+func (s *MemoryService) DeleteRegistryCredential(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	id = strings.TrimSpace(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.registries[id]; !ok {
+		return store.ErrNotFound
+	}
+	delete(s.registries, id)
+	s.appendEventLocked(events.TypeRegistryCredDeleted, types.EventInfo, "controlplane", "registry credential deleted", "registry_credential", "", s.now())
+	return nil
+}
+
 func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error) {
 	if err := ctx.Err(); err != nil {
 		return types.Service{}, err
@@ -608,6 +745,12 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 		if _, ok := s.secrets[strings.TrimSpace(ref.Name)]; !ok {
 			return types.Service{}, fmt.Errorf("%w: referenced secret %q not found", store.ErrInvalidState, ref.Name)
 		}
+	}
+	if imagePullSecret := strings.TrimSpace(spec.ImagePullSecret); imagePullSecret != "" {
+		if _, ok := s.registries[imagePullSecret]; !ok {
+			return types.Service{}, fmt.Errorf("%w: registry credential %q not found", store.ErrInvalidState, imagePullSecret)
+		}
+		spec.ImagePullSecret = imagePullSecret
 	}
 
 	now := s.now()

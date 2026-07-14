@@ -24,6 +24,7 @@ type FakeRuntime struct {
 	operations         []FakeOperation
 	createdSpecs       []ContainerSpec
 	pullErr            error
+	pullAuths          []*RegistryAuth
 	createErr          error
 	startErr           error
 	inspectErr         error
@@ -45,6 +46,7 @@ type FakeOperation struct {
 	ContainerID ContainerID
 	Force       bool
 	Labels      map[string]string
+	Auth        *RegistryAuth
 }
 
 func NewFakeRuntime(opts ...FakeRuntimeOption) *FakeRuntime {
@@ -115,13 +117,15 @@ func WithFakeLogBlock(started chan struct{}) FakeRuntimeOption {
 	}
 }
 
-func (r *FakeRuntime) PullImage(ctx context.Context, image string, _ *RegistryAuth) error {
+func (r *FakeRuntime) PullImage(ctx context.Context, image string, auth *RegistryAuth) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.operations = append(r.operations, FakeOperation{Name: "pull", Image: image})
+	clonedAuth := cloneRegistryAuth(auth)
+	r.operations = append(r.operations, FakeOperation{Name: "pull", Image: image, Auth: clonedAuth})
+	r.pullAuths = append(r.pullAuths, clonedAuth)
 	if strings.TrimSpace(image) == "" {
 		return fmt.Errorf("image is required")
 	}
@@ -350,8 +354,19 @@ func (r *FakeRuntime) Operations() []FakeOperation {
 	for i, operation := range r.operations {
 		operations[i] = operation
 		operations[i].Labels = cloneMap(operation.Labels)
+		operations[i].Auth = cloneRegistryAuth(operation.Auth)
 	}
 	return operations
+}
+
+func (r *FakeRuntime) PullAuths() []*RegistryAuth {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	auths := make([]*RegistryAuth, len(r.pullAuths))
+	for i, auth := range r.pullAuths {
+		auths[i] = cloneRegistryAuth(auth)
+	}
+	return auths
 }
 
 func (r *FakeRuntime) OperationStrings() []string {
@@ -443,6 +458,14 @@ func cloneContainerSpec(spec ContainerSpec) ContainerSpec {
 	spec.Ports = append([]PortBinding(nil), spec.Ports...)
 	spec.Command = append([]string(nil), spec.Command...)
 	return spec
+}
+
+func cloneRegistryAuth(auth *RegistryAuth) *RegistryAuth {
+	if auth == nil {
+		return nil
+	}
+	cloned := *auth
+	return &cloned
 }
 
 var _ Runtime = (*FakeRuntime)(nil)

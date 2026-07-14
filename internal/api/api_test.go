@@ -236,6 +236,106 @@ func TestSecretInjectedIntoAgentTaskEnv(t *testing.T) {
 	}
 }
 
+func TestRegistryCredentialCreateListDeleteAndRedactPassword(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithBootstrapToken("secret"))
+	const token = "ghp_secret_token"
+
+	create := doRequest(t, handler, http.MethodPost, "/v1/registry-credentials", CreateRegistryCredentialRequest{
+		ID:       "ghcr-prod",
+		Registry: "ghcr.io",
+		Username: "robot",
+		Password: token,
+	})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, create.Code, create.Body.String())
+	}
+	if strings.Contains(create.Body.String(), token) {
+		t.Fatalf("create response leaked registry token: %s", create.Body.String())
+	}
+	var created RegistryCredentialResponse
+	decodeResponse(t, create, &created)
+	if created.Credential.ID != "ghcr-prod" || created.Credential.Registry != "ghcr.io" || created.Credential.Username != "robot" {
+		t.Fatalf("unexpected credential metadata %#v", created.Credential)
+	}
+
+	list := doRequest(t, handler, http.MethodGet, "/v1/registry-credentials", nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, list.Code, list.Body.String())
+	}
+	if strings.Contains(list.Body.String(), token) {
+		t.Fatalf("list response leaked registry token: %s", list.Body.String())
+	}
+	var listed ListRegistryCredentialsResponse
+	decodeResponse(t, list, &listed)
+	if len(listed.Credentials) != 1 || listed.Credentials[0].ID != "ghcr-prod" {
+		t.Fatalf("unexpected credential list %#v", listed.Credentials)
+	}
+
+	deleteRec := doRequest(t, handler, http.MethodDelete, "/v1/registry-credentials/ghcr-prod", nil)
+	if deleteRec.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusNoContent, deleteRec.Code, deleteRec.Body.String())
+	}
+}
+
+func TestServiceReferencesMissingRegistryCredential(t *testing.T) {
+	rec := doRequest(t, newTestHandler(), http.MethodPost, "/v1/services", `{
+		"spec": {
+			"name": "private-api",
+			"image": "ghcr.io/example/private-api:1.0.0",
+			"image_pull_secret": "missing",
+			"replicas": 1,
+			"resource_requirements": {"requests": {}, "limits": {}}
+		}
+	}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "registry credential") {
+		t.Fatalf("expected registry credential validation error, got %s", rec.Body.String())
+	}
+}
+
+func TestAgentReceivesImagePullAuthForAssignedTask(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithBootstrapToken("secret"))
+	registered := registerTestNode(t, handler)
+	const token = "ghp_secret_token"
+	createCredential := doRequest(t, handler, http.MethodPost, "/v1/registry-credentials", CreateRegistryCredentialRequest{
+		ID:       "ghcr-prod",
+		Registry: "ghcr.io",
+		Username: "robot",
+		Password: token,
+	})
+	if createCredential.Code != http.StatusCreated {
+		t.Fatalf("expected credential status %d, got %d: %s", http.StatusCreated, createCredential.Code, createCredential.Body.String())
+	}
+	createService := doRequest(t, handler, http.MethodPost, "/v1/services", `{
+		"spec": {
+			"name": "private-api",
+			"image": "ghcr.io/example/private-api:1.0.0",
+			"image_pull_secret": "ghcr-prod",
+			"replicas": 1,
+			"resource_requirements": {"requests": {}, "limits": {}}
+		}
+	}`)
+	if createService.Code != http.StatusCreated {
+		t.Fatalf("expected service status %d, got %d: %s", http.StatusCreated, createService.Code, createService.Body.String())
+	}
+
+	list := doAgentCredentialRequest(t, handler, http.MethodGet, "/v1/agent/tasks?node_id="+string(registered.Node.ID), nil, registered.Credential.Token)
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected tasks status %d, got %d: %s", http.StatusOK, list.Code, list.Body.String())
+	}
+	var tasks AgentTasksResponse
+	decodeResponse(t, list, &tasks)
+	if len(tasks.Tasks) != 1 {
+		t.Fatalf("expected one assigned task, got %#v", tasks.Tasks)
+	}
+	auth := tasks.Tasks[0].ImagePullAuth
+	if auth == nil || auth.Username != "robot" || auth.Password != token || auth.ServerAddress != "ghcr.io" {
+		t.Fatalf("unexpected image pull auth %#v", auth)
+	}
+}
+
 func TestAgentTaskAssignmentAndStatus(t *testing.T) {
 	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithBootstrapToken("secret"))
 	registered := registerTestNode(t, handler)
