@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/jackc/pgx/v5"
@@ -901,6 +902,94 @@ func (s *postgresStore) ListEvents(ctx context.Context, filter events.Filter) ([
 	return events, nil
 }
 
+func (s *postgresStore) AppendAuditLog(ctx context.Context, log audit.Log) (audit.Log, error) {
+	log = audit.Normalize(log, time.Now().UTC())
+	row := s.db.QueryRow(ctx, `
+		INSERT INTO audit_logs (
+			actor_type, actor_id, action, target_type, target_id, request_id, source_ip, outcome, metadata, created_at
+		)
+		VALUES ($1, $2, $3, $4, $5, nullif($6, ''), nullif($7, ''), $8, $9, COALESCE($10, timezone('utc', now())))
+		RETURNING id, actor_type, actor_id, action, target_type, target_id, request_id, source_ip, outcome, metadata, created_at`,
+		string(log.ActorType),
+		log.ActorID,
+		log.Action,
+		log.TargetType,
+		log.TargetID,
+		log.RequestID,
+		log.SourceIP,
+		string(log.Outcome),
+		defaultMap(log.Metadata),
+		nilTime(log.Timestamp),
+	)
+	created, err := scanAuditLog(row)
+	if err != nil {
+		return audit.Log{}, mapPostgresError(err)
+	}
+	return created, nil
+}
+
+func (s *postgresStore) ListAuditLogs(ctx context.Context, filter audit.Filter) ([]audit.Log, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	sql := `
+		SELECT id, actor_type, actor_id, action, target_type, target_id, request_id, source_ip, outcome, metadata, created_at
+		FROM audit_logs`
+	args := make([]any, 0, 8)
+	conditions := make([]string, 0, 8)
+	add := func(condition string, value any) {
+		args = append(args, value)
+		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
+	}
+	if filter.ActorType != "" {
+		add("actor_type = $%d", string(filter.ActorType))
+	}
+	if filter.ActorID != "" {
+		add("actor_id = $%d", filter.ActorID)
+	}
+	if filter.Action != "" {
+		add("action = $%d", filter.Action)
+	}
+	if filter.TargetType != "" {
+		add("target_type = $%d", filter.TargetType)
+	}
+	if filter.TargetID != "" {
+		add("target_id = $%d", filter.TargetID)
+	}
+	if filter.Outcome != "" {
+		add("outcome = $%d", string(filter.Outcome))
+	}
+	if !filter.Since.IsZero() {
+		add("created_at >= $%d", filter.Since.UTC())
+	}
+	if len(conditions) > 0 {
+		sql += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	args = append(args, limit)
+	sql += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args))
+
+	rows, err := s.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, mapPostgresError(err)
+	}
+	defer rows.Close()
+
+	logs := make([]audit.Log, 0)
+	for rows.Next() {
+		log, err := scanAuditLog(rows)
+		if err != nil {
+			return nil, mapPostgresError(err)
+		}
+		logs = append(logs, log)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapPostgresError(err)
+	}
+	return logs, nil
+}
+
 func insertService(ctx context.Context, db postgresDB, spec types.ServiceSpec) (types.Service, error) {
 	env, secretRefs, ports, requirements, healthcheck, restartPolicy, constraints, routes, err := serviceJSON(spec)
 	if err != nil {
@@ -1270,6 +1359,41 @@ func scanEvent(row pgx.Row) (types.Event, error) {
 	}
 	event.Timestamp = event.Timestamp.UTC()
 	return event, nil
+}
+
+func scanAuditLog(row pgx.Row) (audit.Log, error) {
+	var log audit.Log
+	var requestID, sourceIP *string
+	var metadata []byte
+	err := row.Scan(
+		&log.ID,
+		&log.ActorType,
+		&log.ActorID,
+		&log.Action,
+		&log.TargetType,
+		&log.TargetID,
+		&requestID,
+		&sourceIP,
+		&log.Outcome,
+		&metadata,
+		&log.Timestamp,
+	)
+	if err != nil {
+		return audit.Log{}, err
+	}
+	if requestID != nil {
+		log.RequestID = *requestID
+	}
+	if sourceIP != nil {
+		log.SourceIP = *sourceIP
+	}
+	if len(metadata) > 0 {
+		if err := json.Unmarshal(metadata, &log.Metadata); err != nil {
+			return audit.Log{}, fmt.Errorf("decode audit metadata: %w", err)
+		}
+	}
+	log.Timestamp = log.Timestamp.UTC()
+	return log, nil
 }
 
 func serviceJSON(spec types.ServiceSpec) ([]byte, []byte, []byte, []byte, []byte, []byte, []byte, []byte, error) {

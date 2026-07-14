@@ -1,6 +1,6 @@
 # Events
 
-Events are orchestration audit records emitted by the API, scheduler, reconciler, agent status path, health handling, and rollout controller.
+Events are orchestration history records emitted by the API, scheduler, reconciler, agent status path, health handling, and rollout controller. Security audit logs are stored separately and exposed through `GET /v1/audit`.
 
 Current implementation note: the default `orch-server` stores events in memory because it uses the in-memory control plane. The PostgreSQL store can persist events once the server is wired to it.
 

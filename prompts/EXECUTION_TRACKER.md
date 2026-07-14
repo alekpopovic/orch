@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `45-structured-error-model.md`
-- Last matching commit: `same commit: Add structured error model`
-- Completed prompt range: `00` through `45`
-- Next prompt to execute: `46-audit-logging.md`
+- Last executed prompt: `46-audit-logging.md`
+- Last matching commit: `same commit: Add audit logging`
+- Completed prompt range: `00` through `46`
+- Next prompt to execute: `47-prometheus-alert-rules.md`
 - Updated: `2026-07-14`
 
 ## Update Rule

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
@@ -39,6 +40,7 @@ func TestRootCommandConstruction(t *testing.T) {
 		"delete",
 		"endpoints",
 		"events",
+		"audit",
 		"logs",
 	} {
 		if _, _, err := root.Find(strings.Fields(path)); err != nil {
@@ -291,6 +293,29 @@ func TestEventsCommandFiltersByServiceName(t *testing.T) {
 	}
 }
 
+func TestAuditCommandAppliesFilters(t *testing.T) {
+	client := &fakeClient{}
+	var out bytes.Buffer
+	cmd := NewRootCommand(Options{
+		Out: &out,
+		Err: &bytes.Buffer{},
+		NewClient: func(string) (Client, error) {
+			return client, nil
+		},
+	})
+	cmd.SetArgs([]string{"--server", "http://server.example", "audit", "--actor-type", "user", "--actor-id", "admin", "--action", "service.create", "--target-type", "service", "--outcome", "success", "--limit", "10"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute audit: %v", err)
+	}
+	if client.auditFilter.ActorType != audit.ActorUser || client.auditFilter.ActorID != "admin" || client.auditFilter.Action != "service.create" || client.auditFilter.TargetType != "service" || client.auditFilter.Outcome != audit.OutcomeSuccess || client.auditFilter.Limit != 10 {
+		t.Fatalf("unexpected audit filter %#v", client.auditFilter)
+	}
+	if !strings.Contains(out.String(), "service.create") {
+		t.Fatalf("expected audit output, got %q", out.String())
+	}
+}
+
 func TestRolloutCommandSendsStrategyLimits(t *testing.T) {
 	client := &fakeClient{
 		services: []types.Service{{
@@ -359,6 +384,7 @@ type fakeClient struct {
 	logFollow                bool
 	logTail                  string
 	eventFilter              events.Filter
+	auditFilter              audit.Filter
 	endpointServiceID        string
 	endpointIncludeUnhealthy bool
 	endpoints                discovery.ServiceEndpoints
@@ -458,6 +484,19 @@ func (f *fakeClient) GetTask(_ context.Context, id string) (types.Task, error) {
 func (f *fakeClient) ListEvents(_ context.Context, filter events.Filter) ([]types.Event, error) {
 	f.eventFilter = filter
 	return nil, nil
+}
+
+func (f *fakeClient) ListAuditLogs(_ context.Context, filter audit.Filter) ([]audit.Log, error) {
+	f.auditFilter = filter
+	return []audit.Log{{
+		ActorType:  audit.ActorUser,
+		ActorID:    "admin",
+		Action:     "service.create",
+		TargetType: "service",
+		TargetID:   "00000000-0000-4000-8000-000000000010",
+		Outcome:    audit.OutcomeSuccess,
+		Timestamp:  time.Now().UTC(),
+	}}, nil
 }
 
 func (f *fakeClient) StreamLogs(_ context.Context, serviceID string, taskID string, follow bool, tail string, _ io.Writer) error {

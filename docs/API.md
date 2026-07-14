@@ -303,6 +303,19 @@ curl 'http://localhost:8080/v1/events?since=2026-06-11T10:00:00Z'
 
 Events support filtering by service, task, node, event type, severity, and `since`.
 
+## Audit Logs
+
+```sh
+curl http://localhost:8080/v1/audit
+curl 'http://localhost:8080/v1/audit?action=service.rollout&outcome=failure'
+curl 'http://localhost:8080/v1/audit?actor_type=user&actor_id=alice'
+curl 'http://localhost:8080/v1/audit?target_type=service&target_id={service_id}'
+```
+
+Audit logs are separate from orchestration events and require the `admin` role when JWT auth is enabled. Records include actor type, actor ID, action, target type, target ID, request ID, source IP, outcome, timestamp, and redacted metadata.
+
+Filters: `actor_type`, `actor_id`, `action`, `target_type`, `target_id`, `outcome`, `since`, and `limit`.
+
 ## Logs
 
 ```sh

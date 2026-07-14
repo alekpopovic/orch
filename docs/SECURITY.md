@@ -75,6 +75,14 @@ Roadmap:
 - Encrypt sensitive persisted data.
 - Add server-side redaction for any future secret-bearing fields.
 
+## Audit Logging
+
+Mutating user and agent actions are written to a dedicated audit log separate from orchestration events. Audit records include actor type and ID, action, target, request ID, source IP, timestamp, outcome, and redacted metadata.
+
+Captured actions include service create/delete, scale, rollout, rollback, node drain/uncordon, secret and registry credential create/delete, agent registration, and agent token rotation. Secret plaintext, registry passwords, bearer tokens, and credential material must never be stored in audit metadata.
+
+Admin users can search audit records through `GET /v1/audit` or `orch audit`.
+
 ## Logging
 
 The API access log records request ID, method, path, status, duration, and route. It must not log:

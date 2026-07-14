@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -130,6 +131,20 @@ func writeEvents(w io.Writer, output string, events []types.Event) error {
 	for _, event := range events {
 		object := strings.Trim(event.RelatedObjectType+"/"+event.RelatedObjectID, "/")
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", event.Timestamp.Format("2006-01-02T15:04:05Z07:00"), event.Severity, event.Type, event.Source, object, event.Message)
+	}
+	return tw.Flush()
+}
+
+func writeAuditLogs(w io.Writer, output string, logs []audit.Log) error {
+	if output == "json" {
+		return writeValue(w, output, logs)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "TIME\tOUTCOME\tACTOR\tACTION\tTARGET\tREQUEST_ID")
+	for _, log := range logs {
+		actor := strings.Trim(string(log.ActorType)+"/"+log.ActorID, "/")
+		target := strings.Trim(log.TargetType+"/"+log.TargetID, "/")
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", log.Timestamp.Format("2006-01-02T15:04:05Z07:00"), log.Outcome, actor, log.Action, target, log.RequestID)
 	}
 	return tw.Flush()
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/secrets"
 	"github.com/alekpopovic/orch/internal/store"
@@ -149,6 +150,7 @@ type MemoryService struct {
 	registries  map[string]types.RegistryCredential
 	envelope    secrets.Envelope
 	events      []types.Event
+	auditLogs   []audit.Log
 	now         func() time.Time
 }
 
@@ -1388,6 +1390,65 @@ func (s *MemoryService) ListEvents(ctx context.Context, filter events.Filter) ([
 		}
 	}
 	return events, nil
+}
+
+func (s *MemoryService) AppendAuditLog(ctx context.Context, log audit.Log) (audit.Log, error) {
+	if err := ctx.Err(); err != nil {
+		return audit.Log{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	log = audit.Normalize(log, s.now())
+	if log.ID == "" {
+		log.ID = newUUID()
+	}
+	s.auditLogs = append(s.auditLogs, log)
+	return log, nil
+}
+
+func (s *MemoryService) ListAuditLogs(ctx context.Context, filter audit.Filter) ([]audit.Log, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	limit := filter.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	logs := make([]audit.Log, 0, len(s.auditLogs))
+	for i := len(s.auditLogs) - 1; i >= 0; i-- {
+		log := s.auditLogs[i]
+		if filter.ActorType != "" && log.ActorType != filter.ActorType {
+			continue
+		}
+		if filter.ActorID != "" && log.ActorID != filter.ActorID {
+			continue
+		}
+		if filter.Action != "" && log.Action != filter.Action {
+			continue
+		}
+		if filter.TargetType != "" && log.TargetType != filter.TargetType {
+			continue
+		}
+		if filter.TargetID != "" && log.TargetID != filter.TargetID {
+			continue
+		}
+		if filter.Outcome != "" && log.Outcome != filter.Outcome {
+			continue
+		}
+		if !filter.Since.IsZero() && log.Timestamp.Before(filter.Since) {
+			continue
+		}
+		logs = append(logs, log)
+		if len(logs) == limit {
+			break
+		}
+	}
+	return logs, nil
 }
 
 func (s *MemoryService) setNodeStatus(ctx context.Context, id types.NodeID, status types.NodeStatus) (types.Node, error) {

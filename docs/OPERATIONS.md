@@ -188,6 +188,19 @@ Common causes:
 - healthcheck threshold exceeded;
 - Docker daemon unavailable.
 
+### Review Audit Logs
+
+Audit logs are separate from operator events and capture who attempted mutating actions, what target was affected, request IDs, source IPs, outcomes, and redacted metadata.
+
+```sh
+orch audit
+orch audit --actor-type user --actor-id alice
+orch audit --action service.rollout --outcome failure
+orch audit --target-type service --target-id <service-id> --output json
+```
+
+Use audit request IDs to correlate with API access logs. Secret plaintext, registry passwords, tokens, and credential material should appear only as `[REDACTED]`.
+
 ### Delete A Service
 
 ```sh
@@ -228,6 +241,7 @@ For future PostgreSQL-backed production, back up:
 - `tasks`;
 - `deployments`;
 - `events`.
+- `audit_logs`.
 
 Until server state is wired to PostgreSQL, backups do not preserve live orchestrator state.
 

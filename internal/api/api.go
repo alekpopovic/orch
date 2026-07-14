@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/alekpopovic/orch/internal/apperrors"
+	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
@@ -36,6 +38,7 @@ type Server struct {
 	metrics        RequestMetrics
 	controlMetrics ControlMetrics
 	metricsHandler http.Handler
+	auditStore     audit.Store
 	now            func() time.Time
 }
 
@@ -104,6 +107,12 @@ func WithMetricsHandler(handler http.Handler) Option {
 	}
 }
 
+func WithAuditStore(store audit.Store) Option {
+	return func(server *Server) {
+		server.auditStore = store
+	}
+}
+
 func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...Option) http.Handler {
 	if controlPlane == nil {
 		controlPlane = controlplane.NewMemoryService()
@@ -116,6 +125,11 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	}
 	for _, opt := range opts {
 		opt(server)
+	}
+	if server.auditStore == nil {
+		if store, ok := controlPlane.(audit.Store); ok {
+			server.auditStore = store
+		}
 	}
 	if server.logStreamer == nil {
 		server.logStreamer = &AgentHTTPLogStreamer{}
@@ -163,6 +177,7 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux.HandleFunc("GET /v1/discovery/services/{name}", server.discoveryServiceByName)
 	mux.HandleFunc("GET /v1/integrations/traefik/config", server.traefikConfig)
 	mux.HandleFunc("GET /v1/events", server.listEvents)
+	mux.HandleFunc("GET /v1/audit", server.listAuditLogs)
 	mux.HandleFunc("GET /v1/logs", server.streamLogs)
 
 	return server.middleware(mux)
@@ -307,6 +322,10 @@ type ListEventsResponse struct {
 	Events []types.Event `json:"events"`
 }
 
+type ListAuditLogsResponse struct {
+	AuditLogs []audit.Log `json:"audit_logs"`
+}
+
 type requestIDKey struct{}
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -341,14 +360,25 @@ func (s *Server) agentRegister(w http.ResponseWriter, r *http.Request) {
 		Allocatable:      req.Allocatable,
 	})
 	if err != nil {
+		s.recordAuditAs(r, audit.ActorAgent, req.NodeName, "agent.register", "node", req.NodeName, audit.OutcomeFailure, map[string]string{
+			"node_name": req.NodeName,
+		})
 		s.writeError(w, r, err)
 		return
 	}
 	credential, err := s.issueAgentCredential(r.Context(), command.Node.ID)
 	if err != nil {
+		s.recordAuditAs(r, audit.ActorAgent, string(command.Node.ID), "agent.token.rotate", "node", string(command.Node.ID), audit.OutcomeFailure, nil)
+		s.recordAuditAs(r, audit.ActorAgent, string(command.Node.ID), "agent.register", "node", string(command.Node.ID), audit.OutcomeFailure, map[string]string{
+			"node_name": req.NodeName,
+		})
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAuditAs(r, audit.ActorAgent, string(command.Node.ID), "agent.register", "node", string(command.Node.ID), audit.OutcomeSuccess, map[string]string{
+		"node_name": req.NodeName,
+	})
+	s.recordAuditAs(r, audit.ActorAgent, string(command.Node.ID), "agent.token.rotate", "node", string(command.Node.ID), audit.OutcomeSuccess, nil)
 	writeJSON(w, http.StatusCreated, AgentResponse{Node: command.Node, Status: command.Node.Status, Credential: &credential, Directives: command.Directives})
 }
 
@@ -377,9 +407,11 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	credential, err := s.issueAgentCredential(r.Context(), command.Node.ID)
 	if err != nil {
+		s.recordAuditAs(r, audit.ActorAgent, string(command.Node.ID), "agent.token.rotate", "node", string(command.Node.ID), audit.OutcomeFailure, nil)
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAuditAs(r, audit.ActorAgent, string(command.Node.ID), "agent.token.rotate", "node", string(command.Node.ID), audit.OutcomeSuccess, nil)
 	writeJSON(w, http.StatusOK, AgentResponse{Node: command.Node, Status: command.Node.Status, Credential: &credential, Directives: command.Directives})
 }
 
@@ -467,9 +499,11 @@ func (s *Server) drainNode(w http.ResponseWriter, r *http.Request) {
 	}
 	node, err := s.controlPlane.DrainNode(r.Context(), id)
 	if err != nil {
+		s.recordAudit(r, "node.drain", "node", string(id), audit.OutcomeFailure, nil)
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAudit(r, "node.drain", "node", string(id), audit.OutcomeSuccess, nil)
 	writeJSON(w, http.StatusOK, NodeResponse{Node: node})
 }
 
@@ -480,9 +514,11 @@ func (s *Server) uncordonNode(w http.ResponseWriter, r *http.Request) {
 	}
 	node, err := s.controlPlane.UncordonNode(r.Context(), id)
 	if err != nil {
+		s.recordAudit(r, "node.uncordon", "node", string(id), audit.OutcomeFailure, nil)
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAudit(r, "node.uncordon", "node", string(id), audit.OutcomeSuccess, nil)
 	writeJSON(w, http.StatusOK, NodeResponse{Node: node})
 }
 
@@ -510,9 +546,11 @@ func (s *Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	secret, err := s.controlPlane.CreateSecret(r.Context(), req.Name, req.Value)
 	if err != nil {
+		s.recordAudit(r, "secret.create", "secret", req.Name, audit.OutcomeFailure, map[string]string{"name": req.Name})
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAudit(r, "secret.create", "secret", secret.Name, audit.OutcomeSuccess, map[string]string{"name": secret.Name})
 	writeJSON(w, http.StatusCreated, SecretResponse{Secret: secret})
 }
 
@@ -546,9 +584,11 @@ func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.controlPlane.DeleteSecret(r.Context(), name); err != nil {
+		s.recordAudit(r, "secret.delete", "secret", name, audit.OutcomeFailure, map[string]string{"name": name})
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAudit(r, "secret.delete", "secret", name, audit.OutcomeSuccess, map[string]string{"name": name})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -564,9 +604,17 @@ func (s *Server) createRegistryCredential(w http.ResponseWriter, r *http.Request
 		Password: req.Password,
 	})
 	if err != nil {
+		s.recordAudit(r, "registry_credential.create", "registry_credential", req.ID, audit.OutcomeFailure, map[string]string{
+			"registry": req.Registry,
+			"username": req.Username,
+		})
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAudit(r, "registry_credential.create", "registry_credential", credential.ID, audit.OutcomeSuccess, map[string]string{
+		"registry": credential.Registry,
+		"username": credential.Username,
+	})
 	writeJSON(w, http.StatusCreated, RegistryCredentialResponse{Credential: credential})
 }
 
@@ -586,9 +634,11 @@ func (s *Server) deleteRegistryCredential(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := s.controlPlane.DeleteRegistryCredential(r.Context(), id); err != nil {
+		s.recordAudit(r, "registry_credential.delete", "registry_credential", id, audit.OutcomeFailure, map[string]string{"id": id})
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAudit(r, "registry_credential.delete", "registry_credential", id, audit.OutcomeSuccess, map[string]string{"id": id})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -609,9 +659,17 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 	}
 	service, err := s.controlPlane.CreateService(r.Context(), req.Spec)
 	if err != nil {
+		s.recordAudit(r, "service.create", "service", req.Spec.Name, audit.OutcomeFailure, map[string]string{
+			"image": req.Spec.Image,
+			"name":  req.Spec.Name,
+		})
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAudit(r, "service.create", "service", string(service.ID), audit.OutcomeSuccess, map[string]string{
+		"image": service.Spec.Image,
+		"name":  service.Spec.Name,
+	})
 	writeJSON(w, http.StatusCreated, ServiceResponse{Service: service})
 }
 
@@ -667,9 +725,11 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.controlPlane.DeleteService(r.Context(), id); err != nil {
+		s.recordAudit(r, "service.delete", "service", string(id), audit.OutcomeFailure, nil)
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAudit(r, "service.delete", "service", string(id), audit.OutcomeSuccess, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -688,9 +748,15 @@ func (s *Server) scaleService(w http.ResponseWriter, r *http.Request) {
 	}
 	service, err := s.controlPlane.ScaleService(r.Context(), id, req.Replicas)
 	if err != nil {
+		s.recordAudit(r, "service.scale", "service", string(id), audit.OutcomeFailure, map[string]string{
+			"replicas": strconv.Itoa(req.Replicas),
+		})
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAudit(r, "service.scale", "service", string(id), audit.OutcomeSuccess, map[string]string{
+		"replicas": strconv.Itoa(service.Spec.Replicas),
+	})
 	writeJSON(w, http.StatusOK, ServiceResponse{Service: service})
 }
 
@@ -726,9 +792,21 @@ func (s *Server) rolloutService(w http.ResponseWriter, r *http.Request) {
 		MaxSurge:       req.MaxSurge,
 	})
 	if err != nil {
+		s.recordAudit(r, "service.rollout", "service", string(id), audit.OutcomeFailure, map[string]string{
+			"image":           req.Image,
+			"max_surge":       strconv.Itoa(req.MaxSurge),
+			"max_unavailable": strconv.Itoa(req.MaxUnavailable),
+		})
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAudit(r, "service.rollout", "service", string(id), audit.OutcomeSuccess, map[string]string{
+		"deployment_id":   string(deployment.ID),
+		"image":           req.Image,
+		"max_surge":       strconv.Itoa(req.MaxSurge),
+		"max_unavailable": strconv.Itoa(req.MaxUnavailable),
+		"target_version":  strconv.FormatInt(deployment.ToVersion, 10),
+	})
 	if s.controlMetrics != nil {
 		s.controlMetrics.IncRollouts()
 	}
@@ -769,9 +847,14 @@ func (s *Server) rollbackService(w http.ResponseWriter, r *http.Request) {
 	}
 	deployment, err := s.controlPlane.RollbackService(r.Context(), id)
 	if err != nil {
+		s.recordAudit(r, "service.rollback", "service", string(id), audit.OutcomeFailure, nil)
 		s.writeError(w, r, err)
 		return
 	}
+	s.recordAudit(r, "service.rollback", "service", string(id), audit.OutcomeSuccess, map[string]string{
+		"deployment_id":  string(deployment.ID),
+		"target_version": strconv.FormatInt(deployment.ToVersion, 10),
+	})
 	if s.controlMetrics != nil {
 		s.controlMetrics.IncRollouts()
 	}
@@ -881,6 +964,23 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ListEventsResponse{Events: events})
 }
 
+func (s *Server) listAuditLogs(w http.ResponseWriter, r *http.Request) {
+	if s.auditStore == nil {
+		s.writeError(w, r, apperrors.New(apperrors.CodeUnavailable, "audit store is not configured"))
+		return
+	}
+	filter, ok := s.auditFilter(w, r)
+	if !ok {
+		return
+	}
+	logs, err := s.auditStore.ListAuditLogs(r.Context(), filter)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ListAuditLogsResponse{AuditLogs: logs})
+}
+
 func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	task, err := s.logTask(r)
 	if err != nil {
@@ -980,6 +1080,8 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 			return auth.RoleViewer, true
 		case path == "/v1/events":
 			return auth.RoleViewer, true
+		case path == "/v1/audit":
+			return auth.RoleAdmin, true
 		case path == "/v1/logs":
 			return auth.RoleViewer, true
 		case strings.HasPrefix(path, "/v1/rollouts/"):
@@ -1127,6 +1229,8 @@ func metricRoute(method string, path string) (string, bool) {
 		return "/v1/integrations/traefik/config", true
 	case path == "/v1/events":
 		return "/v1/events", true
+	case path == "/v1/audit":
+		return "/v1/audit", true
 	case path == "/v1/logs":
 		return "/v1/logs", true
 	case strings.HasPrefix(path, "/v1/rollouts/"):
@@ -1330,6 +1434,49 @@ func (s *Server) eventFilter(w http.ResponseWriter, r *http.Request) (events.Fil
 	return filter, true
 }
 
+func (s *Server) auditFilter(w http.ResponseWriter, r *http.Request) (audit.Filter, bool) {
+	query := r.URL.Query()
+	limit := 100
+	if rawLimit := strings.TrimSpace(query.Get("limit")); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 1 || parsed > 500 {
+			s.writeError(w, r, fmt.Errorf("%w: limit must be between 1 and 500", store.ErrInvalidState))
+			return audit.Filter{}, false
+		}
+		limit = parsed
+	}
+	filter := audit.Filter{
+		ActorID:    strings.TrimSpace(query.Get("actor_id")),
+		Action:     strings.TrimSpace(query.Get("action")),
+		TargetType: strings.TrimSpace(query.Get("target_type")),
+		TargetID:   strings.TrimSpace(query.Get("target_id")),
+		Limit:      limit,
+	}
+	if actorType := strings.TrimSpace(query.Get("actor_type")); actorType != "" {
+		if !validAuditActorType(audit.ActorType(actorType)) {
+			s.writeError(w, r, fmt.Errorf("%w: actor_type is invalid", store.ErrInvalidState))
+			return audit.Filter{}, false
+		}
+		filter.ActorType = audit.ActorType(actorType)
+	}
+	if outcome := strings.TrimSpace(query.Get("outcome")); outcome != "" {
+		if !validAuditOutcome(audit.Outcome(outcome)) {
+			s.writeError(w, r, fmt.Errorf("%w: outcome is invalid", store.ErrInvalidState))
+			return audit.Filter{}, false
+		}
+		filter.Outcome = audit.Outcome(outcome)
+	}
+	if since := strings.TrimSpace(query.Get("since")); since != "" {
+		parsed, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			s.writeError(w, r, fmt.Errorf("%w: since must be RFC3339", store.ErrInvalidState))
+			return audit.Filter{}, false
+		}
+		filter.Since = parsed.UTC()
+	}
+	return filter, true
+}
+
 func (s *Server) logTask(r *http.Request) (types.Task, error) {
 	query := r.URL.Query()
 	taskID := strings.TrimSpace(query.Get("task_id"))
@@ -1372,6 +1519,69 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 			Details:   details,
 		},
 	})
+}
+
+func (s *Server) recordAudit(r *http.Request, action string, targetType string, targetID string, outcome audit.Outcome, metadata map[string]string) {
+	actorType, actorID := auditActor(r)
+	s.recordAuditAs(r, actorType, actorID, action, targetType, targetID, outcome, metadata)
+}
+
+func (s *Server) recordAuditAs(r *http.Request, actorType audit.ActorType, actorID string, action string, targetType string, targetID string, outcome audit.Outcome, metadata map[string]string) {
+	if s.auditStore == nil {
+		return
+	}
+	log := audit.Log{
+		ActorType:  actorType,
+		ActorID:    actorID,
+		Action:     action,
+		TargetType: targetType,
+		TargetID:   targetID,
+		RequestID:  requestID(r.Context()),
+		SourceIP:   sourceIP(r),
+		Outcome:    outcome,
+		Metadata:   audit.RedactMetadata(metadata),
+		Timestamp:  s.now(),
+	}
+	if _, err := s.auditStore.AppendAuditLog(r.Context(), log); err != nil && s.logger != nil {
+		s.logger.Warn("audit log append failed",
+			"request_id", requestID(r.Context()),
+			"action", action,
+			"target_type", targetType,
+			"target_id", targetID,
+			"outcome", string(outcome),
+			"error", err,
+		)
+	}
+}
+
+func auditActor(r *http.Request) (audit.ActorType, string) {
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok && strings.TrimSpace(principal.Subject) != "" {
+		return audit.ActorUser, principal.Subject
+	}
+	if strings.HasPrefix(r.URL.Path, "/v1/agent/") {
+		if nodeID := strings.TrimSpace(r.URL.Query().Get("node_id")); nodeID != "" {
+			return audit.ActorAgent, nodeID
+		}
+		return audit.ActorAgent, "unknown"
+	}
+	return audit.ActorUser, "anonymous"
+}
+
+func sourceIP(r *http.Request) string {
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		if first := strings.TrimSpace(parts[0]); first != "" {
+			return first
+		}
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return realIP
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil {
+		return host
+	}
+	return strings.TrimSpace(r.RemoteAddr)
 }
 
 func errorStatus(err error) (int, string) {
@@ -1493,6 +1703,24 @@ func validUUID(value string) bool {
 func validEventSeverity(severity types.EventSeverity) bool {
 	switch severity {
 	case types.EventInfo, types.EventWarning, types.EventError:
+		return true
+	default:
+		return false
+	}
+}
+
+func validAuditActorType(actorType audit.ActorType) bool {
+	switch actorType {
+	case audit.ActorUser, audit.ActorAgent, audit.ActorSystem:
+		return true
+	default:
+		return false
+	}
+}
+
+func validAuditOutcome(outcome audit.Outcome) bool {
+	switch outcome {
+	case audit.OutcomeSuccess, audit.OutcomeFailure:
 		return true
 	default:
 		return false

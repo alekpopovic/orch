@@ -15,6 +15,7 @@ import (
 
 	"github.com/alekpopovic/orch/internal/api"
 	"github.com/alekpopovic/orch/internal/apperrors"
+	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
@@ -227,6 +228,18 @@ func (c *APIClient) ListEvents(ctx context.Context, filter events.Filter) ([]typ
 	return out.Events, nil
 }
 
+func (c *APIClient) ListAuditLogs(ctx context.Context, filter audit.Filter) ([]audit.Log, error) {
+	var out api.ListAuditLogsResponse
+	path := "/v1/audit"
+	if query := auditQuery(filter).Encode(); query != "" {
+		path += "?" + query
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.AuditLogs, nil
+}
+
 func eventQuery(filter events.Filter) url.Values {
 	values := url.Values{}
 	if filter.ServiceID != "" {
@@ -243,6 +256,35 @@ func eventQuery(filter events.Filter) url.Values {
 	}
 	if filter.Severity != "" {
 		values.Set("severity", string(filter.Severity))
+	}
+	if !filter.Since.IsZero() {
+		values.Set("since", filter.Since.UTC().Format(time.RFC3339Nano))
+	}
+	if filter.Limit > 0 {
+		values.Set("limit", strconv.Itoa(filter.Limit))
+	}
+	return values
+}
+
+func auditQuery(filter audit.Filter) url.Values {
+	values := url.Values{}
+	if filter.ActorType != "" {
+		values.Set("actor_type", string(filter.ActorType))
+	}
+	if filter.ActorID != "" {
+		values.Set("actor_id", filter.ActorID)
+	}
+	if filter.Action != "" {
+		values.Set("action", filter.Action)
+	}
+	if filter.TargetType != "" {
+		values.Set("target_type", filter.TargetType)
+	}
+	if filter.TargetID != "" {
+		values.Set("target_id", filter.TargetID)
+	}
+	if filter.Outcome != "" {
+		values.Set("outcome", string(filter.Outcome))
 	}
 	if !filter.Since.IsZero() {
 		values.Set("since", filter.Since.UTC().Format(time.RFC3339Nano))

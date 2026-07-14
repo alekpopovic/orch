@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -201,6 +202,31 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 	if listedEvents[0].Details["error_code"] != "unavailable" {
 		t.Fatalf("unexpected event details %#v", listedEvents[0].Details)
+	}
+
+	if _, err := store.AppendAuditLog(ctx, audit.Log{
+		ActorType:  audit.ActorUser,
+		ActorID:    "admin",
+		Action:     "service.create",
+		TargetType: "service",
+		TargetID:   string(service.ID),
+		RequestID:  "req-1",
+		SourceIP:   "203.0.113.10",
+		Outcome:    audit.OutcomeSuccess,
+		Metadata:   map[string]string{"password": "secret", "name": service.Spec.Name},
+		Timestamp:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("append audit log: %v", err)
+	}
+	auditLogs, err := store.ListAuditLogs(ctx, audit.Filter{Action: "service.create", TargetID: string(service.ID)})
+	if err != nil {
+		t.Fatalf("list audit logs: %v", err)
+	}
+	if len(auditLogs) != 1 {
+		t.Fatalf("expected one audit log, got %#v", auditLogs)
+	}
+	if auditLogs[0].Metadata["password"] != "[REDACTED]" || auditLogs[0].Metadata["name"] != service.Spec.Name {
+		t.Fatalf("unexpected audit metadata %#v", auditLogs[0].Metadata)
 	}
 }
 

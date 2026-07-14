@@ -20,7 +20,7 @@ Do not log tokens, credentials, or secret values.
 
 ## Events
 
-Events are operator-facing audit records. They include:
+Events are operator-facing orchestration history records. They include:
 
 - type;
 - severity: `info`, `warning`, or `error`;

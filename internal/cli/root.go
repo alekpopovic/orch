@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/config"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
@@ -38,6 +39,7 @@ type Client interface {
 	ListTasks(ctx context.Context, query url.Values) ([]types.Task, error)
 	GetTask(ctx context.Context, id string) (types.Task, error)
 	ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error)
+	ListAuditLogs(ctx context.Context, filter audit.Filter) ([]audit.Log, error)
 	StreamLogs(ctx context.Context, serviceID string, taskID string, follow bool, tail string, out io.Writer) error
 }
 
@@ -115,6 +117,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(a.deleteCommand())
 	root.AddCommand(a.endpointsCommand())
 	root.AddCommand(a.eventsCommand())
+	root.AddCommand(a.auditCommand())
 	root.AddCommand(a.logsCommand())
 	return root
 }
@@ -511,6 +514,61 @@ func (a *app) writeEventStream(ctx context.Context, client Client, filter events
 		case <-timer.C:
 		}
 	}
+}
+
+func (a *app) auditCommand() *cobra.Command {
+	var actorType string
+	var actorID string
+	var action string
+	var targetType string
+	var targetID string
+	var outcome string
+	var since string
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "audit",
+		Short: "List audit logs",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := a.client()
+			if err != nil {
+				return err
+			}
+			filter := audit.Filter{
+				ActorID:    strings.TrimSpace(actorID),
+				Action:     strings.TrimSpace(action),
+				TargetType: strings.TrimSpace(targetType),
+				TargetID:   strings.TrimSpace(targetID),
+				Limit:      limit,
+			}
+			if actorType != "" {
+				filter.ActorType = audit.ActorType(strings.TrimSpace(actorType))
+			}
+			if outcome != "" {
+				filter.Outcome = audit.Outcome(strings.TrimSpace(outcome))
+			}
+			if strings.TrimSpace(since) != "" {
+				parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(since))
+				if err != nil {
+					return fmt.Errorf("--since must be RFC3339: %w", err)
+				}
+				filter.Since = parsed.UTC()
+			}
+			logs, err := client.ListAuditLogs(cmd.Context(), filter)
+			if err != nil {
+				return err
+			}
+			return writeAuditLogs(a.out, a.output, logs)
+		},
+	}
+	cmd.Flags().StringVar(&actorType, "actor-type", "", "filter by actor type: user, agent, system")
+	cmd.Flags().StringVar(&actorID, "actor-id", "", "filter by actor ID")
+	cmd.Flags().StringVar(&action, "action", "", "filter by action")
+	cmd.Flags().StringVar(&targetType, "target-type", "", "filter by target type")
+	cmd.Flags().StringVar(&targetID, "target-id", "", "filter by target ID")
+	cmd.Flags().StringVar(&outcome, "outcome", "", "filter by outcome: success, failure")
+	cmd.Flags().StringVar(&since, "since", "", "filter since RFC3339 timestamp")
+	cmd.Flags().IntVar(&limit, "limit", 100, "maximum audit records to return")
+	return cmd
 }
 
 func (a *app) logsCommand() *cobra.Command {

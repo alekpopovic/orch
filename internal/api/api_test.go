@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -849,6 +850,56 @@ func TestListEventsInvalidFilters(t *testing.T) {
 				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestAuditLogCapturedAndRedacted(t *testing.T) {
+	handler := newTestHandler()
+	create := requestWithHeaders(t, handler, http.MethodPost, "/v1/secrets", CreateSecretRequest{
+		Name:  "prod/database-url",
+		Value: "postgres://user:super-secret@db/app",
+	}, map[string]string{
+		"X-Forwarded-For": "203.0.113.10",
+		"X-Request-ID":    "audit-request-id",
+	})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, create.Code, create.Body.String())
+	}
+
+	rec := doRequest(t, handler, http.MethodGet, "/v1/audit?action=secret.create&target_type=secret", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var body ListAuditLogsResponse
+	decodeResponse(t, rec, &body)
+	if len(body.AuditLogs) != 1 {
+		t.Fatalf("expected one audit log, got %#v", body.AuditLogs)
+	}
+	log := body.AuditLogs[0]
+	if log.Action != "secret.create" || log.TargetID != "prod/database-url" || log.Outcome != "success" {
+		t.Fatalf("unexpected audit log %#v", log)
+	}
+	if log.RequestID != "audit-request-id" || log.SourceIP != "203.0.113.10" {
+		t.Fatalf("unexpected request metadata %#v", log)
+	}
+	if strings.Contains(fmt.Sprint(log.Metadata), "super-secret") {
+		t.Fatalf("audit metadata leaked secret plaintext: %#v", log.Metadata)
+	}
+}
+
+func TestAuditRequiresAdminRole(t *testing.T) {
+	handler := NewHandler(slog.Default(), controlplane.NewMemoryService(), WithUserJWT("test-secret"))
+	viewer := userToken(t, auth.RoleViewer)
+	rec := doAuthenticatedRequest(t, handler, http.MethodGet, "/v1/audit", nil, viewer)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rec.Code)
+	}
+
+	admin := userToken(t, auth.RoleAdmin)
+	rec = doAuthenticatedRequest(t, handler, http.MethodGet, "/v1/audit", nil, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
 	}
 }
 
