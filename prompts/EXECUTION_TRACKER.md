@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `34-port-allocation-and-collision-handling.md`
-- Last matching commit: `3bfcef8 Add host port allocation awareness`
-- Completed prompt range: `00` through `34`
-- Next prompt to execute: `35-basic-service-discovery.md`
+- Last executed prompt: `35-basic-service-discovery.md`
+- Last matching commit: `03f8c30 Add basic service discovery`
+- Completed prompt range: `00` through `35`
+- Next prompt to execute: `36-traefik-integration.md`
 - Updated: `2026-07-14`
 
 ## Update Rule
