@@ -82,6 +82,7 @@ type Node struct {
 	AgentRevoked     bool              `json:"-"`
 	CreatedAt        time.Time         `json:"created_at"`
 	UpdatedAt        time.Time         `json:"updated_at"`
+	AgentVersion     string            `json:"agent_version,omitempty"`
 }
 
 type Resources struct {

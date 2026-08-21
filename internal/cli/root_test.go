@@ -111,7 +111,7 @@ func TestVersionCommand(t *testing.T) {
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("execute version: %v", err)
 	}
-	if strings.TrimSpace(out.String()) != "orch dev" {
+	if strings.TrimSpace(out.String()) != "orch 0.3.0" {
 		t.Fatalf("unexpected output %q", out.String())
 	}
 }

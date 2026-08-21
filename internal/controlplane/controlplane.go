@@ -22,6 +22,7 @@ import (
 	"github.com/alekpopovic/orch/internal/quota"
 	"github.com/alekpopovic/orch/internal/secrets"
 	"github.com/alekpopovic/orch/internal/store"
+	versioninfo "github.com/alekpopovic/orch/internal/version"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -57,6 +58,13 @@ type Service interface {
 	ListNotificationSinks(ctx context.Context) ([]types.NotificationSink, error)
 	GetNotificationSink(ctx context.Context, id string) (types.NotificationSink, error)
 	DeleteNotificationSink(ctx context.Context, id string) error
+	CreateMaintenanceWindow(context.Context, types.MaintenanceWindow) (types.MaintenanceWindow, error)
+	ListMaintenanceWindows(context.Context) ([]types.MaintenanceWindow, error)
+	DeleteMaintenanceWindow(context.Context, string) error
+	GetRetentionStatus(context.Context) (types.RetentionStatus, error)
+	PruneRetention(context.Context, bool) (types.PruneResult, error)
+	CaptureUsageSnapshots(context.Context) ([]types.UsageSnapshot, error)
+	GetUsageReport(context.Context, string, time.Time, time.Time) (types.UsageReport, error)
 	RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error)
 	HeartbeatNode(ctx context.Context, heartbeat NodeHeartbeat) (NodeCommand, error)
 	MarkStaleNodesOffline(ctx context.Context, timeout time.Duration) ([]types.Node, error)
@@ -97,14 +105,16 @@ type NodeRegistration struct {
 	Labels           map[string]string
 	Capacity         types.Resources
 	Allocatable      types.Resources
+	AgentVersion     string
 }
 
 type NodeHeartbeat struct {
-	NodeID      types.NodeID
-	Capacity    types.Resources
-	Allocatable types.Resources
-	Labels      map[string]string
-	Shutdown    bool
+	NodeID       types.NodeID
+	Capacity     types.Resources
+	Allocatable  types.Resources
+	Labels       map[string]string
+	Shutdown     bool
+	AgentVersion string
 }
 
 type NodeCommand struct {
@@ -201,14 +211,17 @@ type MemoryService struct {
 	notificationDispatcher interface {
 		Notify(context.Context, types.Event) error
 	}
-	envelope      secrets.Envelope
-	policy        policy.ClusterPolicy
-	events        []types.Event
-	auditLogs     []audit.Log
-	namespaces    map[string]types.Namespace
-	now           func() time.Time
-	admission     *admission.Controller
-	imageResolver imageinfo.Resolver
+	maintenanceWindows map[string]types.MaintenanceWindow
+	retentionStatus    types.RetentionStatus
+	usageSnapshots     []types.UsageSnapshot
+	envelope           secrets.Envelope
+	policy             policy.ClusterPolicy
+	events             []types.Event
+	auditLogs          []audit.Log
+	namespaces         map[string]types.Namespace
+	now                func() time.Time
+	admission          *admission.Controller
+	imageResolver      imageinfo.Resolver
 }
 
 type Option func(*MemoryService)
@@ -227,6 +240,34 @@ func WithClusterPolicy(clusterPolicy policy.ClusterPolicy) Option {
 	}
 }
 
+func WithRetentionConfig(value types.RetentionConfig) Option {
+	return func(service *MemoryService) {
+		defaults := defaultRetentionConfig()
+		if value.Events == 0 {
+			value.Events = defaults.Events
+		}
+		if value.AuditLogs == 0 {
+			value.AuditLogs = defaults.AuditLogs
+		}
+		if value.CompletedTasks == 0 {
+			value.CompletedTasks = defaults.CompletedTasks
+		}
+		if value.FailedTasks == 0 {
+			value.FailedTasks = defaults.FailedTasks
+		}
+		if value.Rollouts == 0 {
+			value.Rollouts = defaults.Rollouts
+		}
+		if value.CompletedJobs == 0 {
+			value.CompletedJobs = defaults.CompletedJobs
+		}
+		if value.GitOpsRecords == 0 {
+			value.GitOpsRecords = defaults.GitOpsRecords
+		}
+		service.retentionStatus.Config = value
+	}
+}
+
 func WithImageResolver(resolver imageinfo.Resolver) Option {
 	return func(service *MemoryService) {
 		if resolver != nil {
@@ -239,26 +280,28 @@ func NewMemoryService(opts ...Option) *MemoryService {
 	now := func() time.Time { return time.Now().UTC() }
 	envelope, _ := secrets.NewLocalEnvelope("dev-secret-key-change-me")
 	service := &MemoryService{
-		nodes:             make(map[types.NodeID]types.Node),
-		services:          make(map[types.ServiceID]types.Service),
-		versions:          make(map[types.ServiceID]map[int64]types.ServiceSpec),
-		tasks:             make(map[types.TaskID]types.Task),
-		deployments:       make(map[types.DeploymentID]types.Deployment),
-		secrets:           make(map[string]types.Secret),
-		registries:        make(map[string]types.RegistryCredential),
-		quotas:            make(map[string]types.ResourceQuota),
-		gitops:            make(map[string]types.GitOpsSource),
-		jobs:              make(map[string]types.Job),
-		cronJobs:          make(map[string]types.CronJob),
-		volumes:           make(map[string]types.Volume),
-		volumeClaims:      make(map[string]types.VolumeClaim),
-		attachments:       make(map[string]types.VolumeAttachment),
-		notificationSinks: make(map[string]types.NotificationSink),
-		namespaces:        make(map[string]types.Namespace),
-		envelope:          envelope,
-		policy:            policy.DefaultClusterPolicy(),
-		imageResolver:     imageinfo.ParserResolver{},
-		now:               now,
+		nodes:              make(map[types.NodeID]types.Node),
+		services:           make(map[types.ServiceID]types.Service),
+		versions:           make(map[types.ServiceID]map[int64]types.ServiceSpec),
+		tasks:              make(map[types.TaskID]types.Task),
+		deployments:        make(map[types.DeploymentID]types.Deployment),
+		secrets:            make(map[string]types.Secret),
+		registries:         make(map[string]types.RegistryCredential),
+		quotas:             make(map[string]types.ResourceQuota),
+		gitops:             make(map[string]types.GitOpsSource),
+		jobs:               make(map[string]types.Job),
+		cronJobs:           make(map[string]types.CronJob),
+		volumes:            make(map[string]types.Volume),
+		volumeClaims:       make(map[string]types.VolumeClaim),
+		attachments:        make(map[string]types.VolumeAttachment),
+		notificationSinks:  make(map[string]types.NotificationSink),
+		maintenanceWindows: make(map[string]types.MaintenanceWindow),
+		retentionStatus:    types.RetentionStatus{Config: defaultRetentionConfig()},
+		namespaces:         make(map[string]types.Namespace),
+		envelope:           envelope,
+		policy:             policy.DefaultClusterPolicy(),
+		imageResolver:      imageinfo.ParserResolver{},
+		now:                now,
 	}
 	for _, opt := range opts {
 		opt(service)
@@ -498,6 +541,13 @@ func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegis
 	if err := spec.Validate(); err != nil {
 		return NodeCommand{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
 	}
+	compatibility, err := versioninfo.CheckAgent(registration.AgentVersion)
+	if err != nil {
+		return NodeCommand{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	if compatibility == versioninfo.TooOld {
+		return NodeCommand{}, fmt.Errorf("%w: agent version %q is below minimum %s", store.ErrInvalidState, registration.AgentVersion, versioninfo.MinimumAgent)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -509,6 +559,7 @@ func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegis
 			node.Labels = registration.Labels
 			node.Capacity = registration.Capacity
 			node.Allocatable = registration.Allocatable
+			node.AgentVersion = registration.AgentVersion
 			if node.Status == types.NodeUnknown || node.Status == types.NodeOffline {
 				if err := types.ValidateNodeTransition(node.Status, types.NodeReady); err != nil {
 					return NodeCommand{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
@@ -520,7 +571,7 @@ func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegis
 			s.nodes[id] = node
 			s.reconcileAllServicesLocked(now)
 			s.appendEventLocked(events.TypeNodeRegistered, types.EventInfo, "controlplane", "node registered", "node", string(id), now)
-			return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
+			return NodeCommand{Node: node, Directives: versionDirectives(node, compatibility)}, nil
 		}
 	}
 
@@ -536,11 +587,12 @@ func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegis
 		LastHeartbeatAt:  now,
 		CreatedAt:        now,
 		UpdatedAt:        now,
+		AgentVersion:     registration.AgentVersion,
 	}
 	s.nodes[id] = node
 	s.reconcileAllServicesLocked(now)
 	s.appendEventLocked(events.TypeNodeRegistered, types.EventInfo, "controlplane", "node registered", "node", string(id), now)
-	return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
+	return NodeCommand{Node: node, Directives: versionDirectives(node, compatibility)}, nil
 }
 
 func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbeat) (NodeCommand, error) {
@@ -549,6 +601,13 @@ func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbe
 	}
 	if heartbeat.NodeID == "" {
 		return NodeCommand{}, fmt.Errorf("%w: node id is required", store.ErrInvalidState)
+	}
+	compatibility, err := versioninfo.CheckAgent(heartbeat.AgentVersion)
+	if err != nil {
+		return NodeCommand{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	if compatibility == versioninfo.TooOld {
+		return NodeCommand{}, fmt.Errorf("%w: incompatible agent version", store.ErrInvalidState)
 	}
 
 	s.mu.Lock()
@@ -567,6 +626,9 @@ func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbe
 	}
 	if heartbeat.Labels != nil {
 		node.Labels = heartbeat.Labels
+	}
+	if heartbeat.AgentVersion != "" {
+		node.AgentVersion = heartbeat.AgentVersion
 	}
 	if heartbeat.Shutdown {
 		if err := types.ValidateNodeTransition(node.Status, types.NodeOffline); err != nil {
@@ -593,7 +655,15 @@ func (s *MemoryService) HeartbeatNode(ctx context.Context, heartbeat NodeHeartbe
 		message = "node graceful shutdown"
 	}
 	s.appendEventLocked(eventType, types.EventInfo, "controlplane", message, "node", string(node.ID), now)
-	return NodeCommand{Node: node, Directives: directivesForNode(node)}, nil
+	return NodeCommand{Node: node, Directives: versionDirectives(node, compatibility)}, nil
+}
+
+func versionDirectives(node types.Node, compatibility versioninfo.Compatibility) []AgentDirective {
+	out := directivesForNode(node)
+	if compatibility == versioninfo.UntestedNewer {
+		out = append(out, AgentDirective{Type: "version_warning", Message: "agent version is newer than maximum tested version"})
+	}
+	return out
 }
 
 func (s *MemoryService) MarkStaleNodesOffline(ctx context.Context, timeout time.Duration) ([]types.Node, error) {
@@ -923,6 +993,9 @@ func (s *MemoryService) GetNode(ctx context.Context, id types.NodeID) (types.Nod
 
 func (s *MemoryService) DrainNode(ctx context.Context, id types.NodeID) (types.Node, error) {
 	if err := ctx.Err(); err != nil {
+		return types.Node{}, err
+	}
+	if err := s.checkMaintenance(ctx, types.MaintenanceNodeDrain, namespace.Default); err != nil {
 		return types.Node{}, err
 	}
 	s.mu.Lock()
@@ -1414,6 +1487,11 @@ func (s *MemoryService) ScaleService(ctx context.Context, id types.ServiceID, re
 		return types.Service{}, store.ErrNotFound
 	}
 	s.mu.RUnlock()
+	if replicas < service.Spec.Replicas {
+		if err := s.checkMaintenance(ctx, types.MaintenanceScaleDown, service.Namespace); err != nil {
+			return types.Service{}, err
+		}
+	}
 	candidate := service.Spec
 	candidate.Replicas = replicas
 	if err := s.admission.Admit(ctx, admission.Request{
@@ -1479,6 +1557,9 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 		return types.Deployment{}, store.ErrNotFound
 	}
 	s.mu.RUnlock()
+	if err := s.checkMaintenance(ctx, types.MaintenanceRollout, service.Namespace); err != nil {
+		return types.Deployment{}, err
+	}
 	candidate := service.Spec
 	candidate.Image = spec.Image
 	candidate.ImageMetadata = resolved
@@ -1577,6 +1658,13 @@ func (s *MemoryService) GetServiceRollout(ctx context.Context, id types.ServiceI
 
 func (s *MemoryService) RollbackService(ctx context.Context, id types.ServiceID) (types.Deployment, error) {
 	if err := ctx.Err(); err != nil {
+		return types.Deployment{}, err
+	}
+	serviceForWindow, err := s.GetService(ctx, id)
+	if err != nil {
+		return types.Deployment{}, err
+	}
+	if err = s.checkMaintenance(ctx, types.MaintenanceRollback, serviceForWindow.Namespace); err != nil {
 		return types.Deployment{}, err
 	}
 

@@ -13,10 +13,15 @@ func TestLoadServerDefaultsAreValid(t *testing.T) {
 	t.Setenv("ORCH_SHUTDOWN_TIMEOUT", "")
 	t.Setenv("ORCH_NODE_HEARTBEAT_TIMEOUT", "")
 	t.Setenv("ORCH_NODE_MONITOR_INTERVAL", "")
+	t.Setenv("ORCH_ENABLE_PPROF", "")
+	t.Setenv("ORCH_DEBUG_ADDR", "")
 
 	cfg := LoadServer()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected default server config to be valid: %v", err)
+	}
+	if cfg.EnablePprof || cfg.DebugAddr != "127.0.0.1:6060" {
+		t.Fatalf("pprof must default to disabled on loopback, got enabled=%t addr=%q", cfg.EnablePprof, cfg.DebugAddr)
 	}
 }
 
@@ -55,6 +60,8 @@ addr: :9000
 log_level: warn
 bootstrap_token: file-token
 graceful_shutdown_ttl: 20s
+retention:
+  events: 48h
 cluster_policy:
   require_digest: true
   allow_mutable_tags: false
@@ -82,6 +89,9 @@ cluster_policy:
 	}
 	if cfg.GracefulShutdownTTL != 20*time.Second {
 		t.Fatalf("expected file duration, got %s", cfg.GracefulShutdownTTL)
+	}
+	if cfg.Retention.Events != 48*time.Hour {
+		t.Fatalf("expected file retention duration, got %s", cfg.Retention.Events)
 	}
 	if !cfg.ClusterPolicy.AllowHostNetwork {
 		t.Fatalf("expected env cluster policy host network allowance")

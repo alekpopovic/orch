@@ -2,7 +2,7 @@
 
 The public control-plane contract is versioned in the URL. The current stable API is `/v1`; health, readiness, and metrics endpoints are unversioned because they are operational probes rather than workload contracts.
 
-Every `/v1` response includes `API-Version: v1`. `GET /v1/version` exposes machine-readable stability metadata. The router registers v1 routes through one version boundary so a future version can be implemented without changing v1 handlers in place.
+Every `/v1` response includes `API-Version: v1`. `GET /v1/version` exposes machine-readable API/server versions, supported agent range, and supported/expected database schema versions. The router registers v1 routes through one version boundary so a future version can be implemented without changing v1 handlers in place.
 
 ## Compatibility Rules
 

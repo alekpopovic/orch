@@ -19,6 +19,8 @@ const docsNav = [
       { title: 'Configuration', path: 'CONFIGURATION.md', icon: '⚙️' },
       { title: 'Production deployment', path: 'PRODUCTION_DEPLOYMENT.md', icon: '🚢' },
       { title: 'Operations', path: 'OPERATIONS.md', icon: '🧰' },
+      { title: 'Upgrades', path: 'UPGRADES.md', icon: '⬆️' },
+      { title: 'Migrations', path: 'MIGRATIONS.md', icon: '🗄️' },
       { title: 'Backup and restore', path: 'BACKUP_RESTORE.md', icon: '💾' }
     ]
   },
@@ -69,6 +71,9 @@ const docsNav = [
       { title: 'Autoscaling', path: 'AUTOSCALING.md', icon: '📊' },
       { title: 'Autoscaling design', path: 'AUTOSCALING_DESIGN.md', icon: '🧠' },
       { title: 'Load testing', path: 'LOAD_TESTING.md', icon: '🏋️' },
+      { title: 'Scale testing', path: 'SCALE_TESTING.md', icon: '📏' },
+      { title: 'Performance', path: 'PERFORMANCE.md', icon: '⏱️' },
+      { title: 'Testing', path: 'TESTING.md', icon: '🧪' },
       { title: 'Chaos testing', path: 'CHAOS_TESTING.md', icon: '🌪️' },
       { title: 'Development', path: 'DEVELOPMENT.md', icon: '🛠️' }
     ]

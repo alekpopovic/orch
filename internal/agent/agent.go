@@ -20,6 +20,7 @@ import (
 	"github.com/alekpopovic/orch/internal/controlplane"
 	orchdocker "github.com/alekpopovic/orch/internal/docker"
 	"github.com/alekpopovic/orch/internal/health"
+	versioninfo "github.com/alekpopovic/orch/internal/version"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -727,6 +728,7 @@ func (r *Runner) registerWithRetry(ctx context.Context, capacity types.Resources
 			Capacity:         capacity,
 			Allocatable:      capacity,
 			DockerSocketPath: r.cfg.DockerSocketPath,
+			AgentVersion:     versioninfo.Server,
 		})
 		return err
 	})
@@ -738,11 +740,12 @@ func (r *Runner) heartbeatWithRetry(ctx context.Context, nodeID types.NodeID, ca
 	err := retry(ctx, r.rand, func() error {
 		var err error
 		response, err = r.client.Heartbeat(ctx, api.AgentHeartbeatRequest{
-			NodeID:      nodeID,
-			Capacity:    capacity,
-			Allocatable: capacity,
-			Labels:      r.cfg.Labels,
-			Shutdown:    shutdown,
+			NodeID:       nodeID,
+			Capacity:     capacity,
+			Allocatable:  capacity,
+			Labels:       r.cfg.Labels,
+			Shutdown:     shutdown,
+			AgentVersion: versioninfo.Server,
 		})
 		if err != nil {
 			r.metrics.IncHeartbeatFailure()

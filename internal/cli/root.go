@@ -16,11 +16,12 @@ import (
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/gitops"
+	versioninfo "github.com/alekpopovic/orch/internal/version"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/spf13/cobra"
 )
 
-const version = "dev"
+const version = versioninfo.Server
 
 type Client interface {
 	ListNodes(ctx context.Context) ([]types.Node, error)
@@ -42,6 +43,13 @@ type Client interface {
 	ListEvents(ctx context.Context, filter events.Filter) ([]types.Event, error)
 	ListAuditLogs(ctx context.Context, filter audit.Filter) ([]audit.Log, error)
 	StreamLogs(ctx context.Context, serviceID string, taskID string, follow bool, tail string, out io.Writer) error
+}
+
+type ForceOperationsClient interface {
+	DrainNodeForce(context.Context, string, bool) (types.Node, error)
+	ScaleServiceForce(context.Context, string, int, bool) (types.Service, error)
+	RolloutServiceForce(context.Context, string, string, int, int, bool) (types.Deployment, error)
+	RollbackServiceForce(context.Context, string, bool) (types.Deployment, error)
 }
 
 type Config = config.CLIConfig
@@ -82,6 +90,17 @@ type VolumeClient interface {
 	CreateVolume(context.Context, types.Volume) (types.Volume, error)
 	ListVolumes(context.Context) ([]types.Volume, error)
 	GetVolume(context.Context, string) (types.Volume, error)
+}
+type MaintenanceClient interface {
+	CreateMaintenanceWindow(context.Context, types.MaintenanceWindow) (types.MaintenanceWindow, error)
+	ListMaintenanceWindows(context.Context) ([]types.MaintenanceWindow, error)
+	DeleteMaintenanceWindow(context.Context, string) error
+}
+type OperationsClient interface {
+	GetRetentionStatus(context.Context) (types.RetentionStatus, error)
+	PruneRetention(context.Context, bool) (types.PruneResult, error)
+	GetUsageReport(context.Context, string, time.Time, time.Time) (types.UsageReport, error)
+	GetVersion(context.Context) (types.VersionInfo, error)
 }
 
 type Options struct {
@@ -166,6 +185,10 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(a.jobCommand())
 	root.AddCommand(a.cronJobCommand())
 	root.AddCommand(a.volumeCommand())
+	root.AddCommand(a.maintenanceCommand())
+	root.AddCommand(a.retentionCommand())
+	root.AddCommand(a.usageCommand())
+	root.AddCommand(a.clusterCommand())
 	return root
 }
 
@@ -463,9 +486,15 @@ func (a *app) nodeCommand() *cobra.Command {
 			return writeNode(a.out, a.output, node)
 		},
 	})
-	cmd.AddCommand(a.nodeActionCommand("drain", "Drain a node", func(ctx context.Context, client Client, id string) (types.Node, error) {
+	var forceDrain bool
+	drain := a.nodeActionCommand("drain", "Drain a node", func(ctx context.Context, client Client, id string) (types.Node, error) {
+		if forced, ok := client.(ForceOperationsClient); ok {
+			return forced.DrainNodeForce(ctx, id, forceDrain)
+		}
 		return client.DrainNode(ctx, id)
-	}))
+	})
+	drain.Flags().BoolVar(&forceDrain, "force", false, "bypass maintenance-window restrictions and audit the override")
+	cmd.AddCommand(drain)
 	cmd.AddCommand(a.nodeActionCommand("uncordon", "Uncordon a node", func(ctx context.Context, client Client, id string) (types.Node, error) {
 		return client.UncordonNode(ctx, id)
 	}))
@@ -590,6 +619,7 @@ func (a *app) serviceCommand() *cobra.Command {
 
 func (a *app) scaleCommand() *cobra.Command {
 	var replicas int
+	var force bool
 	cmd := &cobra.Command{
 		Use:   "scale <service-name-or-id>",
 		Short: "Scale a service",
@@ -602,7 +632,12 @@ func (a *app) scaleCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			scaled, err := client.ScaleService(cmd.Context(), string(service.ID), replicas)
+			var scaled types.Service
+			if forced, ok := client.(ForceOperationsClient); ok {
+				scaled, err = forced.ScaleServiceForce(cmd.Context(), string(service.ID), replicas, force)
+			} else {
+				scaled, err = client.ScaleService(cmd.Context(), string(service.ID), replicas)
+			}
 			if err != nil {
 				return err
 			}
@@ -610,6 +645,7 @@ func (a *app) scaleCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&replicas, "replicas", -1, "desired replica count")
+	cmd.Flags().BoolVar(&force, "force", false, "bypass maintenance-window restrictions and audit the override")
 	_ = cmd.MarkFlagRequired("replicas")
 	return cmd
 }
@@ -618,6 +654,7 @@ func (a *app) rolloutCommand() *cobra.Command {
 	var image string
 	var maxUnavailable int
 	var maxSurge int
+	var force bool
 	cmd := &cobra.Command{
 		Use:   "rollout <service-name-or-id>",
 		Short: "Roll out a new service image",
@@ -640,7 +677,12 @@ func (a *app) rolloutCommand() *cobra.Command {
 			if maxUnavailable == 0 && maxSurge == 0 {
 				return fmt.Errorf("--max-unavailable and --max-surge cannot both be zero")
 			}
-			deployment, err := client.RolloutService(cmd.Context(), string(service.ID), image, maxUnavailable, maxSurge)
+			var deployment types.Deployment
+			if forced, ok := client.(ForceOperationsClient); ok {
+				deployment, err = forced.RolloutServiceForce(cmd.Context(), string(service.ID), image, maxUnavailable, maxSurge, force)
+			} else {
+				deployment, err = client.RolloutService(cmd.Context(), string(service.ID), image, maxUnavailable, maxSurge)
+			}
 			if err != nil {
 				return err
 			}
@@ -650,6 +692,7 @@ func (a *app) rolloutCommand() *cobra.Command {
 	cmd.Flags().StringVar(&image, "image", "", "new image")
 	cmd.Flags().IntVar(&maxUnavailable, "max-unavailable", 1, "maximum unavailable replicas during rollout")
 	cmd.Flags().IntVar(&maxSurge, "max-surge", 1, "maximum extra replicas during rollout")
+	cmd.Flags().BoolVar(&force, "force", false, "bypass maintenance-window restrictions and audit the override")
 	_ = cmd.MarkFlagRequired("image")
 	cmd.AddCommand(&cobra.Command{
 		Use:   "status <service-name-or-id>",
@@ -671,7 +714,8 @@ func (a *app) rolloutCommand() *cobra.Command {
 }
 
 func (a *app) rollbackCommand() *cobra.Command {
-	return &cobra.Command{
+	var force bool
+	cmd := &cobra.Command{
 		Use:   "rollback <service-name-or-id>",
 		Short: "Roll back a service",
 		Args:  cobra.ExactArgs(1),
@@ -680,13 +724,20 @@ func (a *app) rollbackCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			deployment, err := client.RollbackService(cmd.Context(), string(service.ID))
+			var deployment types.Deployment
+			if forced, ok := client.(ForceOperationsClient); ok {
+				deployment, err = forced.RollbackServiceForce(cmd.Context(), string(service.ID), force)
+			} else {
+				deployment, err = client.RollbackService(cmd.Context(), string(service.ID))
+			}
 			if err != nil {
 				return err
 			}
 			return writeDeployment(a.out, a.output, deployment)
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "bypass maintenance-window restrictions and audit the override")
+	return cmd
 }
 
 func (a *app) deleteCommand() *cobra.Command {

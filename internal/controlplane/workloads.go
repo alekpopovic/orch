@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/gitops"
+	"github.com/alekpopovic/orch/internal/maintenance"
 	"github.com/alekpopovic/orch/internal/namespace"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -560,4 +562,79 @@ func (s *MemoryService) DeleteNotificationSink(ctx context.Context, id string) e
 	}
 	delete(s.notificationSinks, id)
 	return nil
+}
+
+func (s *MemoryService) CreateMaintenanceWindow(ctx context.Context, value types.MaintenanceWindow) (types.MaintenanceWindow, error) {
+	if value.Timezone == "" {
+		value.Timezone = "UTC"
+	}
+	if value.Duration == 0 {
+		value.Duration = time.Hour
+	}
+	if err := maintenance.Validate(value); err != nil {
+		return types.MaintenanceWindow{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	if !value.Global {
+		value.Namespace = namespace.FromContext(ctx)
+	} else {
+		value.Namespace = ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, item := range s.maintenanceWindows {
+		if item.Name == value.Name && item.Namespace == value.Namespace && item.Global == value.Global {
+			return types.MaintenanceWindow{}, store.ErrDuplicate
+		}
+	}
+	value.ID = newUUID()
+	value.CreatedAt = s.now()
+	s.maintenanceWindows[value.ID] = value
+	return value, nil
+}
+func (s *MemoryService) ListMaintenanceWindows(ctx context.Context) ([]types.MaintenanceWindow, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []types.MaintenanceWindow{}
+	for _, item := range s.maintenanceWindows {
+		if item.Global || namespace.Matches(ctx, item.Namespace) {
+			out = append(out, item)
+		}
+	}
+	slices.SortFunc(out, func(a, b types.MaintenanceWindow) int { return strings.Compare(a.Name, b.Name) })
+	return out, nil
+}
+func (s *MemoryService) DeleteMaintenanceWindow(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, ok := s.maintenanceWindows[id]
+	if !ok || (!item.Global && !namespace.Matches(ctx, item.Namespace)) {
+		return store.ErrNotFound
+	}
+	delete(s.maintenanceWindows, id)
+	return nil
+}
+func (s *MemoryService) checkMaintenance(ctx context.Context, operation types.MaintenanceOperation, namespaceName string) error {
+	s.mu.RLock()
+	relevant := false
+	allowed := false
+	now := s.now()
+	for _, window := range s.maintenanceWindows {
+		if !window.Enabled || (!window.Global && window.Namespace != namespaceName) || !slices.Contains(window.AllowedOperations, operation) {
+			continue
+		}
+		relevant = true
+		if maintenance.Allows(window, operation, now) {
+			allowed = true
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if !relevant || allowed {
+		return nil
+	}
+	if maintenance.Forced(ctx) {
+		_, _ = s.AppendAuditLog(ctx, audit.Log{Namespace: namespaceName, ActorType: audit.ActorUser, ActorID: "api-user", Action: "maintenance.bypass", TargetType: "operation", TargetID: string(operation), Outcome: audit.OutcomeSuccess, Metadata: map[string]string{"force": "true"}})
+		return nil
+	}
+	return fmt.Errorf("%w: operation %s is outside an approved maintenance window", store.ErrConflict, operation)
 }

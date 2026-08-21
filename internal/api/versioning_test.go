@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,6 +16,13 @@ func TestV1RoutingAndVersionMetadata(t *testing.T) {
 	}
 	if rec.Header().Get("API-Version") != "v1" {
 		t.Fatalf("expected API-Version v1, got %q", rec.Header().Get("API-Version"))
+	}
+	var version APIVersionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &version); err != nil {
+		t.Fatal(err)
+	}
+	if version.ServerVersion != "0.3.0" || version.DatabaseSchemaVersion != 16 || version.MinimumAgentVersion == "" {
+		t.Fatalf("unexpected compatibility metadata: %#v", version)
 	}
 
 	missing := doRequest(t, handler, http.MethodGet, "/v2/services", nil)

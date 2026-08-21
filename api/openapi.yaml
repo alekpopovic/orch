@@ -287,6 +287,7 @@ paths:
       summary: Drain node
       parameters:
         - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/Force"
       responses:
         "200":
           description: Drained node
@@ -367,6 +368,7 @@ paths:
       summary: Scale service
       parameters:
         - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/Force"
       requestBody:
         required: true
         content:
@@ -385,6 +387,7 @@ paths:
       summary: Start service rollout
       parameters:
         - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/Force"
       requestBody:
         required: true
         content:
@@ -414,6 +417,7 @@ paths:
       summary: Start service rollback
       parameters:
         - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/Force"
       responses:
         "202":
           description: Rollback accepted
@@ -667,6 +671,90 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListAuditLogsResponse"
+  /v1/maintenance-windows:
+    get:
+      summary: List maintenance windows visible to the selected namespace
+      responses:
+        "200":
+          description: Maintenance windows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaintenanceWindowsResponse"
+    post:
+      summary: Create a namespace or global maintenance window
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MaintenanceWindow"
+      responses:
+        "201":
+          description: Created maintenance window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaintenanceWindowResponse"
+  /v1/maintenance-windows/{id}:
+    delete:
+      summary: Delete a maintenance window
+      parameters:
+        - $ref: "#/components/parameters/ID"
+      responses:
+        "204":
+          description: Maintenance window deleted
+  /v1/retention:
+    get:
+      summary: Get retention configuration and last pruning result
+      responses:
+        "200":
+          description: Retention status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetentionStatus"
+  /v1/retention/prune:
+    post:
+      summary: Run retention pruning
+      parameters:
+        - name: dry_run
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Pruning result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PruneResult"
+  /v1/usage:
+    get:
+      summary: Export periodic usage snapshots for a namespace
+      parameters:
+        - name: namespace
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Usage report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageReport"
 components:
   securitySchemes:
     bearerAuth:
@@ -688,6 +776,14 @@ components:
       schema:
         type: string
         default: default
+    Force:
+      name: force
+      in: query
+      required: false
+      description: Audit and bypass an applicable maintenance-window restriction.
+      schema:
+        type: boolean
+        default: false
   schemas:
     HealthResponse:
       type: object
@@ -700,14 +796,24 @@ components:
           format: date-time
     APIVersionResponse:
       type: object
-      required: [version, status]
+      required: [api_version, server_version, minimum_agent_version, maximum_tested_agent_version, database_schema_version, minimum_schema_version, maximum_schema_version]
       properties:
-        version:
+        api_version:
           type: string
           enum: [v1]
-        status:
+        server_version:
           type: string
-          enum: [stable]
+          example: 0.3.0
+        minimum_agent_version:
+          type: string
+        maximum_tested_agent_version:
+          type: string
+        database_schema_version:
+          type: integer
+        minimum_schema_version:
+          type: integer
+        maximum_schema_version:
+          type: integer
     Namespace:
       type: object
       required: [name, created_at]
@@ -1024,6 +1130,8 @@ components:
         last_heartbeat_at:
           type: string
           format: date-time
+        agent_version:
+          type: string
     Deployment:
       type: object
       properties:
@@ -1321,3 +1429,124 @@ components:
           type: string
         service_version:
           type: integer
+    MaintenanceWindow:
+      type: object
+      required: [name, schedule, timezone, duration, allowed_operations, enabled]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        namespace:
+          type: string
+        global:
+          type: boolean
+        schedule:
+          type: string
+          description: Five-field cron schedule.
+        timezone:
+          type: string
+          example: Europe/Belgrade
+        duration:
+          type: integer
+          format: int64
+          description: Duration in nanoseconds.
+        allowed_operations:
+          type: array
+          items:
+            type: string
+            enum: [rollout, rollback, node_drain, autoscaling_scale_down, non_urgent_replacement]
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+    MaintenanceWindowResponse:
+      type: object
+      properties:
+        window:
+          $ref: "#/components/schemas/MaintenanceWindow"
+    MaintenanceWindowsResponse:
+      type: object
+      properties:
+        windows:
+          type: array
+          items:
+            $ref: "#/components/schemas/MaintenanceWindow"
+    RetentionConfig:
+      type: object
+      additionalProperties:
+        type: integer
+        format: int64
+      description: Retention durations in nanoseconds keyed by retained resource.
+    PruneResult:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+        events:
+          type: integer
+        audit_logs:
+          type: integer
+        tasks:
+          type: integer
+        rollouts:
+          type: integer
+        jobs:
+          type: integer
+        gitops_records:
+          type: integer
+    RetentionStatus:
+      type: object
+      properties:
+        config:
+          $ref: "#/components/schemas/RetentionConfig"
+        last_run_at:
+          type: string
+          format: date-time
+        last_result:
+          $ref: "#/components/schemas/PruneResult"
+    UsageSnapshot:
+      type: object
+      properties:
+        id:
+          type: string
+        namespace:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        cpu_millicores:
+          type: integer
+          format: int64
+        memory_bytes:
+          type: integer
+          format: int64
+        replicas:
+          type: integer
+        services:
+          type: integer
+        task_runtime_seconds:
+          type: number
+          format: double
+        public_ports:
+          type: integer
+        storage_claims:
+          type: integer
+    UsageReport:
+      type: object
+      properties:
+        namespace:
+          type: string
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        snapshots:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageSnapshot"
+        totals:
+          $ref: "#/components/schemas/UsageSnapshot"

@@ -59,3 +59,14 @@ Secret and registry credential references resolve only in the workload namespace
 Migration `000011_namespaces` creates the namespace table, assigns existing rows to `default`, replaces global name uniqueness with namespace-local keys, and adds namespace indexes. Migration `000012_resource_quotas` adds quota limits. The namespace down migration removes non-default data before restoring global uniqueness and is therefore intended only for controlled rollback.
 
 Namespaces are a logical isolation boundary, not yet a complete hostile multi-tenant security boundary. Docker nodes, host networking, scheduler capacity, and the current in-memory server process remain shared. Production multi-tenancy still requires PostgreSQL server wiring, network isolation, and stronger agent identity.
+
+## Usage Accounting
+
+The control plane periodically snapshots requested CPU and memory, replicas, services, accumulated task runtime, public ports, and storage claims by namespace. Namespace selection applies to both the API and CLI:
+
+```sh
+orch -n payments usage --from 2026-08-01 --to 2026-09-01
+orch -n payments usage export --from 2026-08-01 --to 2026-09-01 --format csv
+```
+
+`GET /v1/usage?namespace=payments&from=...&to=...` returns the source snapshots and aggregate totals. The report is an operational/export boundary only; pricing, payment, and invoicing are outside orch.

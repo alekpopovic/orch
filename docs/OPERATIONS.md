@@ -82,6 +82,36 @@ Rollback:
 
 Migration files live in `migrations/`.
 
+The production-safe runner exposes `orch-server migrate status|up|down`; `down` additionally requires `--allow-down`. See [MIGRATIONS.md](https://alekpopovic.github.io/orch/#MIGRATIONS.md).
+
+## Maintenance Windows
+
+Create namespace-scoped or global windows with a five-field cron schedule, IANA timezone, duration, and allowed operations:
+
+```sh
+orch -n payments maintenance create weekly \
+  --schedule "0 2 * * 0" --timezone Europe/Belgrade --duration 2h \
+  --operations rollout,rollback,node_drain,autoscaling_scale_down
+orch -n payments maintenance ls
+orch -n payments maintenance delete <window-id>
+```
+
+Applicable rollouts, rollbacks, drains, and scale-downs are rejected outside an enabled window. An emergency operator may add `--force`; the bypass is recorded in the audit log. Critical safety replacement is not delayed by default.
+
+## Retention and Usage
+
+The server captures namespace usage every minute and runs the retention pruner daily. Inspect or preview it before manual pruning:
+
+```sh
+orch retention status
+orch retention prune --dry-run
+orch retention prune
+orch usage --namespace payments --from 2026-08-01 --to 2026-09-01
+orch usage export --namespace payments --from 2026-08-01 --to 2026-09-01 --format csv
+```
+
+Retention never removes active services, running tasks, active rollouts, or unresolved failures. Completed pruning emits an audit record. Usage reports accounting measurements only; they do not implement billing, payments, or invoices.
+
 ## Runbooks
 
 ### Check Cluster Health

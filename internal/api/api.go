@@ -26,6 +26,7 @@ import (
 	"github.com/alekpopovic/orch/internal/quota"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/internal/traefik"
+	versioninfo "github.com/alekpopovic/orch/internal/version"
 	"github.com/alekpopovic/orch/pkg/types"
 )
 
@@ -232,6 +233,12 @@ func (s *Server) registerV1(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/notification-sinks", s.listNotificationSinks)
 	mux.HandleFunc("DELETE /v1/notification-sinks/{id}", s.deleteNotificationSink)
 	mux.HandleFunc("POST /v1/notification-sinks/{id}/test", s.testNotificationSink)
+	mux.HandleFunc("POST /v1/maintenance-windows", s.createMaintenanceWindow)
+	mux.HandleFunc("GET /v1/maintenance-windows", s.listMaintenanceWindows)
+	mux.HandleFunc("DELETE /v1/maintenance-windows/{id}", s.deleteMaintenanceWindow)
+	mux.HandleFunc("GET /v1/retention", s.retentionStatus)
+	mux.HandleFunc("POST /v1/retention/prune", s.pruneRetention)
+	mux.HandleFunc("GET /v1/usage", s.getUsage)
 }
 
 type HealthResponse struct {
@@ -240,8 +247,13 @@ type HealthResponse struct {
 }
 
 type APIVersionResponse struct {
-	Version string `json:"version"`
-	Status  string `json:"status"`
+	APIVersion                string `json:"api_version"`
+	ServerVersion             string `json:"server_version"`
+	MinimumAgentVersion       string `json:"minimum_agent_version"`
+	MaximumTestedAgentVersion string `json:"maximum_tested_agent_version"`
+	DatabaseSchemaVersion     int    `json:"database_schema_version"`
+	MinimumSchemaVersion      int    `json:"minimum_schema_version"`
+	MaximumSchemaVersion      int    `json:"maximum_schema_version"`
 }
 
 type CreateNamespaceRequest struct {
@@ -300,14 +312,16 @@ type AgentRegisterRequest struct {
 	Capacity         types.Resources   `json:"capacity"`
 	Allocatable      types.Resources   `json:"allocatable"`
 	DockerSocketPath string            `json:"docker_socket_path,omitempty"`
+	AgentVersion     string            `json:"agent_version"`
 }
 
 type AgentHeartbeatRequest struct {
-	NodeID      types.NodeID      `json:"node_id"`
-	Capacity    types.Resources   `json:"capacity"`
-	Allocatable types.Resources   `json:"allocatable"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Shutdown    bool              `json:"shutdown,omitempty"`
+	NodeID       types.NodeID      `json:"node_id"`
+	Capacity     types.Resources   `json:"capacity"`
+	Allocatable  types.Resources   `json:"allocatable"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	Shutdown     bool              `json:"shutdown,omitempty"`
+	AgentVersion string            `json:"agent_version"`
 }
 
 type AgentResponse struct {
@@ -428,7 +442,13 @@ func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) apiVersion(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, APIVersionResponse{Version: "v1", Status: "stable"})
+	info := versioninfo.Info()
+	writeJSON(w, http.StatusOK, APIVersionResponse{
+		APIVersion: info.APIVersion, ServerVersion: info.ServerVersion,
+		MinimumAgentVersion: info.MinimumAgentVersion, MaximumTestedAgentVersion: info.MaximumTestedAgentVersion,
+		DatabaseSchemaVersion: info.DatabaseSchemaVersion, MinimumSchemaVersion: info.MinimumSchemaVersion,
+		MaximumSchemaVersion: info.MaximumSchemaVersion,
+	})
 }
 
 func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) {
@@ -569,6 +589,7 @@ func (s *Server) agentRegister(w http.ResponseWriter, r *http.Request) {
 		Labels:           req.Labels,
 		Capacity:         req.Capacity,
 		Allocatable:      req.Allocatable,
+		AgentVersion:     req.AgentVersion,
 	})
 	if err != nil {
 		s.recordAuditAs(r, audit.ActorAgent, req.NodeName, "agent.register", "node", req.NodeName, audit.OutcomeFailure, map[string]string{
@@ -606,11 +627,12 @@ func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	command, err := s.controlPlane.HeartbeatNode(r.Context(), controlplane.NodeHeartbeat{
-		NodeID:      req.NodeID,
-		Capacity:    req.Capacity,
-		Allocatable: req.Allocatable,
-		Labels:      req.Labels,
-		Shutdown:    req.Shutdown,
+		NodeID:       req.NodeID,
+		Capacity:     req.Capacity,
+		Allocatable:  req.Allocatable,
+		Labels:       req.Labels,
+		Shutdown:     req.Shutdown,
+		AgentVersion: req.AgentVersion,
 	})
 	if err != nil {
 		s.writeError(w, r, err)
@@ -705,6 +727,7 @@ func (s *Server) getNode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) drainNode(w http.ResponseWriter, r *http.Request) {
+	r = withForceRequest(r)
 	id, ok := s.pathNodeID(w, r)
 	if !ok {
 		return
@@ -940,6 +963,7 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) scaleService(w http.ResponseWriter, r *http.Request) {
+	r = withForceRequest(r)
 	id, ok := s.pathServiceID(w, r)
 	if !ok {
 		return
@@ -967,6 +991,7 @@ func (s *Server) scaleService(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) rolloutService(w http.ResponseWriter, r *http.Request) {
+	r = withForceRequest(r)
 	id, ok := s.pathServiceID(w, r)
 	if !ok {
 		return
@@ -1047,6 +1072,7 @@ func (s *Server) getRollout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) rollbackService(w http.ResponseWriter, r *http.Request) {
+	r = withForceRequest(r)
 	id, ok := s.pathServiceID(w, r)
 	if !ok {
 		return

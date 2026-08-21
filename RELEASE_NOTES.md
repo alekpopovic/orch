@@ -1,119 +1,26 @@
-# Release Notes
+# orch v0.3.0 Release Notes
 
-## v0.1.0 MVP
+v0.3.0 turns the MVP into a substantially stronger platform contract. The release adds a documented, stable v1 API; namespace-aware policy and quota boundaries; GitOps and scheduled/one-shot workloads; and explicit operational safety for upgrades, migrations, disruptive maintenance, retention, and capacity testing.
 
-This is the first MVP release candidate for `orch`, a Go-based Docker container orchestrator.
+## Highlights
 
-### What Works
+- Namespace isolation covers services, tasks, deployments, events, secrets, registry credentials, audit history, maintenance windows, and usage reports.
+- Admission rejects unsafe workload specs before mutation; quotas account for replicas, requested CPU/memory, public ports, secrets, and registry credentials.
+- GitOps supports deterministic sync, drift reporting, and an opt-in auto-revert policy. Jobs, cron jobs, volume claims, internal DNS, and notification sinks extend the workload surface.
+- `GET /v1/version` and `orch cluster check-upgrade` report server, API, agent, and schema compatibility. Agents report their version on registration and heartbeat.
+- `orch-server migrate status|up|down` records versions, serializes migrations with an advisory lock, and requires explicit authorization for down migrations.
+- Maintenance windows govern rollout, rollback, drain, and scale-down operations. Emergency `--force` bypasses are audited.
+- Retention pruning protects active/unresolved state, while namespace usage snapshots export CPU, memory, replica, service, task-runtime, public-port, and storage-claim measurements as JSON or CSV.
+- New fuzz, scheduler property, benchmark, profiling, and optional 1,000-service scale suites improve confidence and provide reproducible diagnostics.
 
-- `orch-server` starts with structured logs, health endpoints, optional JWT auth, agent auth, request IDs, JSON errors, and Prometheus metrics.
-- `orch-agent` registers with the server, heartbeats, receives short-lived credentials, polls assigned tasks, and reconciles Docker containers.
-- `orch` CLI can deploy services from YAML, list/inspect services and nodes, scale services, view tasks, stream logs, list events, start rollouts, request rollback, and delete services.
-- Services model image, replicas, env, ports, resource requests/limits, healthchecks, restart policy, placement constraints, and deployment version.
-- Task lifecycle supports pending, assigned, pulling, created, running, healthy, unhealthy, failed, stopped, and removed states.
-- Scheduler and reconciler packages are deterministic and unit-tested.
-- Agent Docker execution is idempotent by task/container labels and handles process restart, missing containers, non-zero exits, pull failures, and create/start errors.
-- Soft service deletion marks services deleting, stops/removes task containers, and finalizes after tasks report removed.
-- Logs are proxied from the owning agent without unbounded buffering.
-- Events are queryable through the API and CLI for the active control-plane implementation.
-- PostgreSQL migrations and store implementation exist for nodes, services, service versions, tasks, deployments, and events.
-- Local Docker Compose environment starts PostgreSQL, server, and one agent.
+## Compatibility and Upgrade
 
-### Important MVP Limits
+The server version is `0.3.0`, API version is `v1`, and database schema is 16. Supported agents are `0.2.0`–`0.3.0`; newer agents are accepted with an untested-version warning. Supported schema versions are 15–16. Follow [docs/UPGRADES.md](docs/UPGRADES.md) and [docs/MIGRATIONS.md](docs/MIGRATIONS.md), back up PostgreSQL first, migrate before replacing the server, and roll agents node by node.
 
-- The default `orch-server` binary still uses the in-memory control plane. PostgreSQL-backed server state is not wired yet.
-- Server process restart loses in-memory services, tasks, deployments, events, node credentials, and node status.
-- No heartbeat-expiry controller marks abruptly lost nodes offline yet.
-- No HA leader election implementation yet.
-- Networking is Docker host/port based; no overlay networking or service discovery.
-- Agent authentication is token based; mTLS is roadmap.
-- Secrets are represented as references only.
-- Rollouts do not yet support manual pause/resume, progress deadlines, or automatic rollback.
+## Important Boundary
 
-### Verification For This Candidate
+The default `orch-server` runtime still owns live control-plane state in memory even though the PostgreSQL store and migrations exist. Do not treat v0.3.0 as restart-safe durable orchestration until that store is wired into the server. Advanced networking, stateful scheduling, external plugin execution, signing/scanning enforcement, and billing are not included.
 
-- Full Go test suite: `go test ./...`
-- Build: `go build ./...`
-- Vet: `go vet ./...`
-- Lint target: `make lint`
-- MVP fake-runtime E2E covers agent registration, service deploy, task creation/assignment, task running, log streaming, events, scale up/down, and delete cleanup.
+## Verification
 
-### Local Demo
-
-```sh
-./scripts/dev-up.sh
-./scripts/migrate-up.sh
-export ORCH_SERVER_URL=http://localhost:8080
-./scripts/demo-deploy.sh
-go run ./cmd/orch service ps http-api
-go run ./cmd/orch logs http-api --tail 100
-go run ./cmd/orch events --service http-api
-go run ./cmd/orch scale http-api --replicas 2
-go run ./cmd/orch delete http-api
-./scripts/dev-down.sh
-```
-
-### Upgrade Notes
-
-This is the first release; no upgrade path is required. For future releases, run migrations before deploying binaries that depend on schema changes.
-
-## v0.2.0 Production Hardening
-
-`orch` v0.2.0 focuses on production hardening around observability, security, backup/restore, deployment manifests, autoscaling foundations, HA controller coordination, and reliability testing.
-
-### Highlights
-
-- Added Prometheus alert rules and a Grafana dashboard.
-- Added backup and restore scripts plus operator runbooks.
-- Added production Docker Compose and systemd deployment examples.
-- Completed a security review and fixed the high-risk healthcheck host-local SSRF issue.
-- Added default container security policy enforcement for privileged mode, host network/PID, host paths, and Linux capabilities.
-- Hardened healthcheck validation and execution with scheme/path-only specs, redirect blocking, assigned-port enforcement, and response body read limits.
-- Added autoscaling design and CPU-based autoscaler MVP using a metrics provider abstraction.
-- Added HA control-plane design and PostgreSQL advisory-lock leader election primitives.
-- Added multi-agent load testing and chaos-style integration scenarios.
-- Added a GitHub Pages documentation portal with release docs, OpenAPI access, left-sidebar navigation, and auto/light/dark theme support.
-- Added a branded README/docs refresh with a unique SVG logo, colorful cards, icons, and Mermaid chart rendering.
-
-### Compatibility Notes
-
-- New migrations add `security_context` and `autoscaling` JSONB fields to `services`.
-- Existing service specs remain compatible because new fields default to empty safe values.
-- The default security policy rejects privilege-escalating options unless explicitly allowlisted.
-- The autoscaler controller uses the existing service scale path and skips active rollouts.
-
-### Verification
-
-Completed for this candidate:
-
-- `go test ./...`
-- `go build ./...`
-- `docker compose config`
-- security-sensitive grep checks for token/secret logging
-
-`golangci-lint` was not installed in the local environment, so lint could not be executed locally.
-
-### Known Limits
-
-- The default server still uses the in-memory control plane.
-- PostgreSQL store and migration support exist, but full server runtime wiring to durable state remains future work.
-- Autoscaling includes the controller and fake metrics provider; a production Prometheus provider is not wired yet.
-- HA leader election primitives are implemented, but production controller wiring still needs DB-backed server state.
-- GitHub reported existing Dependabot vulnerabilities on push; review the repository security tab before tagging.
-
-## v0.1.0 MVP
-
-The first MVP release candidate for `orch`, a Go-based Docker container orchestrator.
-
-### What Works
-
-- `orch-server` starts with structured logs, health endpoints, optional JWT auth, agent auth, request IDs, JSON errors, and Prometheus metrics.
-- `orch-agent` registers with the server, heartbeats, receives short-lived credentials, polls assigned tasks, and reconciles Docker containers.
-- `orch` CLI can deploy services from YAML, list/inspect services and nodes, scale services, view tasks, stream logs, list events, start rollouts, request rollback, and delete services.
-- Services model image, replicas, env, ports, resource requests/limits, healthchecks, restart policy, placement constraints, and deployment version.
-- Scheduler and reconciler packages are deterministic and unit-tested.
-- Soft service deletion marks services deleting, stops/removes task containers, and finalizes after tasks report removed.
-
-### Upgrade Notes
-
-This is the first release series. For future releases, run migrations before deploying binaries that depend on schema changes.
+The release gate covers the full Go suite, vet/lint, OpenAPI parsing and path coverage, migration compatibility/locking/idempotency tests, and secret-sensitive source scans. The optional scale suite remains excluded from normal CI by its `scale` build tag.

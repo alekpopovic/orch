@@ -42,6 +42,16 @@ secret_key: change-me
 graceful_shutdown_ttl: 10s
 heartbeat_timeout: 30s
 node_monitor_interval: 5s
+enable_pprof: false
+debug_addr: 127.0.0.1:6060
+retention:
+  events: 720h
+  audit_logs: 2160h
+  completed_tasks: 168h
+  failed_tasks: 720h
+  rollouts: 720h
+  completed_jobs: 168h
+  gitops_records: 720h
 cluster_policy:
   require_resource_requests: true
   require_resource_limits: true
@@ -60,7 +70,11 @@ cluster_policy:
   max_public_ports_per_service: 4
 ```
 
-Common server flags mirror config keys: `--addr`, `--database-url`, `--log-level`, `--bootstrap-token`, `--jwt-secret`, `--users`, `--secret-key`, `--shutdown-timeout`, `--node-heartbeat-timeout`, and `--node-monitor-interval`.
+Common server flags mirror config keys: `--addr`, `--database-url`, `--log-level`, `--bootstrap-token`, `--jwt-secret`, `--users`, `--secret-key`, `--shutdown-timeout`, `--node-heartbeat-timeout`, `--node-monitor-interval`, `--debug-addr`, and `--enable-pprof=true`.
+
+`ORCH_ENABLE_PPROF` and `ORCH_DEBUG_ADDR` control a separate admin-only debug listener. Profiling is disabled by default and is never mounted on the public API listener. See [PERFORMANCE.md](https://alekpopovic.github.io/orch/#PERFORMANCE.md) before enabling it.
+
+Retention durations can also be set with `ORCH_RETENTION_EVENTS`, `ORCH_RETENTION_AUDIT_LOGS`, `ORCH_RETENTION_COMPLETED_TASKS`, `ORCH_RETENTION_FAILED_TASKS`, `ORCH_RETENTION_ROLLOUTS`, `ORCH_RETENTION_COMPLETED_JOBS`, and `ORCH_RETENTION_GITOPS_RECORDS`. Values use Go duration syntax; use hours for day-scale policies.
 
 Admission policy can also be supplied through `ORCH_POLICY_REQUIRE_RESOURCE_REQUESTS`, `ORCH_POLICY_REQUIRE_RESOURCE_LIMITS`, `ORCH_POLICY_ALLOW_PRIVILEGED`, `ORCH_POLICY_ALLOW_HOST_NETWORK`, `ORCH_POLICY_ALLOW_HOST_PID`, `ORCH_POLICY_ALLOWED_IMAGE_REGISTRIES`, `ORCH_POLICY_BLOCK_LATEST_TAG`, `ORCH_POLICY_REQUIRE_DIGEST`, `ORCH_POLICY_ALLOW_MUTABLE_TAGS`, `ORCH_POLICY_DENY_LATEST_TAG`, `ORCH_POLICY_REQUIRE_HEALTHCHECK`, `ORCH_POLICY_ALLOWED_HOST_PATH_PREFIXES`, `ORCH_POLICY_ALLOWED_CAPABILITIES`, `ORCH_POLICY_MAX_REPLICAS_PER_SERVICE`, and `ORCH_POLICY_MAX_PUBLIC_PORTS_PER_SERVICE`. List values are comma-separated.
 

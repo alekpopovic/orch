@@ -8,21 +8,25 @@ import (
 	"time"
 
 	"github.com/alekpopovic/orch/internal/policy"
+	"github.com/alekpopovic/orch/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 
 type ServerConfig struct {
-	Addr                string               `json:"addr" yaml:"addr"`
-	DatabaseURL         string               `json:"database_url" yaml:"database_url"`
-	LogLevel            string               `json:"log_level" yaml:"log_level"`
-	BootstrapToken      string               `json:"bootstrap_token" yaml:"bootstrap_token"`
-	JWTSecret           string               `json:"jwt_secret" yaml:"jwt_secret"`
-	Users               string               `json:"users" yaml:"users"`
-	SecretKey           string               `json:"secret_key" yaml:"secret_key"`
-	GracefulShutdownTTL time.Duration        `json:"graceful_shutdown_ttl" yaml:"graceful_shutdown_ttl"`
-	HeartbeatTimeout    time.Duration        `json:"heartbeat_timeout" yaml:"heartbeat_timeout"`
-	NodeMonitorInterval time.Duration        `json:"node_monitor_interval" yaml:"node_monitor_interval"`
-	ClusterPolicy       policy.ClusterPolicy `json:"cluster_policy" yaml:"cluster_policy"`
+	Addr                string                `json:"addr" yaml:"addr"`
+	DatabaseURL         string                `json:"database_url" yaml:"database_url"`
+	LogLevel            string                `json:"log_level" yaml:"log_level"`
+	BootstrapToken      string                `json:"bootstrap_token" yaml:"bootstrap_token"`
+	JWTSecret           string                `json:"jwt_secret" yaml:"jwt_secret"`
+	Users               string                `json:"users" yaml:"users"`
+	SecretKey           string                `json:"secret_key" yaml:"secret_key"`
+	GracefulShutdownTTL time.Duration         `json:"graceful_shutdown_ttl" yaml:"graceful_shutdown_ttl"`
+	HeartbeatTimeout    time.Duration         `json:"heartbeat_timeout" yaml:"heartbeat_timeout"`
+	NodeMonitorInterval time.Duration         `json:"node_monitor_interval" yaml:"node_monitor_interval"`
+	DebugAddr           string                `json:"debug_addr" yaml:"debug_addr"`
+	EnablePprof         bool                  `json:"enable_pprof" yaml:"enable_pprof"`
+	Retention           types.RetentionConfig `json:"retention" yaml:"retention"`
+	ClusterPolicy       policy.ClusterPolicy  `json:"cluster_policy" yaml:"cluster_policy"`
 }
 
 type AgentConfig struct {
@@ -55,6 +59,8 @@ type ServerOverrides struct {
 	GracefulShutdownTTL string
 	HeartbeatTimeout    string
 	NodeMonitorInterval string
+	DebugAddr           string
+	EnablePprof         *bool
 }
 
 type AgentOverrides struct {
@@ -157,7 +163,14 @@ func defaultServer() ServerConfig {
 		GracefulShutdownTTL: 10 * time.Second,
 		HeartbeatTimeout:    30 * time.Second,
 		NodeMonitorInterval: 5 * time.Second,
-		ClusterPolicy:       policy.DefaultClusterPolicy(),
+		DebugAddr:           "127.0.0.1:6060",
+		Retention: types.RetentionConfig{
+			Events: 30 * 24 * time.Hour, AuditLogs: 90 * 24 * time.Hour,
+			CompletedTasks: 7 * 24 * time.Hour, FailedTasks: 30 * 24 * time.Hour,
+			Rollouts: 30 * 24 * time.Hour, CompletedJobs: 7 * 24 * time.Hour,
+			GitOpsRecords: 30 * 24 * time.Hour,
+		},
+		ClusterPolicy: policy.DefaultClusterPolicy(),
 	}
 }
 
@@ -177,17 +190,30 @@ func defaultAgent() AgentConfig {
 }
 
 type serverFileConfig struct {
-	Addr                string            `yaml:"addr"`
-	DatabaseURL         string            `yaml:"database_url"`
-	LogLevel            string            `yaml:"log_level"`
-	BootstrapToken      string            `yaml:"bootstrap_token"`
-	JWTSecret           string            `yaml:"jwt_secret"`
-	Users               string            `yaml:"users"`
-	SecretKey           string            `yaml:"secret_key"`
-	GracefulShutdownTTL string            `yaml:"graceful_shutdown_ttl"`
-	HeartbeatTimeout    string            `yaml:"heartbeat_timeout"`
-	NodeMonitorInterval string            `yaml:"node_monitor_interval"`
-	ClusterPolicy       clusterPolicyFile `yaml:"cluster_policy"`
+	Addr                string              `yaml:"addr"`
+	DatabaseURL         string              `yaml:"database_url"`
+	LogLevel            string              `yaml:"log_level"`
+	BootstrapToken      string              `yaml:"bootstrap_token"`
+	JWTSecret           string              `yaml:"jwt_secret"`
+	Users               string              `yaml:"users"`
+	SecretKey           string              `yaml:"secret_key"`
+	GracefulShutdownTTL string              `yaml:"graceful_shutdown_ttl"`
+	HeartbeatTimeout    string              `yaml:"heartbeat_timeout"`
+	NodeMonitorInterval string              `yaml:"node_monitor_interval"`
+	DebugAddr           string              `yaml:"debug_addr"`
+	EnablePprof         *bool               `yaml:"enable_pprof"`
+	Retention           retentionFileConfig `yaml:"retention"`
+	ClusterPolicy       clusterPolicyFile   `yaml:"cluster_policy"`
+}
+
+type retentionFileConfig struct {
+	Events         string `yaml:"events"`
+	AuditLogs      string `yaml:"audit_logs"`
+	CompletedTasks string `yaml:"completed_tasks"`
+	FailedTasks    string `yaml:"failed_tasks"`
+	Rollouts       string `yaml:"rollouts"`
+	CompletedJobs  string `yaml:"completed_jobs"`
+	GitOpsRecords  string `yaml:"gitops_records"`
 }
 
 type clusterPolicyFile struct {
@@ -236,6 +262,10 @@ func applyServerFile(cfg *ServerConfig, path string) error {
 	applyString(&cfg.JWTSecret, file.JWTSecret)
 	applyString(&cfg.Users, file.Users)
 	applyString(&cfg.SecretKey, file.SecretKey)
+	applyString(&cfg.DebugAddr, file.DebugAddr)
+	if file.EnablePprof != nil {
+		cfg.EnablePprof = *file.EnablePprof
+	}
 	if err := applyDuration(&cfg.GracefulShutdownTTL, file.GracefulShutdownTTL); err != nil {
 		return fmt.Errorf("graceful_shutdown_ttl: %w", err)
 	}
@@ -244,6 +274,9 @@ func applyServerFile(cfg *ServerConfig, path string) error {
 	}
 	if err := applyDuration(&cfg.NodeMonitorInterval, file.NodeMonitorInterval); err != nil {
 		return fmt.Errorf("node_monitor_interval: %w", err)
+	}
+	if err := applyRetentionFile(&cfg.Retention, file.Retention); err != nil {
+		return err
 	}
 	mergeClusterPolicy(&cfg.ClusterPolicy, file.ClusterPolicy)
 	return nil
@@ -288,6 +321,13 @@ func applyServerEnv(cfg *ServerConfig) error {
 	applyString(&cfg.JWTSecret, os.Getenv("ORCH_JWT_SECRET"))
 	applyString(&cfg.Users, os.Getenv("ORCH_USERS"))
 	applyString(&cfg.SecretKey, os.Getenv("ORCH_SECRET_KEY"))
+	applyString(&cfg.DebugAddr, os.Getenv("ORCH_DEBUG_ADDR"))
+	if err := applyBool(&cfg.EnablePprof, os.Getenv("ORCH_ENABLE_PPROF")); err != nil {
+		return fmt.Errorf("ORCH_ENABLE_PPROF: %w", err)
+	}
+	if err := applyRetentionEnv(&cfg.Retention); err != nil {
+		return err
+	}
 	if err := applyDuration(&cfg.GracefulShutdownTTL, os.Getenv("ORCH_SHUTDOWN_TIMEOUT")); err != nil {
 		return fmt.Errorf("ORCH_SHUTDOWN_TIMEOUT: %w", err)
 	}
@@ -339,6 +379,10 @@ func applyServerOverrides(cfg *ServerConfig, overrides ServerOverrides) error {
 	applyString(&cfg.JWTSecret, overrides.JWTSecret)
 	applyString(&cfg.Users, overrides.Users)
 	applyString(&cfg.SecretKey, overrides.SecretKey)
+	applyString(&cfg.DebugAddr, overrides.DebugAddr)
+	if overrides.EnablePprof != nil {
+		cfg.EnablePprof = *overrides.EnablePprof
+	}
 	if err := applyDuration(&cfg.GracefulShutdownTTL, overrides.GracefulShutdownTTL); err != nil {
 		return fmt.Errorf("shutdown timeout override: %w", err)
 	}
@@ -508,6 +552,49 @@ func applyDuration(target *time.Duration, value string) error {
 	return nil
 }
 
+func applyRetentionFile(target *types.RetentionConfig, file retentionFileConfig) error {
+	values := []struct {
+		name  string
+		raw   string
+		value *time.Duration
+	}{
+		{"retention.events", file.Events, &target.Events},
+		{"retention.audit_logs", file.AuditLogs, &target.AuditLogs},
+		{"retention.completed_tasks", file.CompletedTasks, &target.CompletedTasks},
+		{"retention.failed_tasks", file.FailedTasks, &target.FailedTasks},
+		{"retention.rollouts", file.Rollouts, &target.Rollouts},
+		{"retention.completed_jobs", file.CompletedJobs, &target.CompletedJobs},
+		{"retention.gitops_records", file.GitOpsRecords, &target.GitOpsRecords},
+	}
+	for _, item := range values {
+		if err := applyDuration(item.value, item.raw); err != nil {
+			return fmt.Errorf("%s: %w", item.name, err)
+		}
+	}
+	return nil
+}
+
+func applyRetentionEnv(target *types.RetentionConfig) error {
+	values := []struct {
+		name  string
+		value *time.Duration
+	}{
+		{"ORCH_RETENTION_EVENTS", &target.Events},
+		{"ORCH_RETENTION_AUDIT_LOGS", &target.AuditLogs},
+		{"ORCH_RETENTION_COMPLETED_TASKS", &target.CompletedTasks},
+		{"ORCH_RETENTION_FAILED_TASKS", &target.FailedTasks},
+		{"ORCH_RETENTION_ROLLOUTS", &target.Rollouts},
+		{"ORCH_RETENTION_COMPLETED_JOBS", &target.CompletedJobs},
+		{"ORCH_RETENTION_GITOPS_RECORDS", &target.GitOpsRecords},
+	}
+	for _, item := range values {
+		if err := applyDuration(item.value, os.Getenv(item.name)); err != nil {
+			return fmt.Errorf("%s: %w", item.name, err)
+		}
+	}
+	return nil
+}
+
 func readYAMLFile[T any](path string) (T, error) {
 	var value T
 	data, err := os.ReadFile(path)
@@ -589,6 +676,9 @@ func (cfg ServerConfig) Redacted() map[string]any {
 		"graceful_shutdown_ttl": cfg.GracefulShutdownTTL.String(),
 		"heartbeat_timeout":     cfg.HeartbeatTimeout.String(),
 		"node_monitor_interval": cfg.NodeMonitorInterval.String(),
+		"debug_addr":            cfg.DebugAddr,
+		"enable_pprof":          cfg.EnablePprof,
+		"retention":             cfg.Retention,
 		"cluster_policy":        cfg.ClusterPolicy.Redacted(),
 	}
 }
@@ -641,6 +731,19 @@ func (cfg ServerConfig) Validate() error {
 	}
 	if strings.TrimSpace(cfg.SecretKey) == "" {
 		return fmt.Errorf("secret encryption key is required")
+	}
+	if cfg.EnablePprof && strings.TrimSpace(cfg.DebugAddr) == "" {
+		return fmt.Errorf("debug address is required when pprof is enabled")
+	}
+	for name, duration := range map[string]time.Duration{
+		"events": cfg.Retention.Events, "audit_logs": cfg.Retention.AuditLogs,
+		"completed_tasks": cfg.Retention.CompletedTasks, "failed_tasks": cfg.Retention.FailedTasks,
+		"rollouts": cfg.Retention.Rollouts, "completed_jobs": cfg.Retention.CompletedJobs,
+		"gitops_records": cfg.Retention.GitOpsRecords,
+	} {
+		if duration < 0 {
+			return fmt.Errorf("retention %s must be positive", name)
+		}
 	}
 	if cfg.ClusterPolicy.MaxReplicasPerService < 0 || cfg.ClusterPolicy.MaxPublicPortsPerService < 0 {
 		return fmt.Errorf("cluster policy maximums cannot be negative")

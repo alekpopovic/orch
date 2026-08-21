@@ -25,7 +25,7 @@ func TestOpenAPISyntax(t *testing.T) {
 	if doc.OpenAPI == "" || len(doc.Paths) == 0 || len(doc.Components) == 0 {
 		t.Fatalf("invalid OpenAPI shape: openapi=%q paths=%d components=%d", doc.OpenAPI, len(doc.Paths), len(doc.Components))
 	}
-	for _, path := range []string{"/healthz", "/v1/nodes", "/v1/services", "/v1/tasks", "/v1/events", "/v1/logs", "/v1/secrets", "/v1/registry-credentials", "/v1/audit", "/v1/jobs", "/v1/cronjobs", "/v1/volumes", "/v1/volume-claims", "/v1/notification-sinks", "/v1/gitops/status"} {
+	for _, path := range []string{"/healthz", "/v1/version", "/v1/nodes", "/v1/services", "/v1/tasks", "/v1/events", "/v1/logs", "/v1/secrets", "/v1/registry-credentials", "/v1/audit", "/v1/jobs", "/v1/cronjobs", "/v1/volumes", "/v1/volume-claims", "/v1/notification-sinks", "/v1/gitops/status", "/v1/maintenance-windows", "/v1/retention", "/v1/retention/prune", "/v1/usage"} {
 		if _, ok := doc.Paths[path]; !ok {
 			t.Fatalf("OpenAPI spec missing path %s", path)
 		}

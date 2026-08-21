@@ -216,6 +216,57 @@ func (c *APIClient) GetVolume(ctx context.Context, id string) (types.Volume, err
 	err := c.do(ctx, http.MethodGet, "/v1/volumes/"+url.PathEscape(id), nil, &out)
 	return out.Volume, err
 }
+func (c *APIClient) CreateMaintenanceWindow(ctx context.Context, v types.MaintenanceWindow) (types.MaintenanceWindow, error) {
+	var out api.MaintenanceWindowResponse
+	err := c.do(ctx, http.MethodPost, "/v1/maintenance-windows", v, &out)
+	return out.Window, err
+}
+func (c *APIClient) ListMaintenanceWindows(ctx context.Context) ([]types.MaintenanceWindow, error) {
+	var out api.MaintenanceWindowsResponse
+	err := c.do(ctx, http.MethodGet, "/v1/maintenance-windows", nil, &out)
+	return out.Windows, err
+}
+func (c *APIClient) DeleteMaintenanceWindow(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/maintenance-windows/"+url.PathEscape(id), nil, nil)
+}
+func (c *APIClient) GetRetentionStatus(ctx context.Context) (types.RetentionStatus, error) {
+	var out types.RetentionStatus
+	err := c.do(ctx, http.MethodGet, "/v1/retention", nil, &out)
+	return out, err
+}
+func (c *APIClient) PruneRetention(ctx context.Context, dry bool) (types.PruneResult, error) {
+	var out types.PruneResult
+	path := "/v1/retention/prune"
+	if dry {
+		path += "?dry_run=true"
+	}
+	err := c.do(ctx, http.MethodPost, path, nil, &out)
+	return out, err
+}
+func (c *APIClient) GetUsageReport(ctx context.Context, ns string, from, to time.Time) (types.UsageReport, error) {
+	query := url.Values{}
+	if ns != "" {
+		query.Set("namespace", ns)
+	}
+	if !from.IsZero() {
+		query.Set("from", from.Format(time.RFC3339))
+	}
+	if !to.IsZero() {
+		query.Set("to", to.Format(time.RFC3339))
+	}
+	path := "/v1/usage"
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+	var out types.UsageReport
+	err := c.do(ctx, http.MethodGet, path, nil, &out)
+	return out, err
+}
+func (c *APIClient) GetVersion(ctx context.Context) (types.VersionInfo, error) {
+	var out types.VersionInfo
+	err := c.do(ctx, http.MethodGet, "/v1/version", nil, &out)
+	return out, err
+}
 
 func (c *APIClient) ListNodes(ctx context.Context) ([]types.Node, error) {
 	var out api.ListNodesResponse
@@ -234,8 +285,16 @@ func (c *APIClient) GetNode(ctx context.Context, id string) (types.Node, error) 
 }
 
 func (c *APIClient) DrainNode(ctx context.Context, id string) (types.Node, error) {
+	return c.DrainNodeForce(ctx, id, false)
+}
+
+func (c *APIClient) DrainNodeForce(ctx context.Context, id string, force bool) (types.Node, error) {
 	var out api.NodeResponse
-	if err := c.do(ctx, http.MethodPost, "/v1/nodes/"+id+"/drain", nil, &out); err != nil {
+	path := "/v1/nodes/" + id + "/drain"
+	if force {
+		path += "?force=true"
+	}
+	if err := c.do(ctx, http.MethodPost, path, nil, &out); err != nil {
 		return types.Node{}, err
 	}
 	return out.Node, nil
@@ -298,16 +357,32 @@ func (c *APIClient) DeleteService(ctx context.Context, id string) error {
 }
 
 func (c *APIClient) ScaleService(ctx context.Context, id string, replicas int) (types.Service, error) {
+	return c.ScaleServiceForce(ctx, id, replicas, false)
+}
+
+func (c *APIClient) ScaleServiceForce(ctx context.Context, id string, replicas int, force bool) (types.Service, error) {
 	var out api.ServiceResponse
-	if err := c.do(ctx, http.MethodPost, "/v1/services/"+id+"/scale", api.ScaleServiceRequest{Replicas: replicas}, &out); err != nil {
+	path := "/v1/services/" + id + "/scale"
+	if force {
+		path += "?force=true"
+	}
+	if err := c.do(ctx, http.MethodPost, path, api.ScaleServiceRequest{Replicas: replicas}, &out); err != nil {
 		return types.Service{}, err
 	}
 	return out.Service, nil
 }
 
 func (c *APIClient) RolloutService(ctx context.Context, id string, image string, maxUnavailable int, maxSurge int) (types.Deployment, error) {
+	return c.RolloutServiceForce(ctx, id, image, maxUnavailable, maxSurge, false)
+}
+
+func (c *APIClient) RolloutServiceForce(ctx context.Context, id string, image string, maxUnavailable int, maxSurge int, force bool) (types.Deployment, error) {
 	var out api.DeploymentResponse
-	if err := c.do(ctx, http.MethodPost, "/v1/services/"+id+"/rollout", api.RolloutServiceRequest{
+	path := "/v1/services/" + id + "/rollout"
+	if force {
+		path += "?force=true"
+	}
+	if err := c.do(ctx, http.MethodPost, path, api.RolloutServiceRequest{
 		Image:          image,
 		MaxUnavailable: maxUnavailable,
 		MaxSurge:       maxSurge,
@@ -326,8 +401,16 @@ func (c *APIClient) GetServiceRollout(ctx context.Context, id string) (types.Dep
 }
 
 func (c *APIClient) RollbackService(ctx context.Context, id string) (types.Deployment, error) {
+	return c.RollbackServiceForce(ctx, id, false)
+}
+
+func (c *APIClient) RollbackServiceForce(ctx context.Context, id string, force bool) (types.Deployment, error) {
 	var out api.DeploymentResponse
-	if err := c.do(ctx, http.MethodPost, "/v1/services/"+id+"/rollback", nil, &out); err != nil {
+	path := "/v1/services/" + id + "/rollback"
+	if force {
+		path += "?force=true"
+	}
+	if err := c.do(ctx, http.MethodPost, path, nil, &out); err != nil {
 		return types.Deployment{}, err
 	}
 	return out.Deployment, nil

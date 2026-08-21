@@ -22,12 +22,15 @@ type config struct {
 }
 
 type summary struct {
-	TasksCreated           int
-	TasksRunning           int
-	TasksFailed            int
-	AverageConvergenceTime time.Duration
-	SchedulerErrors        int
-	ReconcilerErrors       int
+	TasksCreated             int
+	TasksRunning             int
+	TasksFailed              int
+	AverageConvergenceTime   time.Duration
+	SchedulerErrors          int
+	ReconcilerErrors         int
+	SchedulerIterations      int
+	ReconciliationIterations int
+	ConvergenceDuration      time.Duration
 }
 
 func main() {
@@ -47,7 +50,7 @@ func main() {
 func parseFlags(args []string) config {
 	cfg := config{
 		nodes:       5,
-		services:    20,
+		services:    1000,
 		replicas:    3,
 		failureRate: 0.05,
 		duration:    10 * time.Second,
@@ -91,6 +94,7 @@ func run(ctx context.Context, cfg config) (summary, error) {
 		return summary{}, err
 	}
 	var result summary
+	convergenceStarted := time.Now()
 	convergence := make([]time.Duration, 0, cfg.services)
 	for serviceIndex := 0; serviceIndex < cfg.services; serviceIndex++ {
 		start := time.Now()
@@ -112,9 +116,12 @@ func run(ctx context.Context, cfg config) (summary, error) {
 			return result, err
 		}
 		convergence = append(convergence, time.Since(start))
+		result.ReconciliationIterations++
 	}
+	result.ConvergenceDuration = time.Since(convergenceStarted)
 	deadline := time.Now().Add(cfg.duration)
 	for time.Now().Before(deadline) {
+		result.SchedulerIterations++
 		if err := simulateTick(ctx, cp, nodes, rng, cfg.failureRate, &result); err != nil {
 			result.ReconcilerErrors++
 			return result, err
@@ -241,4 +248,7 @@ func printSummary(result summary) {
 	fmt.Printf("average_convergence_time=%s\n", result.AverageConvergenceTime)
 	fmt.Printf("scheduler_errors=%d\n", result.SchedulerErrors)
 	fmt.Printf("reconciler_errors=%d\n", result.ReconcilerErrors)
+	fmt.Printf("convergence_duration=%s\n", result.ConvergenceDuration)
+	fmt.Printf("scheduler_iterations=%d\n", result.SchedulerIterations)
+	fmt.Printf("reconciliation_iterations=%d\n", result.ReconciliationIterations)
 }

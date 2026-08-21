@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,17 +24,26 @@ import (
 	"github.com/alekpopovic/orch/internal/gitops"
 	"github.com/alekpopovic/orch/internal/logging"
 	"github.com/alekpopovic/orch/internal/metrics"
+	"github.com/alekpopovic/orch/internal/migrations"
 	"github.com/alekpopovic/orch/internal/node"
 	"github.com/alekpopovic/orch/internal/notifications"
 	"github.com/alekpopovic/orch/internal/rollout"
 	"github.com/alekpopovic/orch/internal/scheduler"
 	"github.com/alekpopovic/orch/internal/secrets"
+	versioninfo "github.com/alekpopovic/orch/internal/version"
 	"gopkg.in/yaml.v3"
 )
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if len(os.Args) > 2 && os.Args[1] == "migrate" {
+		if err := runMigrationCommand(ctx, os.Args[2], os.Args[3:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	cfg, printConfig, err := loadConfig(os.Args[1:])
 	if err != nil {
@@ -73,6 +84,15 @@ func loadConfig(args []string) (config.ServerConfig, bool, error) {
 	fs.StringVar(&overrides.GracefulShutdownTTL, "shutdown-timeout", "", "graceful shutdown timeout")
 	fs.StringVar(&overrides.HeartbeatTimeout, "node-heartbeat-timeout", "", "node heartbeat timeout")
 	fs.StringVar(&overrides.NodeMonitorInterval, "node-monitor-interval", "", "node monitor interval")
+	fs.StringVar(&overrides.DebugAddr, "debug-addr", "", "admin debug listener address")
+	fs.Func("enable-pprof", "enable pprof on the admin debug listener", func(raw string) error {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("enable-pprof: %w", err)
+		}
+		overrides.EnablePprof = &value
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		return config.ServerConfig{}, false, err
 	}
@@ -84,16 +104,46 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	if strings.EqualFold(os.Getenv("ORCH_SCHEMA_CHECK"), "true") {
+		runner, err := migrations.Open(ctx, cfg.DatabaseURL, "migrations")
+		if err != nil {
+			return fmt.Errorf("database schema check: %w", err)
+		}
+		status, statusErr := runner.Status(ctx)
+		runner.Close()
+		if statusErr != nil {
+			return statusErr
+		}
+		if err = checkSchemaVersion(status.Current); err != nil {
+			return err
+		}
+	}
 	users, err := auth.ParseStaticUsers(cfg.Users)
 	if err != nil {
 		return err
+	}
+	var debugServer *http.Server
+	if cfg.EnablePprof {
+		debugServer = &http.Server{Addr: cfg.DebugAddr, Handler: api.NewDebugHandler(true), ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			logger.Info("starting admin debug listener", "addr", cfg.DebugAddr)
+			if err := debugServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("debug listener stopped", "error", err)
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.GracefulShutdownTTL)
+			defer cancel()
+			_ = debugServer.Shutdown(shutdownCtx)
+		}()
 	}
 
 	envelope, err := secrets.NewLocalEnvelope(cfg.SecretKey)
 	if err != nil {
 		return err
 	}
-	controlPlane := controlplane.NewMemoryService(controlplane.WithSecretEnvelope(envelope), controlplane.WithClusterPolicy(cfg.ClusterPolicy))
+	controlPlane := controlplane.NewMemoryService(controlplane.WithSecretEnvelope(envelope), controlplane.WithClusterPolicy(cfg.ClusterPolicy), controlplane.WithRetentionConfig(cfg.Retention))
 	controlPlane.SetNotificationDispatcher(notifications.NewDispatcher(controlPlane, nil))
 	serverMetrics := metrics.NewServer()
 	if dnsAddress := os.Getenv("ORCH_DNS_ADDR"); dnsAddress != "" {
@@ -139,6 +189,33 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 			}
 		}
 	}()
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		_, _ = controlPlane.CaptureUsageSnapshots(ctx)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_, _ = controlPlane.CaptureUsageSnapshots(ctx)
+			}
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := controlPlane.PruneRetention(ctx, false); err != nil && !errors.Is(err, context.Canceled) {
+					logger.Warn("retention pruning failed", "error", err)
+				}
+			}
+		}
+	}()
 	rolloutController := rollout.NewController(controlPlane, logger, rollout.WithMetrics(serverMetrics))
 	go func() {
 		if err := rolloutController.Run(ctx, 5*time.Second); err != nil && !errors.Is(err, context.Canceled) {
@@ -179,5 +256,49 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 			return err
 		}
 		return nil
+	}
+}
+
+func checkSchemaVersion(value string) error {
+	normalized := strings.TrimLeft(strings.TrimSpace(value), "0")
+	if normalized == "" {
+		normalized = "0"
+	}
+	current, err := strconv.Atoi(normalized)
+	if err != nil {
+		return fmt.Errorf("invalid database schema version %q", value)
+	}
+	return versioninfo.CheckSchema(current)
+}
+
+func runMigrationCommand(ctx context.Context, action string, args []string) error {
+	cfg := config.LoadServer()
+	fs := flag.NewFlagSet("migrate "+action, flag.ContinueOnError)
+	databaseURL := cfg.DatabaseURL
+	allowDown := false
+	fs.StringVar(&databaseURL, "database-url", databaseURL, "PostgreSQL database URL")
+	fs.BoolVar(&allowDown, "allow-down", false, "explicitly allow one down migration")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	runner, err := migrations.Open(ctx, databaseURL, "migrations")
+	if err != nil {
+		return err
+	}
+	defer runner.Close()
+	switch action {
+	case "status":
+		status, err := runner.Status(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("current=%s latest=%s pending=%d\n", status.Current, status.Latest, len(status.Pending))
+		return nil
+	case "up":
+		return runner.Up(ctx)
+	case "down":
+		return runner.Down(ctx, allowDown)
+	default:
+		return fmt.Errorf("unknown migrate action %q (use status, up, or down)", action)
 	}
 }

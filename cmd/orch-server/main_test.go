@@ -55,3 +55,16 @@ func TestServerConfigPrintModeParsesFlags(t *testing.T) {
 		t.Fatalf("expected redacted secret, got %#v", redacted)
 	}
 }
+
+func TestStartupRejectsUnsupportedSchemaVersions(t *testing.T) {
+	for _, value := range []string{"000014", "000017"} {
+		if err := checkSchemaVersion(value); err == nil {
+			t.Fatalf("expected schema %s to be rejected", value)
+		}
+	}
+	for _, value := range []string{"000015", "000016"} {
+		if err := checkSchemaVersion(value); err != nil {
+			t.Fatalf("expected schema %s to be accepted: %v", value, err)
+		}
+	}
+}

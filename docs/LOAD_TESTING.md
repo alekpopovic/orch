@@ -45,5 +45,8 @@ The summary includes:
 - `average_convergence_time`
 - `scheduler_errors`
 - `reconciler_errors`
+- `convergence_duration`
+- `scheduler_iterations`
+- `reconciliation_iterations`
 
 This is a fast local smoke/load tool, not a replacement for PostgreSQL or Docker integration tests.
