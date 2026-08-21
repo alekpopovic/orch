@@ -584,7 +584,7 @@ func TestClusterPolicyControlsSecurityContext(t *testing.T) {
 		t.Fatalf("expected default cluster policy to reject privileged service")
 	}
 
-	service := NewMemoryService(WithClusterPolicy(policy.ClusterPolicy{AllowedCapabilities: []string{"NET_BIND_SERVICE"}}))
+	service := NewMemoryService(WithClusterPolicy(policy.ClusterPolicy{AllowMutableTags: true, AllowedCapabilities: []string{"NET_BIND_SERVICE"}}))
 	registered, err := service.RegisterNode(ctx, NodeRegistration{
 		Name:             "node-a",
 		AdvertiseAddress: "10.0.0.10",

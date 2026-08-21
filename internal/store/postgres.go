@@ -12,6 +12,7 @@ import (
 	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/namespace"
+	"github.com/alekpopovic/orch/internal/quota"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -87,15 +88,227 @@ func (s *postgresStore) CreateNamespace(ctx context.Context, name string) (types
 		return types.Namespace{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
 	var item types.Namespace
-	err := s.db.QueryRow(ctx, `
-		INSERT INTO namespaces (name) VALUES ($1)
-		RETURNING name, created_at`, name,
-	).Scan(&item.Name, &item.CreatedAt)
+	err := s.withTx(ctx, func(tx *postgresStore) error {
+		if err := tx.db.QueryRow(ctx, `INSERT INTO namespaces (name) VALUES ($1) RETURNING name, created_at`, name).Scan(&item.Name, &item.CreatedAt); err != nil {
+			return mapPostgresError(err)
+		}
+		_, err := tx.db.Exec(ctx, `INSERT INTO resource_quotas (namespace) VALUES ($1)`, name)
+		return mapPostgresError(err)
+	})
 	if err != nil {
 		return types.Namespace{}, mapPostgresError(err)
 	}
 	item.CreatedAt = item.CreatedAt.UTC()
 	return item, nil
+}
+
+func (s *postgresStore) GetResourceQuota(ctx context.Context) (types.ResourceQuota, types.ResourceUsage, error) {
+	return loadQuotaAndUsage(ctx, s.db, namespace.FromContext(ctx), "", nil, false)
+}
+
+func (s *postgresStore) SetResourceQuota(ctx context.Context, value types.ResourceQuota) (types.ResourceQuota, types.ResourceUsage, error) {
+	value.Namespace = namespace.FromContext(ctx)
+	if err := quota.Validate(value); err != nil {
+		return types.ResourceQuota{}, types.ResourceUsage{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
+	var usage types.ResourceUsage
+	err := s.withTx(ctx, func(tx *postgresStore) error {
+		if err := lockQuota(ctx, tx.db, value.Namespace); err != nil {
+			return err
+		}
+		current, currentUsage, err := loadQuotaAndUsage(ctx, tx.db, value.Namespace, "", nil, false)
+		_ = current
+		if err != nil {
+			return err
+		}
+		usage = currentUsage
+		if err := quota.Check(value, usage); err != nil {
+			return err
+		}
+		return tx.db.QueryRow(ctx, `
+			INSERT INTO resource_quotas (
+				namespace, max_services, max_replicas, max_cpu_millicores, max_memory_bytes,
+				max_public_ports, max_secrets, max_registry_credentials, updated_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,timezone('utc', now()))
+			ON CONFLICT (namespace) DO UPDATE SET
+				max_services=EXCLUDED.max_services, max_replicas=EXCLUDED.max_replicas,
+				max_cpu_millicores=EXCLUDED.max_cpu_millicores, max_memory_bytes=EXCLUDED.max_memory_bytes,
+				max_public_ports=EXCLUDED.max_public_ports, max_secrets=EXCLUDED.max_secrets,
+				max_registry_credentials=EXCLUDED.max_registry_credentials, updated_at=EXCLUDED.updated_at
+			RETURNING updated_at`, value.Namespace, value.MaxServices, value.MaxReplicas, value.MaxCPUMillicores,
+			value.MaxMemoryBytes, value.MaxPublicPorts, value.MaxSecrets, value.MaxRegistryCredentials,
+		).Scan(&value.UpdatedAt)
+	})
+	if err != nil {
+		return types.ResourceQuota{}, usage, mapPostgresError(err)
+	}
+	value.UpdatedAt = value.UpdatedAt.UTC()
+	return value, usage, nil
+}
+
+func lockQuota(ctx context.Context, db postgresDB, namespaceName string) error {
+	_, err := db.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, namespaceName)
+	return mapPostgresError(err)
+}
+
+func lockAndCheckQuota(ctx context.Context, db postgresDB, namespaceName string, replaceID types.ServiceID, replacement *types.ServiceSpec, addSecrets int, addRegistries int) error {
+	if err := lockQuota(ctx, db, namespaceName); err != nil {
+		return err
+	}
+	value, usage, err := loadQuotaAndUsage(ctx, db, namespaceName, replaceID, replacement, false)
+	if err != nil {
+		return err
+	}
+	usage.Secrets += addSecrets
+	usage.RegistryCredentials += addRegistries
+	return quota.Check(value, usage)
+}
+
+func loadQuotaAndUsage(ctx context.Context, db postgresDB, namespaceName string, replaceID types.ServiceID, replacement *types.ServiceSpec, _ bool) (types.ResourceQuota, types.ResourceUsage, error) {
+	var value types.ResourceQuota
+	err := db.QueryRow(ctx, `
+		SELECT n.name, COALESCE(q.max_services,0), COALESCE(q.max_replicas,0),
+			COALESCE(q.max_cpu_millicores,0), COALESCE(q.max_memory_bytes,0), COALESCE(q.max_public_ports,0),
+			COALESCE(q.max_secrets,0), COALESCE(q.max_registry_credentials,0), COALESCE(q.updated_at,n.created_at)
+		FROM namespaces n LEFT JOIN resource_quotas q ON q.namespace=n.name WHERE n.name=$1`, namespaceName,
+	).Scan(&value.Namespace, &value.MaxServices, &value.MaxReplicas, &value.MaxCPUMillicores, &value.MaxMemoryBytes,
+		&value.MaxPublicPorts, &value.MaxSecrets, &value.MaxRegistryCredentials, &value.UpdatedAt)
+	if err != nil {
+		return types.ResourceQuota{}, types.ResourceUsage{}, mapPostgresError(err)
+	}
+	value.UpdatedAt = value.UpdatedAt.UTC()
+	var usage types.ResourceUsage
+	err = db.QueryRow(ctx, `
+		SELECT COUNT(*)::int, COALESCE(SUM(replicas),0)::int,
+			COALESCE(SUM(COALESCE((resource_requirements #>> '{requests,cpu}')::bigint,0) * replicas),0)::bigint,
+			COALESCE(SUM(COALESCE((resource_requirements #>> '{requests,memory}')::bigint,0) * replicas),0)::bigint,
+			COALESCE(SUM((SELECT COUNT(*) FROM jsonb_array_elements(ports) p WHERE COALESCE((p->>'published_port')::int,0) > 0)),0)::int
+		FROM services WHERE namespace=$1 AND status <> 'deleted' AND ($2 = '' OR id <> nullif($2,'')::uuid)`, namespaceName, string(replaceID),
+	).Scan(&usage.Services, &usage.Replicas, &usage.CPUMillicores, &usage.MemoryBytes, &usage.PublicPorts)
+	if err != nil {
+		return types.ResourceQuota{}, types.ResourceUsage{}, mapPostgresError(err)
+	}
+	if replacement != nil {
+		addServiceUsageStore(&usage, *replacement)
+	}
+	if err := db.QueryRow(ctx, `SELECT COUNT(*)::int FROM secrets WHERE namespace=$1`, namespaceName).Scan(&usage.Secrets); err != nil {
+		return types.ResourceQuota{}, types.ResourceUsage{}, mapPostgresError(err)
+	}
+	if err := db.QueryRow(ctx, `SELECT COUNT(*)::int FROM registry_credentials WHERE namespace=$1`, namespaceName).Scan(&usage.RegistryCredentials); err != nil {
+		return types.ResourceQuota{}, types.ResourceUsage{}, mapPostgresError(err)
+	}
+	return value, usage, nil
+}
+
+func addServiceUsageStore(usage *types.ResourceUsage, spec types.ServiceSpec) {
+	usage.Services++
+	usage.Replicas += spec.Replicas
+	usage.CPUMillicores += spec.ResourceRequirements.Requests.CPU * int64(spec.Replicas)
+	usage.MemoryBytes += spec.ResourceRequirements.Requests.Memory * int64(spec.Replicas)
+	for _, port := range spec.Ports {
+		if port.PublishedPort > 0 {
+			usage.PublicPorts++
+		}
+	}
+}
+
+func (s *postgresStore) CreateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error) {
+	source.Namespace = namespace.FromContext(ctx)
+	managed, err := jsonBytes(defaultSlice(source.ManagedServices))
+	if err != nil {
+		return types.GitOpsSource{}, err
+	}
+	row := s.db.QueryRow(ctx, `
+		INSERT INTO gitops_sources (namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		RETURNING id, namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services,
+			last_revision, last_error, last_synced_at, created_at, updated_at`, source.Namespace, source.RepositoryURL,
+		source.Branch, source.Path, int64(source.SyncInterval), source.Prune, managed)
+	return scanGitOpsSource(row)
+}
+
+func (s *postgresStore) ListGitOpsSources(ctx context.Context) ([]types.GitOpsSource, error) {
+	rows, err := s.db.Query(ctx, gitOpsSelectSQL()+` WHERE namespace=$1 ORDER BY created_at,id`, namespace.FromContext(ctx))
+	if err != nil {
+		return nil, mapPostgresError(err)
+	}
+	defer rows.Close()
+	items := make([]types.GitOpsSource, 0)
+	for rows.Next() {
+		item, err := scanGitOpsSource(rows)
+		if err != nil {
+			return nil, mapPostgresError(err)
+		}
+		items = append(items, item)
+	}
+	return items, mapPostgresError(rows.Err())
+}
+
+func (s *postgresStore) GetGitOpsSource(ctx context.Context, id string) (types.GitOpsSource, error) {
+	return scanGitOpsSource(s.db.QueryRow(ctx, gitOpsSelectSQL()+` WHERE namespace=$1 AND id=nullif($2,'')::uuid`, namespace.FromContext(ctx), strings.TrimSpace(id)))
+}
+
+func (s *postgresStore) UpdateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error) {
+	managed, err := jsonBytes(defaultSlice(source.ManagedServices))
+	if err != nil {
+		return types.GitOpsSource{}, err
+	}
+	row := s.db.QueryRow(ctx, `
+		UPDATE gitops_sources SET repository_url=$3, branch=$4, path=$5, sync_interval_ns=$6, prune=$7,
+			managed_services=$8, last_revision=nullif($9,''), last_error=nullif($10,''), last_synced_at=$11,
+			updated_at=timezone('utc',now())
+		WHERE namespace=$1 AND id=nullif($2,'')::uuid
+		RETURNING id, namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services,
+			last_revision, last_error, last_synced_at, created_at, updated_at`, namespace.FromContext(ctx), source.ID,
+		source.RepositoryURL, source.Branch, source.Path, int64(source.SyncInterval), source.Prune, managed,
+		source.LastRevision, source.LastError, nilTime(source.LastSyncedAt))
+	return scanGitOpsSource(row)
+}
+
+func (s *postgresStore) DeleteGitOpsSource(ctx context.Context, id string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM gitops_sources WHERE namespace=$1 AND id=nullif($2,'')::uuid`, namespace.FromContext(ctx), strings.TrimSpace(id))
+	if err != nil {
+		return mapPostgresError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func gitOpsSelectSQL() string {
+	return `SELECT id, namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services,
+		last_revision, last_error, last_synced_at, created_at, updated_at FROM gitops_sources`
+}
+
+func scanGitOpsSource(row pgx.Row) (types.GitOpsSource, error) {
+	var source types.GitOpsSource
+	var interval int64
+	var managed []byte
+	var revision, lastError *string
+	var lastSynced *time.Time
+	err := row.Scan(&source.ID, &source.Namespace, &source.RepositoryURL, &source.Branch, &source.Path, &interval,
+		&source.Prune, &managed, &revision, &lastError, &lastSynced, &source.CreatedAt, &source.UpdatedAt)
+	if err != nil {
+		return types.GitOpsSource{}, mapPostgresError(err)
+	}
+	source.SyncInterval = time.Duration(interval)
+	if len(managed) > 0 {
+		if err := json.Unmarshal(managed, &source.ManagedServices); err != nil {
+			return types.GitOpsSource{}, err
+		}
+	}
+	if revision != nil {
+		source.LastRevision = *revision
+	}
+	if lastError != nil {
+		source.LastError = *lastError
+	}
+	if lastSynced != nil {
+		source.LastSyncedAt = lastSynced.UTC()
+	}
+	source.CreatedAt, source.UpdatedAt = source.CreatedAt.UTC(), source.UpdatedAt.UTC()
+	return source, nil
 }
 
 func (s *postgresStore) ListNamespaces(ctx context.Context) ([]types.Namespace, error) {
@@ -286,6 +499,9 @@ func (s *postgresStore) CreateService(ctx context.Context, spec types.ServiceSpe
 
 	var service types.Service
 	err = s.withTx(ctx, func(tx *postgresStore) error {
+		if err := lockAndCheckQuota(ctx, tx.db, namespace.FromContext(ctx), "", &spec, 0, 0); err != nil {
+			return err
+		}
 		created, err := insertService(ctx, tx.db, namespace.FromContext(ctx), spec)
 		if err != nil {
 			return err
@@ -344,6 +560,9 @@ func (s *postgresStore) UpdateService(ctx context.Context, id types.ServiceID, s
 
 	var service types.Service
 	err = s.withTx(ctx, func(tx *postgresStore) error {
+		if err := lockAndCheckQuota(ctx, tx.db, namespace.FromContext(ctx), id, &spec, 0, 0); err != nil {
+			return err
+		}
 		updated, err := updateService(ctx, tx.db, namespace.FromContext(ctx), id, spec, expectedUpdatedAt)
 		if err != nil {
 			return err
@@ -374,7 +593,7 @@ func (s *postgresStore) UpdateServiceStatus(ctx context.Context, id types.Servic
 			updated_at = timezone('utc', now()),
 			version = version + 1
 		WHERE id = $1 AND updated_at = $3 AND namespace = $4
-		RETURNING id, namespace, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
+		RETURNING id, namespace, name, image, image_metadata, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 			resource_requirements, security_context, autoscaling, healthcheck, restart_policy, placement_constraints, routes,
 			status, deployment_version, created_at, updated_at`,
 		string(id),
@@ -404,20 +623,32 @@ func (s *postgresStore) CreateSecret(ctx context.Context, secret types.Secret) (
 	if strings.TrimSpace(secret.KeyID) == "" {
 		return types.Secret{}, fmt.Errorf("%w: secret key id is required", ErrInvalidState)
 	}
-	row := s.db.QueryRow(ctx, `
-		INSERT INTO secrets (namespace, name, encrypted_value, key_id)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (namespace, name) DO UPDATE
-		SET encrypted_value = EXCLUDED.encrypted_value,
-			key_id = EXCLUDED.key_id,
-			updated_at = timezone('utc', now())
-		RETURNING namespace, name, encrypted_value, key_id, created_at, updated_at`,
-		secret.Namespace,
-		secret.Name,
-		secret.EncryptedValue,
-		secret.KeyID,
-	)
-	created, err := scanSecret(row)
+	var created types.Secret
+	err := s.withTx(ctx, func(tx *postgresStore) error {
+		if err := lockQuota(ctx, tx.db, secret.Namespace); err != nil {
+			return err
+		}
+		var exists bool
+		if err := tx.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM secrets WHERE namespace=$1 AND name=$2)`, secret.Namespace, secret.Name).Scan(&exists); err != nil {
+			return err
+		}
+		add := 0
+		if !exists {
+			add = 1
+		}
+		if err := lockAndCheckQuota(ctx, tx.db, secret.Namespace, "", nil, add, 0); err != nil {
+			return err
+		}
+		row := tx.db.QueryRow(ctx, `
+			INSERT INTO secrets (namespace, name, encrypted_value, key_id)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (namespace, name) DO UPDATE
+			SET encrypted_value = EXCLUDED.encrypted_value, key_id = EXCLUDED.key_id, updated_at = timezone('utc', now())
+			RETURNING namespace, name, encrypted_value, key_id, created_at, updated_at`, secret.Namespace, secret.Name, secret.EncryptedValue, secret.KeyID)
+		var err error
+		created, err = scanSecret(row)
+		return err
+	})
 	if err != nil {
 		return types.Secret{}, mapPostgresError(err)
 	}
@@ -493,24 +724,33 @@ func (s *postgresStore) CreateRegistryCredential(ctx context.Context, credential
 	if strings.TrimSpace(credential.KeyID) == "" {
 		return types.RegistryCredential{}, fmt.Errorf("%w: registry credential key id is required", ErrInvalidState)
 	}
-	row := s.db.QueryRow(ctx, `
-		INSERT INTO registry_credentials (namespace, id, registry, username, encrypted_password, key_id)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (namespace, id) DO UPDATE
-		SET registry = EXCLUDED.registry,
-			username = EXCLUDED.username,
-			encrypted_password = EXCLUDED.encrypted_password,
-			key_id = EXCLUDED.key_id,
-			updated_at = timezone('utc', now())
-		RETURNING namespace, id, registry, username, encrypted_password, key_id, created_at, updated_at`,
-		credential.Namespace,
-		credential.ID,
-		credential.Registry,
-		credential.Username,
-		credential.EncryptedPassword,
-		credential.KeyID,
-	)
-	created, err := scanRegistryCredential(row)
+	var created types.RegistryCredential
+	err := s.withTx(ctx, func(tx *postgresStore) error {
+		if err := lockQuota(ctx, tx.db, credential.Namespace); err != nil {
+			return err
+		}
+		var exists bool
+		if err := tx.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM registry_credentials WHERE namespace=$1 AND id=$2)`, credential.Namespace, credential.ID).Scan(&exists); err != nil {
+			return err
+		}
+		add := 0
+		if !exists {
+			add = 1
+		}
+		if err := lockAndCheckQuota(ctx, tx.db, credential.Namespace, "", nil, 0, add); err != nil {
+			return err
+		}
+		row := tx.db.QueryRow(ctx, `
+			INSERT INTO registry_credentials (namespace, id, registry, username, encrypted_password, key_id)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (namespace, id) DO UPDATE
+			SET registry=EXCLUDED.registry, username=EXCLUDED.username, encrypted_password=EXCLUDED.encrypted_password,
+				key_id=EXCLUDED.key_id, updated_at=timezone('utc', now())
+			RETURNING namespace, id, registry, username, encrypted_password, key_id, created_at, updated_at`, credential.Namespace, credential.ID, credential.Registry, credential.Username, credential.EncryptedPassword, credential.KeyID)
+		var err error
+		created, err = scanRegistryCredential(row)
+		return err
+	})
 	if err != nil {
 		return types.RegistryCredential{}, mapPostgresError(err)
 	}
@@ -576,6 +816,9 @@ func (s *postgresStore) CreateTask(ctx context.Context, task types.Task) (types.
 	if task.ActualStatus == "" {
 		task.ActualStatus = types.TaskPending
 	}
+	if task.RequestedImage == "" {
+		task.RequestedImage = task.Image
+	}
 	if !types.ValidTaskStatus(task.DesiredStatus) || !types.ValidTaskStatus(task.ActualStatus) {
 		return types.Task{}, fmt.Errorf("%w: task status is invalid", ErrInvalidState)
 	}
@@ -590,11 +833,13 @@ func (s *postgresStore) CreateTask(ctx context.Context, task types.Task) (types.
 	row := s.db.QueryRow(ctx, `
 		INSERT INTO tasks (
 			namespace, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, ports, conditions, restart_count, failure_reason, started_at, finished_at
+			image, requested_image, resolved_image_digest, image_registry, image_name, image_tag,
+			version, ports, conditions, restart_count, failure_reason, started_at, finished_at
 		)
-		VALUES ($1, $2, nullif($3, '')::uuid, nullif($4, ''), $5, $6, $7, $8, $9, $10, $11, nullif($12, ''), $13, $14)
+		VALUES ($1, $2, nullif($3, '')::uuid, nullif($4, ''), $5, $6, $7, nullif($8, ''), nullif($9, ''), nullif($10, ''), nullif($11, ''), nullif($12, ''), $13, $14, $15, $16, nullif($17, ''), $18, $19)
 		RETURNING id, namespace, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, requested_image, resolved_image_digest, image_registry, image_name, image_tag,
+			version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		task.Namespace,
 		string(task.ServiceID),
 		string(task.NodeID),
@@ -602,6 +847,11 @@ func (s *postgresStore) CreateTask(ctx context.Context, task types.Task) (types.
 		string(task.DesiredStatus),
 		string(task.ActualStatus),
 		task.Image,
+		task.RequestedImage,
+		task.ResolvedImageDigest,
+		task.ImageRegistry,
+		task.ImageName,
+		task.ImageTag,
 		task.Version,
 		ports,
 		conditions,
@@ -663,7 +913,8 @@ func (s *postgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID 
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $5 AND actual_status = 'pending'
 		RETURNING id, namespace, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, requested_image, resolved_image_digest, image_registry, image_name, image_tag,
+			version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(nodeID),
 		string(types.TaskAssigned),
@@ -698,7 +949,8 @@ func (s *postgresStore) StopTask(ctx context.Context, id types.TaskID, expectedU
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $3 AND desired_status <> $2
 		RETURNING id, namespace, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, requested_image, resolved_image_digest, image_registry, image_name, image_tag,
+			version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(types.TaskStopped),
 		expectedUpdatedAt.UTC(),
@@ -741,7 +993,8 @@ func (s *postgresStore) UpdateTaskStatus(ctx context.Context, id types.TaskID, d
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $6
 		RETURNING id, namespace, service_id, node_id, container_id, desired_status, actual_status,
-			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+			image, requested_image, resolved_image_digest, image_registry, image_name, image_tag,
+			version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(desired),
 		string(actual),
@@ -1077,18 +1330,23 @@ func insertService(ctx context.Context, db postgresDB, namespaceName string, spe
 	if err != nil {
 		return types.Service{}, err
 	}
+	imageMetadata, err := jsonBytes(spec.ImageMetadata)
+	if err != nil {
+		return types.Service{}, err
+	}
 	row := db.QueryRow(ctx, `
 		INSERT INTO services (
-			namespace, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
+			namespace, name, image, image_metadata, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 			resource_requirements, security_context, autoscaling, healthcheck, restart_policy, placement_constraints, routes
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-		RETURNING id, namespace, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		RETURNING id, namespace, name, image, image_metadata, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 			resource_requirements, security_context, autoscaling, healthcheck, restart_policy, placement_constraints, routes, status,
 			deployment_version, created_at, updated_at`,
 		namespaceName,
 		spec.Name,
 		spec.Image,
+		imageMetadata,
 		spec.ImagePullSecret,
 		spec.Stateful,
 		spec.Replicas,
@@ -1115,33 +1373,39 @@ func updateService(ctx context.Context, db postgresDB, namespaceName string, id 
 	if err != nil {
 		return types.Service{}, err
 	}
+	imageMetadata, err := jsonBytes(spec.ImageMetadata)
+	if err != nil {
+		return types.Service{}, err
+	}
 	row := db.QueryRow(ctx, `
 			UPDATE services
 			SET name = $2,
 				image = $3,
-				image_pull_secret = $4,
-				stateful = $5,
-				replicas = $6,
-				env = $7,
-				secret_refs = $8,
-				ports = $9,
-				resource_requirements = $10,
-				security_context = $11,
-				autoscaling = $12,
-				healthcheck = $13,
-				restart_policy = $14,
-				placement_constraints = $15,
-				routes = $17,
+				image_metadata = $4,
+				image_pull_secret = $5,
+				stateful = $6,
+				replicas = $7,
+				env = $8,
+				secret_refs = $9,
+				ports = $10,
+				resource_requirements = $11,
+				security_context = $12,
+				autoscaling = $13,
+				healthcheck = $14,
+				restart_policy = $15,
+				placement_constraints = $16,
+				routes = $18,
 				deployment_version = deployment_version + 1,
 				updated_at = timezone('utc', now()),
 				version = version + 1
-			WHERE id = $1 AND updated_at = $16 AND namespace = $18
-			RETURNING id, namespace, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
+			WHERE id = $1 AND updated_at = $17 AND namespace = $19
+			RETURNING id, namespace, name, image, image_metadata, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 				resource_requirements, security_context, autoscaling, healthcheck, restart_policy, placement_constraints, routes,
 				status, deployment_version, created_at, updated_at`,
 		string(id),
 		spec.Name,
 		spec.Image,
+		imageMetadata,
 		spec.ImagePullSecret,
 		spec.Stateful,
 		spec.Replicas,
@@ -1184,14 +1448,15 @@ func insertServiceVersion(ctx context.Context, db postgresDB, serviceID types.Se
 }
 
 func serviceSelectSQL() string {
-	return `SELECT id, namespace, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
+	return `SELECT id, namespace, name, image, image_metadata, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 		resource_requirements, security_context, autoscaling, healthcheck, restart_policy, placement_constraints, routes,
 		status, deployment_version, created_at, updated_at FROM services`
 }
 
 func taskSelectSQL() string {
 	return `SELECT id, namespace, service_id, node_id, container_id, desired_status, actual_status,
-		image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at FROM tasks`
+		image, requested_image, resolved_image_digest, image_registry, image_name, image_tag,
+		version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at FROM tasks`
 }
 
 func deploymentSelectSQL() string {
@@ -1248,13 +1513,14 @@ func scanNode(row pgx.Row) (types.Node, error) {
 func scanService(row pgx.Row) (types.Service, error) {
 	var service types.Service
 	var id string
-	var env, secretRefs, ports, requirements, securityContext, autoscaling, restartPolicy, constraints, routes []byte
+	var imageMetadata, env, secretRefs, ports, requirements, securityContext, autoscaling, restartPolicy, constraints, routes []byte
 	var healthcheck []byte
 	err := row.Scan(
 		&id,
 		&service.Namespace,
 		&service.Spec.Name,
 		&service.Spec.Image,
+		&imageMetadata,
 		&service.Spec.ImagePullSecret,
 		&service.Spec.Stateful,
 		&service.Spec.Replicas,
@@ -1283,6 +1549,11 @@ func scanService(row pgx.Row) (types.Service, error) {
 	if err := decodeServiceJSON(&service.Spec, env, secretRefs, ports, requirements, securityContext, autoscaling, healthcheck, restartPolicy, constraints, routes); err != nil {
 		return types.Service{}, err
 	}
+	if len(imageMetadata) > 0 {
+		if err := json.Unmarshal(imageMetadata, &service.Spec.ImageMetadata); err != nil {
+			return types.Service{}, fmt.Errorf("decode image metadata: %w", err)
+		}
+	}
 	service.CreatedAt = service.CreatedAt.UTC()
 	service.UpdatedAt = service.UpdatedAt.UTC()
 	return service, nil
@@ -1291,7 +1562,7 @@ func scanService(row pgx.Row) (types.Service, error) {
 func scanTask(row pgx.Row) (types.Task, error) {
 	var task types.Task
 	var id, serviceID string
-	var nodeID, containerID, failureReason *string
+	var nodeID, containerID, requestedImage, resolvedDigest, imageRegistry, imageName, imageTag, failureReason *string
 	var ports, conditions []byte
 	var startedAt, finishedAt *time.Time
 	err := row.Scan(
@@ -1303,6 +1574,11 @@ func scanTask(row pgx.Row) (types.Task, error) {
 		&task.DesiredStatus,
 		&task.ActualStatus,
 		&task.Image,
+		&requestedImage,
+		&resolvedDigest,
+		&imageRegistry,
+		&imageName,
+		&imageTag,
 		&task.Version,
 		&ports,
 		&conditions,
@@ -1326,6 +1602,21 @@ func scanTask(row pgx.Row) (types.Task, error) {
 	}
 	if failureReason != nil {
 		task.FailureReason = *failureReason
+	}
+	if requestedImage != nil {
+		task.RequestedImage = *requestedImage
+	}
+	if resolvedDigest != nil {
+		task.ResolvedImageDigest = *resolvedDigest
+	}
+	if imageRegistry != nil {
+		task.ImageRegistry = *imageRegistry
+	}
+	if imageName != nil {
+		task.ImageName = *imageName
+	}
+	if imageTag != nil {
+		task.ImageTag = *imageTag
 	}
 	if len(ports) > 0 {
 		if err := json.Unmarshal(ports, &task.Ports); err != nil {

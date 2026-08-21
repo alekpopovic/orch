@@ -397,12 +397,17 @@ func (r *Reconciler) reconcileDeletedServices(ctx context.Context, activeService
 
 func (r *Reconciler) createTask(ctx context.Context, service types.Service, reason string) error {
 	task := types.Task{
-		Namespace:     service.Namespace,
-		ServiceID:     service.ID,
-		DesiredStatus: types.TaskRunning,
-		ActualStatus:  types.TaskPending,
-		Image:         service.Spec.Image,
-		Version:       service.DeploymentVersion,
+		Namespace:           service.Namespace,
+		ServiceID:           service.ID,
+		DesiredStatus:       types.TaskRunning,
+		ActualStatus:        types.TaskPending,
+		Image:               service.Spec.EffectiveImage(),
+		RequestedImage:      service.Spec.ImageMetadata.RequestedImage,
+		ResolvedImageDigest: service.Spec.ImageMetadata.Digest,
+		ImageRegistry:       service.Spec.ImageMetadata.Registry,
+		ImageName:           service.Spec.ImageMetadata.Name,
+		ImageTag:            service.Spec.ImageMetadata.Tag,
+		Version:             service.DeploymentVersion,
 	}
 	transactional := r.transactional()
 	err := store.WithTx(ctx, r.store, func(txCtx context.Context, tx Store) error {

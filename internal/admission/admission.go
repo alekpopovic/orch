@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	imageinfo "github.com/alekpopovic/orch/internal/image"
 	"github.com/alekpopovic/orch/internal/policy"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -122,7 +123,17 @@ func Evaluate(spec types.ServiceSpec, clusterPolicy policy.ClusterPolicy) []Viol
 			add("image", "image.registry.denied", fmt.Sprintf("image registry %q is not allowed", registry))
 		}
 	}
-	if clusterPolicy.BlockLatestTag && usesLatestTag(spec.Image) {
+	metadata := spec.ImageMetadata
+	if metadata.RequestedImage == "" {
+		metadata, _ = imageinfo.Parse(spec.Image)
+	}
+	if clusterPolicy.RequireDigest && strings.TrimSpace(metadata.Digest) == "" {
+		add("image", "image.digest.required", "an immutable image digest is required")
+	}
+	if !clusterPolicy.AllowMutableTags && strings.TrimSpace(metadata.Digest) == "" {
+		add("image", "image.mutable_tag.denied", "mutable image tags are not allowed")
+	}
+	if (clusterPolicy.BlockLatestTag || clusterPolicy.DenyLatestTag) && usesLatestTag(spec.Image) {
 		add("image", "image.latest.denied", "the latest image tag is not allowed")
 	}
 	if clusterPolicy.RequireHealthcheck && spec.Healthcheck == nil {

@@ -106,6 +106,51 @@ func (c *APIClient) DeleteNamespace(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/namespaces/"+url.PathEscape(name), nil, nil)
 }
 
+func (c *APIClient) GetResourceQuota(ctx context.Context) (types.ResourceQuota, types.ResourceUsage, error) {
+	var out api.ResourceQuotaResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/quota", nil, &out); err != nil {
+		return types.ResourceQuota{}, types.ResourceUsage{}, err
+	}
+	return out.Quota, out.Usage, nil
+}
+
+func (c *APIClient) SetResourceQuota(ctx context.Context, value types.ResourceQuota) (types.ResourceQuota, types.ResourceUsage, error) {
+	var out api.ResourceQuotaResponse
+	if err := c.do(ctx, http.MethodPut, "/v1/quota", value, &out); err != nil {
+		return types.ResourceQuota{}, types.ResourceUsage{}, err
+	}
+	return out.Quota, out.Usage, nil
+}
+
+func (c *APIClient) CreateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error) {
+	var out api.GitOpsSourceResponse
+	request := api.CreateGitOpsSourceRequest{RepositoryURL: source.RepositoryURL, Branch: source.Branch, Path: source.Path, SyncInterval: source.SyncInterval.String(), Prune: source.Prune}
+	if err := c.do(ctx, http.MethodPost, "/v1/gitops/sources", request, &out); err != nil {
+		return types.GitOpsSource{}, err
+	}
+	return out.Source, nil
+}
+
+func (c *APIClient) ListGitOpsSources(ctx context.Context) ([]types.GitOpsSource, error) {
+	var out api.ListGitOpsSourcesResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/gitops/sources", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Sources, nil
+}
+
+func (c *APIClient) SyncGitOpsSource(ctx context.Context, id string) (types.GitOpsSource, error) {
+	var out api.GitOpsSourceResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/gitops/sources/"+url.PathEscape(id)+"/sync", nil, &out); err != nil {
+		return types.GitOpsSource{}, err
+	}
+	return out.Source, nil
+}
+
+func (c *APIClient) DeleteGitOpsSource(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/gitops/sources/"+url.PathEscape(id), nil, nil)
+}
+
 func (c *APIClient) ListNodes(ctx context.Context) ([]types.Node, error) {
 	var out api.ListNodesResponse
 	if err := c.do(ctx, http.MethodGet, "/v1/nodes", nil, &out); err != nil {

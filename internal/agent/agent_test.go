@@ -80,6 +80,29 @@ func TestReconcileAssignedTaskExecutesRuntimeSteps(t *testing.T) {
 	}
 }
 
+func TestDigestPinnedTaskIsPulledAndCreatedByDigest(t *testing.T) {
+	const pinned = "ghcr.io/acme/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
+	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")
+	client := &fakeAgentClient{tasks: []api.AgentTask{{Task: types.Task{
+		ID: taskID, ServiceID: types.ServiceID("00000000-0000-4000-8000-000000000003"), NodeID: nodeID,
+		DesiredStatus: types.TaskRunning, ActualStatus: types.TaskAssigned, Image: pinned, Version: 1,
+	}}}}
+	runtime := orchdocker.NewFakeRuntime(orchdocker.WithFakeContainerIDs("container-pinned"))
+	runner := NewRunner(config.AgentConfig{}, client, slog.New(slog.NewTextHandler(io.Discard, nil))).WithRuntime(runtime)
+	if err := runner.reconcileAssignedTasks(context.Background(), nodeID); err != nil {
+		t.Fatal(err)
+	}
+	operations := runtime.OperationStrings()
+	if len(operations) < 3 || operations[1] != "pull:"+pinned {
+		t.Fatalf("expected digest-pinned Docker pull, got %#v", operations)
+	}
+	specs := runtime.CreatedSpecs()
+	if len(specs) != 1 || specs[0].Image != pinned {
+		t.Fatalf("expected digest-pinned container image, got %#v", specs)
+	}
+}
+
 func TestReconcileAssignedTaskRecreatesManuallyDeletedContainer(t *testing.T) {
 	nodeID := types.NodeID("00000000-0000-4000-8000-000000000001")
 	taskID := types.TaskID("00000000-0000-4000-8000-000000000002")

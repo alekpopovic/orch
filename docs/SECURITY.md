@@ -101,6 +101,9 @@ cluster_policy:
   allowed_image_registries:
     - ghcr.io
   block_latest_tag: true
+  require_digest: true
+  allow_mutable_tags: false
+  deny_latest_tag: true
   require_healthcheck: true
   require_resource_requests: true
   require_resource_limits: true
@@ -110,7 +113,9 @@ cluster_policy:
 
 The admission controller applies these rules on service creation, rollout, and scale. Rejections return structured rule violations and emit a redacted audit record. See `docs/POLICY_ENGINE_DESIGN.md`.
 
-Equivalent environment variables are `ORCH_POLICY_ALLOW_PRIVILEGED`, `ORCH_POLICY_ALLOW_HOST_NETWORK`, `ORCH_POLICY_ALLOW_HOST_PID`, `ORCH_POLICY_ALLOWED_CAPABILITIES`, and `ORCH_POLICY_ALLOWED_HOST_PATH_PREFIXES`.
+Equivalent environment variables are `ORCH_POLICY_ALLOW_PRIVILEGED`, `ORCH_POLICY_ALLOW_HOST_NETWORK`, `ORCH_POLICY_ALLOW_HOST_PID`, `ORCH_POLICY_ALLOWED_CAPABILITIES`, and `ORCH_POLICY_ALLOWED_HOST_PATH_PREFIXES`. Image controls use `ORCH_POLICY_REQUIRE_DIGEST`, `ORCH_POLICY_ALLOW_MUTABLE_TAGS`, and `ORCH_POLICY_DENY_LATEST_TAG`.
+
+Image digest metadata is persisted per service version and task. With `require_digest`, agents pull and create containers by digest rather than by a mutable tag. Signing verification and vulnerability enforcement are deliberately separate future layers; see `IMAGE_SIGNING_DESIGN.md` and `SUPPLY_CHAIN_SECURITY_DESIGN.md`.
 
 ## Secret Handling
 

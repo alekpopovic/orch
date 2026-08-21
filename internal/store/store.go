@@ -22,6 +22,19 @@ type NamespaceStore interface {
 	DeleteNamespace(ctx context.Context, name string) error
 }
 
+type ResourceQuotaStore interface {
+	GetResourceQuota(ctx context.Context) (types.ResourceQuota, types.ResourceUsage, error)
+	SetResourceQuota(ctx context.Context, value types.ResourceQuota) (types.ResourceQuota, types.ResourceUsage, error)
+}
+
+type GitOpsStore interface {
+	CreateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error)
+	ListGitOpsSources(ctx context.Context) ([]types.GitOpsSource, error)
+	GetGitOpsSource(ctx context.Context, id string) (types.GitOpsSource, error)
+	UpdateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error)
+	DeleteGitOpsSource(ctx context.Context, id string) error
+}
+
 type ServiceStore interface {
 	CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error)
 	GetService(ctx context.Context, id types.ServiceID) (types.Service, error)
@@ -69,6 +82,8 @@ type RegistryCredentialStore interface {
 
 type Store interface {
 	NamespaceStore
+	ResourceQuotaStore
+	GitOpsStore
 	NodeStore
 	ServiceStore
 	TaskStore

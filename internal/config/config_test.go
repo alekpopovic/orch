@@ -56,6 +56,8 @@ log_level: warn
 bootstrap_token: file-token
 graceful_shutdown_ttl: 20s
 cluster_policy:
+  require_digest: true
+  allow_mutable_tags: false
   allowed_capabilities:
     - NET_BIND_SERVICE
   allowed_host_path_prefixes:
@@ -86,6 +88,9 @@ cluster_policy:
 	}
 	if len(cfg.ClusterPolicy.AllowedCapabilities) != 1 || cfg.ClusterPolicy.AllowedCapabilities[0] != "NET_BIND_SERVICE" {
 		t.Fatalf("expected file cluster policy capabilities, got %#v", cfg.ClusterPolicy.AllowedCapabilities)
+	}
+	if !cfg.ClusterPolicy.RequireDigest || cfg.ClusterPolicy.AllowMutableTags {
+		t.Fatalf("expected explicit digest and mutable-tag file policy, got %#v", cfg.ClusterPolicy)
 	}
 }
 

@@ -17,6 +17,9 @@ type ClusterPolicy struct {
 	AllowHostPID             bool     `json:"allow_host_pid" yaml:"allow_host_pid"`
 	AllowedImageRegistries   []string `json:"allowed_image_registries,omitempty" yaml:"allowed_image_registries"`
 	BlockLatestTag           bool     `json:"block_latest_tag" yaml:"block_latest_tag"`
+	RequireDigest            bool     `json:"require_digest" yaml:"require_digest"`
+	AllowMutableTags         bool     `json:"allow_mutable_tags" yaml:"allow_mutable_tags"`
+	DenyLatestTag            bool     `json:"deny_latest_tag" yaml:"deny_latest_tag"`
 	RequireHealthcheck       bool     `json:"require_healthcheck" yaml:"require_healthcheck"`
 	AllowedHostPathPrefixes  []string `json:"allowed_host_path_prefixes,omitempty" yaml:"allowed_host_path_prefixes"`
 	AllowedCapabilities      []string `json:"allowed_capabilities,omitempty" yaml:"allowed_capabilities"`
@@ -25,7 +28,7 @@ type ClusterPolicy struct {
 }
 
 func DefaultClusterPolicy() ClusterPolicy {
-	return ClusterPolicy{}
+	return ClusterPolicy{AllowMutableTags: true}
 }
 
 func (policy ClusterPolicy) ValidateServiceSpec(spec types.ServiceSpec) error {
@@ -95,6 +98,9 @@ func (policy ClusterPolicy) Redacted() map[string]any {
 		"allow_host_pid":               policy.AllowHostPID,
 		"allowed_image_registries":     registries,
 		"block_latest_tag":             policy.BlockLatestTag,
+		"require_digest":               policy.RequireDigest,
+		"allow_mutable_tags":           policy.AllowMutableTags,
+		"deny_latest_tag":              policy.DenyLatestTag,
 		"require_healthcheck":          policy.RequireHealthcheck,
 		"allowed_host_path_prefixes":   prefixes,
 		"allowed_capabilities":         capabilities,

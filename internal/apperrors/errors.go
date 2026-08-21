@@ -17,6 +17,7 @@ const (
 	CodeNotFound           Code = "not_found"
 	CodeInvalidArgument    Code = "invalid_argument"
 	CodeConflict           Code = "conflict"
+	CodeQuotaExceeded      Code = "quota_exceeded"
 	CodeUnauthorized       Code = "unauthorized"
 	CodeForbidden          Code = "forbidden"
 	CodeFailedPrecondition Code = "failed_precondition"
@@ -143,7 +144,7 @@ func StringDetails(details map[string]any) map[string]string {
 
 func normalizeCode(code Code) Code {
 	switch code {
-	case CodeNotFound, CodeInvalidArgument, CodeConflict, CodeUnauthorized, CodeForbidden, CodeFailedPrecondition, CodeUnavailable, CodeInternal:
+	case CodeNotFound, CodeInvalidArgument, CodeConflict, CodeQuotaExceeded, CodeUnauthorized, CodeForbidden, CodeFailedPrecondition, CodeUnavailable, CodeInternal:
 		return code
 	default:
 		return CodeInternal

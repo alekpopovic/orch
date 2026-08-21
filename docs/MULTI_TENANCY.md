@@ -20,6 +20,20 @@ The CLI resolves its namespace from `--namespace`, then `ORCH_NAMESPACE`, then `
 
 Namespace deletion is allowed only when the namespace contains no workload resources or namespace-scoped history. The `default` namespace cannot be deleted.
 
+## Resource Quotas
+
+Each namespace can limit services, replicas, requested CPU millicores, requested memory bytes, public ports, secrets, and registry credentials. A zero limit means unlimited. CPU and memory usage are the sum of per-replica requests; public-port usage counts published port declarations.
+
+```sh
+orch quota get --namespace payments
+orch quota set --namespace payments \
+  --max-services 20 --max-replicas 100 \
+  --max-cpu-millicores 20000 --max-memory-bytes 68719476736 \
+  --max-public-ports 10 --max-secrets 50 --max-registry-credentials 10
+```
+
+Checks run atomically with service create/update/scale, secret create, and registry credential create. A denial returns `409 quota_exceeded` with namespace, resource, current use, requested use, and limit. Deleted services stop consuming quota. PostgreSQL uses a namespace advisory transaction lock so concurrent scale requests cannot both pass against the same remaining capacity.
+
 ## RBAC
 
 Legacy JWT `role` remains a cluster-wide role. Namespace-scoped tokens may instead use `namespace_roles`:
@@ -42,6 +56,6 @@ Secret and registry credential references resolve only in the workload namespace
 
 ## Persistence and Migration
 
-Migration `000011_namespaces` creates the namespace table, assigns existing rows to `default`, replaces global name uniqueness with namespace-local keys, and adds namespace indexes. The down migration removes non-default data before restoring global uniqueness and is therefore intended only for controlled rollback.
+Migration `000011_namespaces` creates the namespace table, assigns existing rows to `default`, replaces global name uniqueness with namespace-local keys, and adds namespace indexes. Migration `000012_resource_quotas` adds quota limits. The namespace down migration removes non-default data before restoring global uniqueness and is therefore intended only for controlled rollback.
 
-Namespaces are a logical isolation boundary, not yet a complete hostile multi-tenant security boundary. Docker nodes, host networking, scheduler capacity, and the current in-memory server process remain shared. Production multi-tenancy still requires PostgreSQL server wiring, network isolation, per-namespace quotas, and stronger agent identity.
+Namespaces are a logical isolation boundary, not yet a complete hostile multi-tenant security boundary. Docker nodes, host networking, scheduler capacity, and the current in-memory server process remain shared. Production multi-tenancy still requires PostgreSQL server wiring, network isolation, and stronger agent identity.

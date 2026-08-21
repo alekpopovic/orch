@@ -25,6 +25,9 @@ migration_present() {
     000009) check="EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='services' AND column_name='security_context')" ;;
     000010) check="EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='services' AND column_name='autoscaling')" ;;
     000011) check="to_regclass('public.namespaces') IS NOT NULL" ;;
+    000012) check="to_regclass('public.resource_quotas') IS NOT NULL" ;;
+    000013) check="EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='services' AND column_name='image_metadata')" ;;
+    000014) check="to_regclass('public.gitops_sources') IS NOT NULL" ;;
   esac
   docker compose exec -T postgres psql -U orch -d orch -tAc "SELECT $check" | grep -q t
 }

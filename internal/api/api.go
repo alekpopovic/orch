@@ -23,6 +23,7 @@ import (
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/namespace"
+	"github.com/alekpopovic/orch/internal/quota"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/internal/traefik"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -42,6 +43,11 @@ type Server struct {
 	metricsHandler http.Handler
 	auditStore     audit.Store
 	now            func() time.Time
+	gitopsSyncer   GitOpsSyncer
+}
+
+type GitOpsSyncer interface {
+	Sync(context.Context, string) (types.GitOpsSource, error)
 }
 
 type Option func(*Server)
@@ -113,6 +119,10 @@ func WithAuditStore(store audit.Store) Option {
 	return func(server *Server) {
 		server.auditStore = store
 	}
+}
+
+func WithGitOpsSyncer(syncer GitOpsSyncer) Option {
+	return func(server *Server) { server.gitopsSyncer = syncer }
 }
 
 func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...Option) http.Handler {
@@ -191,6 +201,12 @@ func (s *Server) registerV1(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/namespaces", s.createNamespace)
 	mux.HandleFunc("GET /v1/namespaces", s.listNamespaces)
 	mux.HandleFunc("DELETE /v1/namespaces/{name}", s.deleteNamespace)
+	mux.HandleFunc("GET /v1/quota", s.getResourceQuota)
+	mux.HandleFunc("PUT /v1/quota", s.setResourceQuota)
+	mux.HandleFunc("POST /v1/gitops/sources", s.createGitOpsSource)
+	mux.HandleFunc("GET /v1/gitops/sources", s.listGitOpsSources)
+	mux.HandleFunc("DELETE /v1/gitops/sources/{id}", s.deleteGitOpsSource)
+	mux.HandleFunc("POST /v1/gitops/sources/{id}/sync", s.syncGitOpsSource)
 }
 
 type HealthResponse struct {
@@ -213,6 +229,27 @@ type NamespaceResponse struct {
 
 type ListNamespacesResponse struct {
 	Namespaces []types.Namespace `json:"namespaces"`
+}
+
+type ResourceQuotaResponse struct {
+	Quota types.ResourceQuota `json:"quota"`
+	Usage types.ResourceUsage `json:"usage"`
+}
+
+type CreateGitOpsSourceRequest struct {
+	RepositoryURL string `json:"repository_url"`
+	Branch        string `json:"branch"`
+	Path          string `json:"path"`
+	SyncInterval  string `json:"sync_interval"`
+	Prune         bool   `json:"prune"`
+}
+
+type GitOpsSourceResponse struct {
+	Source types.GitOpsSource `json:"source"`
+}
+
+type ListGitOpsSourcesResponse struct {
+	Sources []types.GitOpsSource `json:"sources"`
 }
 
 type ErrorResponse struct {
@@ -400,6 +437,87 @@ func (s *Server) deleteNamespace(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordAudit(r, "namespace.delete", "namespace", name, audit.OutcomeSuccess, nil)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) getResourceQuota(w http.ResponseWriter, r *http.Request) {
+	value, usage, err := s.controlPlane.GetResourceQuota(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ResourceQuotaResponse{Quota: value, Usage: usage})
+}
+
+func (s *Server) setResourceQuota(w http.ResponseWriter, r *http.Request) {
+	var value types.ResourceQuota
+	if !s.decodeJSON(w, r, &value) {
+		return
+	}
+	updated, usage, err := s.controlPlane.SetResourceQuota(r.Context(), value)
+	if err != nil {
+		s.recordAudit(r, "quota.set", "namespace", namespace.FromContext(r.Context()), audit.OutcomeFailure, nil)
+		s.writeError(w, r, err)
+		return
+	}
+	s.recordAudit(r, "quota.set", "namespace", updated.Namespace, audit.OutcomeSuccess, nil)
+	writeJSON(w, http.StatusOK, ResourceQuotaResponse{Quota: updated, Usage: usage})
+}
+
+func (s *Server) createGitOpsSource(w http.ResponseWriter, r *http.Request) {
+	var request CreateGitOpsSourceRequest
+	if !s.decodeJSON(w, r, &request) {
+		return
+	}
+	interval, err := time.ParseDuration(strings.TrimSpace(request.SyncInterval))
+	if err != nil || interval <= 0 {
+		s.writeError(w, r, fmt.Errorf("%w: sync_interval must be a positive duration", store.ErrInvalidState))
+		return
+	}
+	source, err := s.controlPlane.CreateGitOpsSource(r.Context(), types.GitOpsSource{
+		RepositoryURL: request.RepositoryURL, Branch: request.Branch, Path: request.Path,
+		SyncInterval: interval, Prune: request.Prune,
+	})
+	if err != nil {
+		s.recordAudit(r, "gitops.source.create", "gitops_source", "unknown", audit.OutcomeFailure, nil)
+		s.writeError(w, r, err)
+		return
+	}
+	s.recordAudit(r, "gitops.source.create", "gitops_source", source.ID, audit.OutcomeSuccess, map[string]string{"repository_url": source.RepositoryURL})
+	writeJSON(w, http.StatusCreated, GitOpsSourceResponse{Source: source})
+}
+
+func (s *Server) listGitOpsSources(w http.ResponseWriter, r *http.Request) {
+	sources, err := s.controlPlane.ListGitOpsSources(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ListGitOpsSourcesResponse{Sources: sources})
+}
+
+func (s *Server) deleteGitOpsSource(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if err := s.controlPlane.DeleteGitOpsSource(r.Context(), id); err != nil {
+		s.recordAudit(r, "gitops.source.delete", "gitops_source", id, audit.OutcomeFailure, nil)
+		s.writeError(w, r, err)
+		return
+	}
+	s.recordAudit(r, "gitops.source.delete", "gitops_source", id, audit.OutcomeSuccess, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) syncGitOpsSource(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if s.gitopsSyncer == nil {
+		s.writeError(w, r, apperrors.New(apperrors.CodeUnavailable, "GitOps controller is not configured"))
+		return
+	}
+	source, err := s.gitopsSyncer.Sync(r.Context(), id)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, GitOpsSourceResponse{Source: source})
 }
 
 func (s *Server) agentRegister(w http.ResponseWriter, r *http.Request) {
@@ -1146,6 +1264,10 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 			return auth.RoleViewer, true
 		case path == "/v1/namespaces":
 			return auth.RoleAdmin, true
+		case path == "/v1/quota":
+			return auth.RoleViewer, true
+		case path == "/v1/gitops/sources" || strings.HasPrefix(path, "/v1/gitops/sources/"):
+			return auth.RoleViewer, true
 		case path == "/v1/nodes" || strings.HasPrefix(path, "/v1/nodes/"):
 			return auth.RoleViewer, true
 		case path == "/v1/secrets" || strings.HasPrefix(path, "/v1/secrets/"):
@@ -1174,6 +1296,8 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 		switch {
 		case path == "/v1/namespaces":
 			return auth.RoleAdmin, true
+		case path == "/v1/gitops/sources" || strings.HasSuffix(path, "/sync"):
+			return auth.RoleOperator, true
 		case strings.HasSuffix(path, "/drain") || strings.HasSuffix(path, "/uncordon"):
 			return auth.RoleAdmin, true
 		case path == "/v1/secrets":
@@ -1185,6 +1309,12 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 		}
 	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/namespaces/") {
+		return auth.RoleAdmin, true
+	}
+	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/gitops/sources/") {
+		return auth.RoleOperator, true
+	}
+	if r.Method == http.MethodPut && path == "/v1/quota" {
 		return auth.RoleAdmin, true
 	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/secrets/") {
@@ -1274,6 +1404,14 @@ func metricRoute(method string, path string) (string, bool) {
 		return "/v1/namespaces", true
 	case strings.HasPrefix(path, "/v1/namespaces/"):
 		return "/v1/namespaces/{name}", true
+	case path == "/v1/quota":
+		return "/v1/quota", true
+	case path == "/v1/gitops/sources":
+		return "/v1/gitops/sources", true
+	case strings.HasPrefix(path, "/v1/gitops/sources/") && strings.HasSuffix(path, "/sync"):
+		return "/v1/gitops/sources/{id}/sync", true
+	case strings.HasPrefix(path, "/v1/gitops/sources/"):
+		return "/v1/gitops/sources/{id}", true
 	case path == "/v1/agent/register":
 		return "/v1/agent/register", true
 	case path == "/v1/agent/heartbeat":
@@ -1692,6 +1830,13 @@ func errorAttributes(err error) (int, apperrors.Code, string, map[string]any) {
 			"violations": admissionErr.Violations,
 		}
 	}
+	var quotaErr *quota.Error
+	if errors.As(err, &quotaErr) {
+		return http.StatusConflict, apperrors.CodeQuotaExceeded, quotaErr.Error(), map[string]any{
+			"namespace": quotaErr.Namespace, "resource": quotaErr.Resource, "limit": quotaErr.Limit,
+			"used": quotaErr.Used, "requested": quotaErr.Requested,
+		}
+	}
 	code := apperrors.CodeOf(err)
 	message := apperrors.MessageOf(err)
 	details := apperrors.DetailsOf(err)
@@ -1705,6 +1850,8 @@ func statusForCode(code apperrors.Code) int {
 	case code == apperrors.CodeInvalidArgument:
 		return http.StatusBadRequest
 	case code == apperrors.CodeConflict:
+		return http.StatusConflict
+	case code == apperrors.CodeQuotaExceeded:
 		return http.StatusConflict
 	case code == apperrors.CodeUnauthorized:
 		return http.StatusUnauthorized

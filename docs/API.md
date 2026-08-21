@@ -6,7 +6,7 @@ All responses use UTC timestamps.
 
 Workload routes select a namespace with `X-Orch-Namespace` and default to `default`. See [MULTI_TENANCY.md](https://alekpopovic.github.io/orch/#MULTI_TENANCY.md). API compatibility and deprecation rules are defined in [API_VERSIONING.md](https://alekpopovic.github.io/orch/#API_VERSIONING.md).
 
-The canonical public API contract is `api/openapi.yaml`. It is also published in the GitHub Pages documentation portal as `openapi.yaml`. It documents the user-facing health, node, service, task, event, log, rollout, secret, registry credential, and audit log endpoints. Agent-only routes are intentionally excluded from that public spec.
+The canonical public API contract is `api/openapi.yaml`. It is also published in the GitHub Pages documentation portal as `openapi.yaml`. It documents the user-facing health, namespace, quota, GitOps, node, service, task, event, log, rollout, secret, registry credential, and audit log endpoints. Agent-only routes are intentionally excluded from that public spec.
 
 Validate the OpenAPI document with:
 
@@ -38,6 +38,7 @@ Errors use a stable envelope:
 - `not_found`
 - `invalid_argument`
 - `conflict`
+- `quota_exceeded`
 - `unauthorized`
 - `forbidden`
 - `failed_precondition`
@@ -162,6 +163,32 @@ curl -X POST http://localhost:8080/v1/services/{service_id}/rollback
 Concurrent service operations are guarded per service. Active rollout/rollback blocks scale, rollout, and rollback with `409 conflict` and a message containing `operation already in progress`. Repeating the same in-flight rollout with the same image and limits returns the existing deployment. Delete wins over rollout/rollback/scale by moving the service to `deleting` and cancelling active deployments.
 
 Resource values are normalized to CPU millicores and memory bytes. The CLI deploy parser accepts strings such as `500m`, `2.5`, `512Mi`, and `1Gi`.
+
+Resolved image metadata is stored as `image_metadata` on the service spec and as `requested_image`, `resolved_image_digest`, `image_registry`, `image_name`, and `image_tag` on tasks. When digest pinning policy is enabled, task `image` is the immutable pull reference.
+
+## Resource Quotas
+
+```sh
+curl http://localhost:8080/v1/quota -H 'X-Orch-Namespace: payments'
+curl -X PUT http://localhost:8080/v1/quota \
+  -H 'X-Orch-Namespace: payments' -H 'Content-Type: application/json' \
+  -d '{"max_services":20,"max_replicas":100,"max_cpu_millicores":20000,"max_memory_bytes":68719476736,"max_public_ports":10,"max_secrets":50,"max_registry_credentials":10}'
+```
+
+GET returns both configured limits and live usage. Zero limits are unlimited. Exceeding a limit returns `409 quota_exceeded` with structured resource/usage details.
+
+## GitOps Sources
+
+```sh
+curl -X POST http://localhost:8080/v1/gitops/sources \
+  -H 'Content-Type: application/json' \
+  -d '{"repository_url":"https://github.com/acme/orch-config.git","branch":"main","path":"services","sync_interval":"1m","prune":true}'
+curl http://localhost:8080/v1/gitops/sources
+curl -X POST http://localhost:8080/v1/gitops/sources/{id}/sync
+curl -X DELETE http://localhost:8080/v1/gitops/sources/{id}
+```
+
+Sources and applied workloads are namespace-scoped. See [GITOPS.md](https://alekpopovic.github.io/orch/#GITOPS.md).
 
 The canonical YAML deployment format is documented in [SERVICE_SPEC.md](https://alekpopovic.github.io/orch/#SERVICE_SPEC.md), with JSON Schema at `schemas/service.schema.json`.
 

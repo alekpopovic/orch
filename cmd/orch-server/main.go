@@ -14,8 +14,10 @@ import (
 
 	"github.com/alekpopovic/orch/internal/api"
 	"github.com/alekpopovic/orch/internal/auth"
+	"github.com/alekpopovic/orch/internal/cli"
 	"github.com/alekpopovic/orch/internal/config"
 	"github.com/alekpopovic/orch/internal/controlplane"
+	"github.com/alekpopovic/orch/internal/gitops"
 	"github.com/alekpopovic/orch/internal/logging"
 	"github.com/alekpopovic/orch/internal/metrics"
 	"github.com/alekpopovic/orch/internal/node"
@@ -88,6 +90,12 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 		return err
 	}
 	controlPlane := controlplane.NewMemoryService(controlplane.WithSecretEnvelope(envelope), controlplane.WithClusterPolicy(cfg.ClusterPolicy))
+	gitopsController := gitops.NewController(controlPlane, nil, cli.ParseDeploy, logger)
+	go func() {
+		if err := gitopsController.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Warn("GitOps controller stopped", "error", err)
+		}
+	}()
 	serverMetrics := metrics.NewServer()
 	rolloutController := rollout.NewController(controlPlane, logger, rollout.WithMetrics(serverMetrics))
 	go func() {
@@ -104,7 +112,7 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewHandler(logger, controlPlane, api.WithBootstrapToken(cfg.BootstrapToken), api.WithUserJWT(cfg.JWTSecret), api.WithStaticUsers(users), api.WithRequestMetrics(serverMetrics), api.WithControlMetrics(serverMetrics), api.WithMetricsHandler(serverMetrics.Handler())),
+		Handler:           api.NewHandler(logger, controlPlane, api.WithBootstrapToken(cfg.BootstrapToken), api.WithUserJWT(cfg.JWTSecret), api.WithStaticUsers(users), api.WithRequestMetrics(serverMetrics), api.WithControlMetrics(serverMetrics), api.WithMetricsHandler(serverMetrics.Handler()), api.WithGitOpsSyncer(gitopsController)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

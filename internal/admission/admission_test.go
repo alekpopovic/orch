@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	imageinfo "github.com/alekpopovic/orch/internal/image"
 	"github.com/alekpopovic/orch/internal/policy"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -63,6 +64,33 @@ func TestAdmissionPolicies(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAdmissionRejectsMutableImageTag(t *testing.T) {
+	spec := types.ServiceSpec{Name: "api", Image: "ghcr.io/acme/api:v1", Replicas: 1}
+	violations := Evaluate(spec, policy.ClusterPolicy{AllowMutableTags: false})
+	if !containsRule(violations, "image.mutable_tag.denied") {
+		t.Fatalf("expected mutable tag rejection, got %#v", violations)
+	}
+	spec.Image = "ghcr.io/acme/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	metadata, err := imageinfo.Parse(spec.Image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.ImageMetadata = metadata
+	violations = Evaluate(spec, policy.ClusterPolicy{RequireDigest: true, AllowMutableTags: false})
+	if containsRule(violations, "image.digest.required") || containsRule(violations, "image.mutable_tag.denied") {
+		t.Fatalf("expected digest image to pass image policy, got %#v", violations)
+	}
+}
+
+func containsRule(violations []Violation, rule string) bool {
+	for _, violation := range violations {
+		if violation.Rule == rule {
+			return true
+		}
+	}
+	return false
 }
 
 type recordingSink struct{ rejection Rejection }

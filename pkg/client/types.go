@@ -211,6 +211,27 @@ type listNamespacesResponse struct {
 	Namespaces []types.Namespace `json:"namespaces"`
 }
 
+type resourceQuotaResponse struct {
+	Quota types.ResourceQuota `json:"quota"`
+	Usage types.ResourceUsage `json:"usage"`
+}
+
+type createGitOpsSourceRequest struct {
+	RepositoryURL string `json:"repository_url"`
+	Branch        string `json:"branch"`
+	Path          string `json:"path"`
+	SyncInterval  string `json:"sync_interval"`
+	Prune         bool   `json:"prune"`
+}
+
+type gitOpsSourceResponse struct {
+	Source types.GitOpsSource `json:"source"`
+}
+
+type listGitOpsSourcesResponse struct {
+	Sources []types.GitOpsSource `json:"sources"`
+}
+
 type scaleServiceRequest struct {
 	Replicas int `json:"replicas"`
 }

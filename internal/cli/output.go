@@ -46,6 +46,47 @@ func writeNamespaces(w io.Writer, output string, namespaces []types.Namespace) e
 	return tw.Flush()
 }
 
+func writeQuota(w io.Writer, output string, value types.ResourceQuota, usage types.ResourceUsage) error {
+	if output == "json" {
+		return writeValue(w, output, map[string]any{"quota": value, "usage": usage})
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAMESPACE\tRESOURCE\tUSED\tLIMIT")
+	rows := []struct {
+		name  string
+		used  int64
+		limit int64
+	}{
+		{"services", int64(usage.Services), int64(value.MaxServices)},
+		{"replicas", int64(usage.Replicas), int64(value.MaxReplicas)},
+		{"cpu_millicores", usage.CPUMillicores, value.MaxCPUMillicores},
+		{"memory_bytes", usage.MemoryBytes, value.MaxMemoryBytes},
+		{"public_ports", int64(usage.PublicPorts), int64(value.MaxPublicPorts)},
+		{"secrets", int64(usage.Secrets), int64(value.MaxSecrets)},
+		{"registry_credentials", int64(usage.RegistryCredentials), int64(value.MaxRegistryCredentials)},
+	}
+	for _, row := range rows {
+		limit := fmt.Sprint(row.limit)
+		if row.limit == 0 {
+			limit = "unlimited"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\n", value.Namespace, row.name, row.used, limit)
+	}
+	return tw.Flush()
+}
+
+func writeGitOpsSources(w io.Writer, output string, sources []types.GitOpsSource) error {
+	if output == "json" {
+		return writeValue(w, output, sources)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tNAMESPACE\tREPOSITORY\tBRANCH\tPATH\tINTERVAL\tPRUNE\tREVISION\tLAST_ERROR")
+	for _, source := range sources {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%t\t%s\t%s\n", source.ID, source.Namespace, source.RepositoryURL, source.Branch, source.Path, source.SyncInterval, source.Prune, source.LastRevision, source.LastError)
+	}
+	return tw.Flush()
+}
+
 func writeNode(w io.Writer, output string, node types.Node) error {
 	if output == "json" {
 		return writeValue(w, output, node)

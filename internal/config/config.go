@@ -157,6 +157,7 @@ func defaultServer() ServerConfig {
 		GracefulShutdownTTL: 10 * time.Second,
 		HeartbeatTimeout:    30 * time.Second,
 		NodeMonitorInterval: 5 * time.Second,
+		ClusterPolicy:       policy.DefaultClusterPolicy(),
 	}
 }
 
@@ -176,17 +177,35 @@ func defaultAgent() AgentConfig {
 }
 
 type serverFileConfig struct {
-	Addr                string               `yaml:"addr"`
-	DatabaseURL         string               `yaml:"database_url"`
-	LogLevel            string               `yaml:"log_level"`
-	BootstrapToken      string               `yaml:"bootstrap_token"`
-	JWTSecret           string               `yaml:"jwt_secret"`
-	Users               string               `yaml:"users"`
-	SecretKey           string               `yaml:"secret_key"`
-	GracefulShutdownTTL string               `yaml:"graceful_shutdown_ttl"`
-	HeartbeatTimeout    string               `yaml:"heartbeat_timeout"`
-	NodeMonitorInterval string               `yaml:"node_monitor_interval"`
-	ClusterPolicy       policy.ClusterPolicy `yaml:"cluster_policy"`
+	Addr                string            `yaml:"addr"`
+	DatabaseURL         string            `yaml:"database_url"`
+	LogLevel            string            `yaml:"log_level"`
+	BootstrapToken      string            `yaml:"bootstrap_token"`
+	JWTSecret           string            `yaml:"jwt_secret"`
+	Users               string            `yaml:"users"`
+	SecretKey           string            `yaml:"secret_key"`
+	GracefulShutdownTTL string            `yaml:"graceful_shutdown_ttl"`
+	HeartbeatTimeout    string            `yaml:"heartbeat_timeout"`
+	NodeMonitorInterval string            `yaml:"node_monitor_interval"`
+	ClusterPolicy       clusterPolicyFile `yaml:"cluster_policy"`
+}
+
+type clusterPolicyFile struct {
+	RequireResourceRequests  *bool    `yaml:"require_resource_requests"`
+	RequireResourceLimits    *bool    `yaml:"require_resource_limits"`
+	AllowPrivileged          *bool    `yaml:"allow_privileged"`
+	AllowHostNetwork         *bool    `yaml:"allow_host_network"`
+	AllowHostPID             *bool    `yaml:"allow_host_pid"`
+	AllowedImageRegistries   []string `yaml:"allowed_image_registries"`
+	BlockLatestTag           *bool    `yaml:"block_latest_tag"`
+	RequireDigest            *bool    `yaml:"require_digest"`
+	AllowMutableTags         *bool    `yaml:"allow_mutable_tags"`
+	DenyLatestTag            *bool    `yaml:"deny_latest_tag"`
+	RequireHealthcheck       *bool    `yaml:"require_healthcheck"`
+	AllowedHostPathPrefixes  []string `yaml:"allowed_host_path_prefixes"`
+	AllowedCapabilities      []string `yaml:"allowed_capabilities"`
+	MaxReplicasPerService    *int     `yaml:"max_replicas_per_service"`
+	MaxPublicPortsPerService *int     `yaml:"max_public_ports_per_service"`
 }
 
 type agentFileConfig struct {
@@ -419,6 +438,15 @@ func applyClusterPolicyEnv(clusterPolicy *policy.ClusterPolicy) error {
 	if err := applyBool(&clusterPolicy.BlockLatestTag, os.Getenv("ORCH_POLICY_BLOCK_LATEST_TAG")); err != nil {
 		return fmt.Errorf("ORCH_POLICY_BLOCK_LATEST_TAG: %w", err)
 	}
+	if err := applyBool(&clusterPolicy.RequireDigest, os.Getenv("ORCH_POLICY_REQUIRE_DIGEST")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_REQUIRE_DIGEST: %w", err)
+	}
+	if err := applyBool(&clusterPolicy.AllowMutableTags, os.Getenv("ORCH_POLICY_ALLOW_MUTABLE_TAGS")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_ALLOW_MUTABLE_TAGS: %w", err)
+	}
+	if err := applyBool(&clusterPolicy.DenyLatestTag, os.Getenv("ORCH_POLICY_DENY_LATEST_TAG")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_DENY_LATEST_TAG: %w", err)
+	}
 	if err := applyBool(&clusterPolicy.RequireHealthcheck, os.Getenv("ORCH_POLICY_REQUIRE_HEALTHCHECK")); err != nil {
 		return fmt.Errorf("ORCH_POLICY_REQUIRE_HEALTHCHECK: %w", err)
 	}
@@ -434,36 +462,30 @@ func applyClusterPolicyEnv(clusterPolicy *policy.ClusterPolicy) error {
 	return nil
 }
 
-func mergeClusterPolicy(target *policy.ClusterPolicy, source policy.ClusterPolicy) {
-	if source.RequireResourceRequests {
-		target.RequireResourceRequests = true
+func mergeClusterPolicy(target *policy.ClusterPolicy, source clusterPolicyFile) {
+	setBool := func(target *bool, source *bool) {
+		if source != nil {
+			*target = *source
+		}
 	}
-	if source.RequireResourceLimits {
-		target.RequireResourceLimits = true
-	}
-	if source.AllowPrivileged {
-		target.AllowPrivileged = true
-	}
-	if source.AllowHostNetwork {
-		target.AllowHostNetwork = true
-	}
-	if source.AllowHostPID {
-		target.AllowHostPID = true
-	}
-	if source.BlockLatestTag {
-		target.BlockLatestTag = true
-	}
-	if source.RequireHealthcheck {
-		target.RequireHealthcheck = true
-	}
+	setBool(&target.RequireResourceRequests, source.RequireResourceRequests)
+	setBool(&target.RequireResourceLimits, source.RequireResourceLimits)
+	setBool(&target.AllowPrivileged, source.AllowPrivileged)
+	setBool(&target.AllowHostNetwork, source.AllowHostNetwork)
+	setBool(&target.AllowHostPID, source.AllowHostPID)
+	setBool(&target.BlockLatestTag, source.BlockLatestTag)
+	setBool(&target.RequireDigest, source.RequireDigest)
+	setBool(&target.AllowMutableTags, source.AllowMutableTags)
+	setBool(&target.DenyLatestTag, source.DenyLatestTag)
+	setBool(&target.RequireHealthcheck, source.RequireHealthcheck)
 	if source.AllowedImageRegistries != nil {
 		target.AllowedImageRegistries = append([]string(nil), source.AllowedImageRegistries...)
 	}
-	if source.MaxReplicasPerService != 0 {
-		target.MaxReplicasPerService = source.MaxReplicasPerService
+	if source.MaxReplicasPerService != nil {
+		target.MaxReplicasPerService = *source.MaxReplicasPerService
 	}
-	if source.MaxPublicPortsPerService != 0 {
-		target.MaxPublicPortsPerService = source.MaxPublicPortsPerService
+	if source.MaxPublicPortsPerService != nil {
+		target.MaxPublicPortsPerService = *source.MaxPublicPortsPerService
 	}
 	if source.AllowedHostPathPrefixes != nil {
 		target.AllowedHostPathPrefixes = append([]string(nil), source.AllowedHostPathPrefixes...)

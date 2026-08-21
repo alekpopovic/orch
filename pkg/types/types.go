@@ -20,6 +20,53 @@ type Namespace struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type ResourceQuota struct {
+	Namespace              string    `json:"namespace"`
+	MaxServices            int       `json:"max_services,omitempty"`
+	MaxReplicas            int       `json:"max_replicas,omitempty"`
+	MaxCPUMillicores       int64     `json:"max_cpu_millicores,omitempty"`
+	MaxMemoryBytes         int64     `json:"max_memory_bytes,omitempty"`
+	MaxPublicPorts         int       `json:"max_public_ports,omitempty"`
+	MaxSecrets             int       `json:"max_secrets,omitempty"`
+	MaxRegistryCredentials int       `json:"max_registry_credentials,omitempty"`
+	UpdatedAt              time.Time `json:"updated_at"`
+}
+
+type ResourceUsage struct {
+	Services            int   `json:"services"`
+	Replicas            int   `json:"replicas"`
+	CPUMillicores       int64 `json:"cpu_millicores"`
+	MemoryBytes         int64 `json:"memory_bytes"`
+	PublicPorts         int   `json:"public_ports"`
+	Secrets             int   `json:"secrets"`
+	RegistryCredentials int   `json:"registry_credentials"`
+}
+
+type ImageMetadata struct {
+	RequestedImage string `json:"requested_image" yaml:"requested_image"`
+	Digest         string `json:"digest,omitempty" yaml:"digest,omitempty"`
+	Registry       string `json:"registry" yaml:"registry"`
+	Name           string `json:"name" yaml:"name"`
+	Tag            string `json:"tag,omitempty" yaml:"tag,omitempty"`
+	Pinned         bool   `json:"pinned,omitempty" yaml:"pinned,omitempty"`
+}
+
+type GitOpsSource struct {
+	ID              string        `json:"id"`
+	Namespace       string        `json:"namespace"`
+	RepositoryURL   string        `json:"repository_url"`
+	Branch          string        `json:"branch"`
+	Path            string        `json:"path"`
+	SyncInterval    time.Duration `json:"sync_interval"`
+	Prune           bool          `json:"prune"`
+	ManagedServices []string      `json:"managed_services,omitempty"`
+	LastRevision    string        `json:"last_revision,omitempty"`
+	LastError       string        `json:"last_error,omitempty"`
+	LastSyncedAt    time.Time     `json:"last_synced_at,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
+	UpdatedAt       time.Time     `json:"updated_at"`
+}
+
 type Node struct {
 	ID               NodeID            `json:"id"`
 	Hostname         string            `json:"hostname"`
@@ -158,6 +205,7 @@ const (
 type ServiceSpec struct {
 	Name                 string                `json:"name"`
 	Image                string                `json:"image"`
+	ImageMetadata        ImageMetadata         `json:"image_metadata,omitempty"`
 	ImagePullSecret      string                `json:"image_pull_secret,omitempty"`
 	Stateful             bool                  `json:"stateful,omitempty"`
 	Replicas             int                   `json:"replicas"`
@@ -171,6 +219,13 @@ type ServiceSpec struct {
 	RestartPolicy        RestartPolicy         `json:"restart_policy"`
 	PlacementConstraints []PlacementConstraint `json:"placement_constraints,omitempty"`
 	Routes               []Route               `json:"routes,omitempty"`
+}
+
+func (spec ServiceSpec) EffectiveImage() string {
+	if spec.ImageMetadata.Pinned && spec.ImageMetadata.Digest != "" && spec.ImageMetadata.Registry != "" && spec.ImageMetadata.Name != "" {
+		return strings.TrimSuffix(spec.ImageMetadata.Registry, "/") + "/" + strings.TrimPrefix(spec.ImageMetadata.Name, "/") + "@" + spec.ImageMetadata.Digest
+	}
+	return spec.Image
 }
 
 func (spec ServiceSpec) Validate() error {
@@ -706,23 +761,28 @@ const (
 )
 
 type Task struct {
-	ID            TaskID          `json:"id"`
-	Namespace     string          `json:"namespace"`
-	ServiceID     ServiceID       `json:"service_id"`
-	NodeID        NodeID          `json:"node_id,omitempty"`
-	ContainerID   string          `json:"container_id,omitempty"`
-	DesiredStatus TaskStatus      `json:"desired_status"`
-	ActualStatus  TaskStatus      `json:"actual_status"`
-	Image         string          `json:"image"`
-	Version       int64           `json:"version"`
-	Ports         []Port          `json:"ports,omitempty"`
-	RestartCount  int             `json:"restart_count"`
-	FailureReason string          `json:"failure_reason,omitempty"`
-	Conditions    []TaskCondition `json:"conditions,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-	StartedAt     time.Time       `json:"started_at,omitempty"`
-	FinishedAt    time.Time       `json:"finished_at,omitempty"`
+	ID                  TaskID          `json:"id"`
+	Namespace           string          `json:"namespace"`
+	ServiceID           ServiceID       `json:"service_id"`
+	NodeID              NodeID          `json:"node_id,omitempty"`
+	ContainerID         string          `json:"container_id,omitempty"`
+	DesiredStatus       TaskStatus      `json:"desired_status"`
+	ActualStatus        TaskStatus      `json:"actual_status"`
+	Image               string          `json:"image"`
+	RequestedImage      string          `json:"requested_image,omitempty"`
+	ResolvedImageDigest string          `json:"resolved_image_digest,omitempty"`
+	ImageRegistry       string          `json:"image_registry,omitempty"`
+	ImageName           string          `json:"image_name,omitempty"`
+	ImageTag            string          `json:"image_tag,omitempty"`
+	Version             int64           `json:"version"`
+	Ports               []Port          `json:"ports,omitempty"`
+	RestartCount        int             `json:"restart_count"`
+	FailureReason       string          `json:"failure_reason,omitempty"`
+	Conditions          []TaskCondition `json:"conditions,omitempty"`
+	CreatedAt           time.Time       `json:"created_at"`
+	UpdatedAt           time.Time       `json:"updated_at"`
+	StartedAt           time.Time       `json:"started_at,omitempty"`
+	FinishedAt          time.Time       `json:"finished_at,omitempty"`
 }
 
 type TaskCondition struct {

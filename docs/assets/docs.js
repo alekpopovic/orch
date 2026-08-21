@@ -31,7 +31,8 @@ const docsNav = [
       { title: 'Reconciler', path: 'RECONCILER.md', icon: '🔁' },
       { title: 'Rollouts', path: 'ROLLOUTS.md', icon: '🚀' },
       { title: 'HA control plane', path: 'HA_CONTROL_PLANE_DESIGN.md', icon: '👑' },
-      { title: 'Policy engine', path: 'POLICY_ENGINE_DESIGN.md', icon: '📜' }
+      { title: 'Policy engine', path: 'POLICY_ENGINE_DESIGN.md', icon: '📜' },
+      { title: 'GitOps', path: 'GITOPS.md', icon: '🔄' }
     ]
   },
   {
@@ -53,6 +54,8 @@ const docsNav = [
       { title: 'Traefik', path: 'TRAEFIK.md', icon: '🚦' },
       { title: 'Secrets', path: 'SECRETS.md', icon: '🔐' },
       { title: 'Registries', path: 'REGISTRIES.md', icon: '🗃️' },
+      { title: 'Image signing design', path: 'IMAGE_SIGNING_DESIGN.md', icon: '✍️' },
+      { title: 'Supply-chain security', path: 'SUPPLY_CHAIN_SECURITY_DESIGN.md', icon: '🧾' },
       { title: 'Security', path: 'SECURITY.md', icon: '🛡️' },
       { title: 'Security review', path: 'SECURITY_REVIEW.md', icon: '🧪' },
       { title: 'Multi-tenancy', path: 'MULTI_TENANCY.md', icon: '🏘️' }

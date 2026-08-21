@@ -972,8 +972,8 @@ func TestAuditRequiresAdminRole(t *testing.T) {
 	}
 }
 
-func newTestHandler() http.Handler {
-	return NewHandler(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), controlplane.NewMemoryService())
+func newTestHandler(opts ...Option) http.Handler {
+	return NewHandler(slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), controlplane.NewMemoryService(), opts...)
 }
 
 func doRequest(t *testing.T, handler http.Handler, method string, path string, body any) *httptest.ResponseRecorder {

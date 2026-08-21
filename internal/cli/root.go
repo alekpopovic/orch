@@ -51,6 +51,18 @@ type NamespaceClient interface {
 	DeleteNamespace(ctx context.Context, name string) error
 }
 
+type QuotaClient interface {
+	GetResourceQuota(context.Context) (types.ResourceQuota, types.ResourceUsage, error)
+	SetResourceQuota(context.Context, types.ResourceQuota) (types.ResourceQuota, types.ResourceUsage, error)
+}
+
+type GitOpsClient interface {
+	CreateGitOpsSource(context.Context, types.GitOpsSource) (types.GitOpsSource, error)
+	ListGitOpsSources(context.Context) ([]types.GitOpsSource, error)
+	SyncGitOpsSource(context.Context, string) (types.GitOpsSource, error)
+	DeleteGitOpsSource(context.Context, string) error
+}
+
 type Options struct {
 	Out           io.Writer
 	Err           io.Writer
@@ -128,6 +140,8 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(a.auditCommand())
 	root.AddCommand(a.logsCommand())
 	root.AddCommand(a.namespaceCommand())
+	root.AddCommand(a.quotaCommand())
+	root.AddCommand(a.gitopsCommand())
 	return root
 }
 
@@ -184,6 +198,143 @@ func (a *app) namespaceCommand() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(a.out, "deleted namespace %s\n", args[0])
+			return nil
+		},
+	})
+	return cmd
+}
+
+func (a *app) quotaCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "quota", Short: "Manage namespace resource quotas"}
+	cmd.AddCommand(&cobra.Command{
+		Use: "get", Short: "Show quota and current usage",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := a.client()
+			if err != nil {
+				return err
+			}
+			quotaClient, ok := client.(QuotaClient)
+			if !ok {
+				return fmt.Errorf("client does not support quotas")
+			}
+			value, usage, err := quotaClient.GetResourceQuota(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return writeQuota(a.out, a.output, value, usage)
+		},
+	})
+	var value types.ResourceQuota
+	set := &cobra.Command{
+		Use: "set", Short: "Set quota limits (zero means unlimited)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := a.client()
+			if err != nil {
+				return err
+			}
+			quotaClient, ok := client.(QuotaClient)
+			if !ok {
+				return fmt.Errorf("client does not support quotas")
+			}
+			updated, usage, err := quotaClient.SetResourceQuota(cmd.Context(), value)
+			if err != nil {
+				return err
+			}
+			return writeQuota(a.out, a.output, updated, usage)
+		},
+	}
+	set.Flags().IntVar(&value.MaxServices, "max-services", 0, "maximum services")
+	set.Flags().IntVar(&value.MaxReplicas, "max-replicas", 0, "maximum replicas")
+	set.Flags().Int64Var(&value.MaxCPUMillicores, "max-cpu-millicores", 0, "maximum requested CPU millicores")
+	set.Flags().Int64Var(&value.MaxMemoryBytes, "max-memory-bytes", 0, "maximum requested memory bytes")
+	set.Flags().IntVar(&value.MaxPublicPorts, "max-public-ports", 0, "maximum public ports")
+	set.Flags().IntVar(&value.MaxSecrets, "max-secrets", 0, "maximum secrets")
+	set.Flags().IntVar(&value.MaxRegistryCredentials, "max-registry-credentials", 0, "maximum registry credentials")
+	cmd.AddCommand(set)
+	return cmd
+}
+
+func (a *app) gitopsCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "gitops", Short: "Manage GitOps sources"}
+	var repositoryURL, branch, sourcePath string
+	var interval time.Duration
+	var prune bool
+	add := &cobra.Command{
+		Use: "add", Short: "Add a GitOps source",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := a.client()
+			if err != nil {
+				return err
+			}
+			gitopsClient, ok := client.(GitOpsClient)
+			if !ok {
+				return fmt.Errorf("client does not support GitOps")
+			}
+			source, err := gitopsClient.CreateGitOpsSource(cmd.Context(), types.GitOpsSource{RepositoryURL: repositoryURL, Branch: branch, Path: sourcePath, SyncInterval: interval, Prune: prune})
+			if err != nil {
+				return err
+			}
+			return writeGitOpsSources(a.out, a.output, []types.GitOpsSource{source})
+		},
+	}
+	add.Flags().StringVar(&repositoryURL, "repo", "", "Git repository URL")
+	add.Flags().StringVar(&branch, "branch", "main", "Git branch")
+	add.Flags().StringVar(&sourcePath, "path", ".", "manifest file or directory")
+	add.Flags().DurationVar(&interval, "interval", time.Minute, "sync interval")
+	add.Flags().BoolVar(&prune, "prune", false, "delete services whose manifests are removed")
+	_ = add.MarkFlagRequired("repo")
+	cmd.AddCommand(add)
+	cmd.AddCommand(&cobra.Command{
+		Use: "ls", Short: "List GitOps sources",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := a.client()
+			if err != nil {
+				return err
+			}
+			gitopsClient, ok := client.(GitOpsClient)
+			if !ok {
+				return fmt.Errorf("client does not support GitOps")
+			}
+			sources, err := gitopsClient.ListGitOpsSources(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return writeGitOpsSources(a.out, a.output, sources)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use: "sync <id>", Short: "Synchronize a GitOps source now", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := a.client()
+			if err != nil {
+				return err
+			}
+			gitopsClient, ok := client.(GitOpsClient)
+			if !ok {
+				return fmt.Errorf("client does not support GitOps")
+			}
+			source, err := gitopsClient.SyncGitOpsSource(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return writeGitOpsSources(a.out, a.output, []types.GitOpsSource{source})
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use: "delete <id>", Short: "Delete a GitOps source", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := a.client()
+			if err != nil {
+				return err
+			}
+			gitopsClient, ok := client.(GitOpsClient)
+			if !ok {
+				return fmt.Errorf("client does not support GitOps")
+			}
+			if err := gitopsClient.DeleteGitOpsSource(cmd.Context(), args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintf(a.out, "deleted GitOps source %s\n", args[0])
 			return nil
 		},
 	})

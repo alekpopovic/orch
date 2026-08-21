@@ -12,6 +12,7 @@ import (
 	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/events"
 	"github.com/alekpopovic/orch/internal/namespace"
+	"github.com/alekpopovic/orch/internal/quota"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -131,6 +132,25 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	if !service.Spec.Stateful {
 		t.Fatalf("expected stateful service to round trip")
 	}
+	if service.Spec.ImageMetadata.Digest == "" {
+		t.Fatalf("expected image metadata to round trip, got %#v", service.Spec.ImageMetadata)
+	}
+	if _, _, err := store.SetResourceQuota(ctx, types.ResourceQuota{MaxReplicas: 2}); err != nil {
+		t.Fatalf("set quota: %v", err)
+	}
+	overQuota := service.Spec
+	overQuota.Replicas = 3
+	if _, err := store.UpdateService(ctx, service.ID, overQuota, service.UpdatedAt); err == nil {
+		t.Fatal("expected quota rejection")
+	} else {
+		var quotaErr *quota.Error
+		if !errors.As(err, &quotaErr) || quotaErr.Resource != "replicas" {
+			t.Fatalf("expected replicas quota error, got %v", err)
+		}
+	}
+	if _, _, err := store.SetResourceQuota(ctx, types.ResourceQuota{}); err != nil {
+		t.Fatalf("reset quota: %v", err)
+	}
 	if _, err := store.CreateService(ctx, serviceSpecFixture()); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("expected duplicate service name, got %v", err)
 	}
@@ -158,16 +178,24 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 
 	task, err := store.CreateTask(ctx, types.Task{
-		ServiceID:     service.ID,
-		NodeID:        updatedNode.ID,
-		DesiredStatus: types.TaskRunning,
-		ActualStatus:  types.TaskPending,
-		Image:         service.Spec.Image,
-		Version:       service.DeploymentVersion,
-		Ports:         []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080}},
+		ServiceID:           service.ID,
+		NodeID:              updatedNode.ID,
+		DesiredStatus:       types.TaskRunning,
+		ActualStatus:        types.TaskPending,
+		Image:               service.Spec.Image,
+		RequestedImage:      service.Spec.Image,
+		ResolvedImageDigest: service.Spec.ImageMetadata.Digest,
+		ImageRegistry:       service.Spec.ImageMetadata.Registry,
+		ImageName:           service.Spec.ImageMetadata.Name,
+		ImageTag:            service.Spec.ImageMetadata.Tag,
+		Version:             service.DeploymentVersion,
+		Ports:               []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080}},
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+	}
+	if task.ResolvedImageDigest != service.Spec.ImageMetadata.Digest || task.ImageRegistry != "docker.io" {
+		t.Fatalf("expected task image metadata to round trip, got %#v", task)
 	}
 	assignedPorts := []types.Port{{Protocol: types.PortTCP, ContainerPort: 8080, PublishedPort: 18080}}
 	assigned, err := store.AssignTask(ctx, task.ID, updatedNode.ID, assignedPorts, task.UpdatedAt)
@@ -258,6 +286,71 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 	if auditLogs[0].Metadata["password"] != "[REDACTED]" || auditLogs[0].Metadata["name"] != service.Spec.Name {
 		t.Fatalf("unexpected audit metadata %#v", auditLogs[0].Metadata)
+	}
+
+	source, err := store.CreateGitOpsSource(ctx, types.GitOpsSource{RepositoryURL: "https://example.com/repo.git", Branch: "main", Path: "services", SyncInterval: time.Minute, Prune: true})
+	if err != nil {
+		t.Fatalf("create GitOps source: %v", err)
+	}
+	source.ManagedServices = []string{"web"}
+	source.LastRevision = "abc123"
+	source.LastSyncedAt = time.Now().UTC()
+	updatedSource, err := store.UpdateGitOpsSource(ctx, source)
+	if err != nil {
+		t.Fatalf("update GitOps source: %v", err)
+	}
+	listedSources, err := store.ListGitOpsSources(ctx)
+	if err != nil || len(listedSources) != 1 || updatedSource.LastRevision != "abc123" || len(updatedSource.ManagedServices) != 1 {
+		t.Fatalf("GitOps source did not round trip: updated=%#v listed=%#v err=%v", updatedSource, listedSources, err)
+	}
+	if err := store.DeleteGitOpsSource(ctx, source.ID); err != nil {
+		t.Fatalf("delete GitOps source: %v", err)
+	}
+
+	if _, err := store.CreateNamespace(ctx, "quota-test"); err != nil {
+		t.Fatalf("create quota test namespace: %v", err)
+	}
+	quotaCtx := namespace.WithContext(ctx, "quota-test")
+	firstSpec := serviceSpecFixture()
+	firstSpec.Name, firstSpec.Replicas = "first", 1
+	secondSpec := serviceSpecFixture()
+	secondSpec.Name, secondSpec.Replicas = "second", 1
+	first, err := store.CreateService(quotaCtx, firstSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateService(quotaCtx, secondSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.SetResourceQuota(quotaCtx, types.ResourceQuota{MaxReplicas: 3}); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 2)
+	for _, candidate := range []types.Service{first, second} {
+		go func(candidate types.Service) {
+			spec := candidate.Spec
+			spec.Replicas = 2
+			_, err := store.UpdateService(quotaCtx, candidate.ID, spec, candidate.UpdatedAt)
+			results <- err
+		}(candidate)
+	}
+	succeeded, denied := 0, 0
+	for range 2 {
+		err := <-results
+		if err == nil {
+			succeeded++
+			continue
+		}
+		var quotaErr *quota.Error
+		if errors.As(err, &quotaErr) {
+			denied++
+			continue
+		}
+		t.Fatalf("unexpected concurrent quota error: %v", err)
+	}
+	if succeeded != 1 || denied != 1 {
+		t.Fatalf("expected one quota-safe update and one denial, got success=%d denied=%d", succeeded, denied)
 	}
 }
 
@@ -408,8 +501,12 @@ func TestPostgresStoreConcurrentAssignTaskOnce(t *testing.T) {
 
 func serviceSpecFixture() types.ServiceSpec {
 	return types.ServiceSpec{
-		Name:     "web",
-		Image:    "nginx:1.27",
+		Name:  "web",
+		Image: "nginx:1.27",
+		ImageMetadata: types.ImageMetadata{
+			RequestedImage: "nginx:1.27", Registry: "docker.io", Name: "library/nginx", Tag: "1.27",
+			Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Pinned: true,
+		},
 		Stateful: true,
 		Replicas: 2,
 		Env: map[string]string{
@@ -481,6 +578,9 @@ func migrate(t *testing.T, ctx context.Context, pool execer) {
 		"000009_service_security_context.up.sql",
 		"000010_service_autoscaling.up.sql",
 		"000011_namespaces.up.sql",
+		"000012_resource_quotas.up.sql",
+		"000013_image_metadata.up.sql",
+		"000014_gitops_sources.up.sql",
 	} {
 		sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", file))
 		if err != nil {

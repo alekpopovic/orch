@@ -194,12 +194,17 @@ func (c *Controller) createNewTasks(ctx context.Context, deployment types.Deploy
 		var task types.Task
 		err := store.WithTx(ctx, c.store, func(txCtx context.Context, tx Store) error {
 			createdTask, err := tx.CreateTask(txCtx, types.Task{
-				Namespace:     service.Namespace,
-				ServiceID:     service.ID,
-				DesiredStatus: types.TaskRunning,
-				ActualStatus:  types.TaskPending,
-				Image:         service.Spec.Image,
-				Version:       deployment.ToVersion,
+				Namespace:           service.Namespace,
+				ServiceID:           service.ID,
+				DesiredStatus:       types.TaskRunning,
+				ActualStatus:        types.TaskPending,
+				Image:               service.Spec.EffectiveImage(),
+				RequestedImage:      service.Spec.ImageMetadata.RequestedImage,
+				ResolvedImageDigest: service.Spec.ImageMetadata.Digest,
+				ImageRegistry:       service.Spec.ImageMetadata.Registry,
+				ImageName:           service.Spec.ImageMetadata.Name,
+				ImageTag:            service.Spec.ImageMetadata.Tag,
+				Version:             deployment.ToVersion,
 			})
 			if err != nil {
 				return err

@@ -45,6 +45,12 @@ func TestRootCommandConstruction(t *testing.T) {
 		"namespace ls",
 		"namespace create",
 		"namespace delete",
+		"quota get",
+		"quota set",
+		"gitops add",
+		"gitops ls",
+		"gitops sync",
+		"gitops delete",
 	} {
 		if _, _, err := root.Find(strings.Fields(path)); err != nil {
 			t.Fatalf("expected command %q: %v", path, err)
@@ -420,6 +426,31 @@ func (f *fakeClient) ListNamespaces(context.Context) ([]types.Namespace, error) 
 }
 
 func (f *fakeClient) DeleteNamespace(context.Context, string) error { return nil }
+
+func (f *fakeClient) GetResourceQuota(context.Context) (types.ResourceQuota, types.ResourceUsage, error) {
+	return types.ResourceQuota{Namespace: f.namespace}, types.ResourceUsage{}, nil
+}
+
+func (f *fakeClient) SetResourceQuota(_ context.Context, value types.ResourceQuota) (types.ResourceQuota, types.ResourceUsage, error) {
+	value.Namespace = f.namespace
+	return value, types.ResourceUsage{}, nil
+}
+
+func (f *fakeClient) CreateGitOpsSource(_ context.Context, source types.GitOpsSource) (types.GitOpsSource, error) {
+	source.ID = "00000000-0000-4000-8000-000000000040"
+	source.Namespace = f.namespace
+	return source, nil
+}
+
+func (f *fakeClient) ListGitOpsSources(context.Context) ([]types.GitOpsSource, error) {
+	return nil, nil
+}
+
+func (f *fakeClient) SyncGitOpsSource(_ context.Context, id string) (types.GitOpsSource, error) {
+	return types.GitOpsSource{ID: id, Namespace: f.namespace}, nil
+}
+
+func (f *fakeClient) DeleteGitOpsSource(context.Context, string) error { return nil }
 
 func (f *fakeClient) ListNodes(context.Context) ([]types.Node, error) {
 	return []types.Node{{ID: "00000000-0000-4000-8000-000000000001", Hostname: "node-1", Status: types.NodeReady}}, nil

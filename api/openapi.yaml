@@ -77,6 +77,92 @@ paths:
       responses:
         "204":
           description: Namespace deleted
+  /v1/quota:
+    get:
+      summary: Get namespace quota and usage
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+      responses:
+        "200":
+          description: Quota and current usage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceQuotaResponse"
+    put:
+      summary: Set namespace quota
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResourceQuota"
+      responses:
+        "200":
+          description: Updated quota and usage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceQuotaResponse"
+        "409":
+          description: Existing usage exceeds the requested quota
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/gitops/sources:
+    get:
+      summary: List namespace GitOps sources
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+      responses:
+        "200":
+          description: GitOps sources
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListGitOpsSourcesResponse"
+    post:
+      summary: Create a GitOps source
+      parameters:
+        - $ref: "#/components/parameters/Namespace"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGitOpsSourceRequest"
+      responses:
+        "201":
+          description: Created GitOps source
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitOpsSourceResponse"
+  /v1/gitops/sources/{id}:
+    delete:
+      summary: Delete a GitOps source
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/Namespace"
+      responses:
+        "204":
+          description: GitOps source deleted
+  /v1/gitops/sources/{id}/sync:
+    post:
+      summary: Synchronize a GitOps source now
+      parameters:
+        - $ref: "#/components/parameters/ID"
+        - $ref: "#/components/parameters/Namespace"
+      responses:
+        "200":
+          description: Synchronized GitOps source
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitOpsSourceResponse"
   /v1/nodes:
     get:
       summary: List nodes
@@ -564,7 +650,7 @@ components:
       properties:
         code:
           type: string
-          enum: [not_found, invalid_argument, conflict, unauthorized, forbidden, failed_precondition, unavailable, internal]
+          enum: [not_found, invalid_argument, conflict, quota_exceeded, unauthorized, forbidden, failed_precondition, unavailable, internal]
         message:
           type: string
         request_id:
@@ -588,6 +674,56 @@ components:
           $ref: "#/components/schemas/ResourceQuantity"
         limits:
           $ref: "#/components/schemas/ResourceQuantity"
+    ResourceQuota:
+      type: object
+      properties:
+        namespace:
+          type: string
+        max_services:
+          type: integer
+        max_replicas:
+          type: integer
+        max_cpu_millicores:
+          type: integer
+          format: int64
+        max_memory_bytes:
+          type: integer
+          format: int64
+        max_public_ports:
+          type: integer
+        max_secrets:
+          type: integer
+        max_registry_credentials:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+    ResourceUsage:
+      type: object
+      properties:
+        services: {type: integer}
+        replicas: {type: integer}
+        cpu_millicores: {type: integer, format: int64}
+        memory_bytes: {type: integer, format: int64}
+        public_ports: {type: integer}
+        secrets: {type: integer}
+        registry_credentials: {type: integer}
+    ResourceQuotaResponse:
+      type: object
+      properties:
+        quota:
+          $ref: "#/components/schemas/ResourceQuota"
+        usage:
+          $ref: "#/components/schemas/ResourceUsage"
+    ImageMetadata:
+      type: object
+      properties:
+        requested_image: {type: string}
+        digest: {type: string}
+        registry: {type: string}
+        name: {type: string}
+        tag: {type: string}
+        pinned: {type: boolean}
     Port:
       type: object
       properties:
@@ -677,6 +813,8 @@ components:
           type: string
         image:
           type: string
+        image_metadata:
+          $ref: "#/components/schemas/ImageMetadata"
         image_pull_secret:
           type: string
         stateful:
@@ -750,6 +888,16 @@ components:
         actual_status:
           type: string
         image:
+          type: string
+        requested_image:
+          type: string
+        resolved_image_digest:
+          type: string
+        image_registry:
+          type: string
+        image_name:
+          type: string
+        image_tag:
           type: string
         version:
           type: integer
@@ -855,6 +1003,50 @@ components:
       properties:
         spec:
           $ref: "#/components/schemas/ServiceSpec"
+    CreateGitOpsSourceRequest:
+      type: object
+      required: [repository_url, sync_interval]
+      properties:
+        repository_url: {type: string}
+        branch: {type: string, default: main}
+        path: {type: string, default: .}
+        sync_interval:
+          type: string
+          example: 1m
+        prune: {type: boolean}
+    GitOpsSource:
+      type: object
+      properties:
+        id: {type: string}
+        namespace: {type: string}
+        repository_url: {type: string}
+        branch: {type: string}
+        path: {type: string}
+        sync_interval:
+          type: integer
+          format: int64
+          description: Sync interval in nanoseconds.
+        prune: {type: boolean}
+        managed_services:
+          type: array
+          items: {type: string}
+        last_revision: {type: string}
+        last_error: {type: string}
+        last_synced_at: {type: string, format: date-time}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    GitOpsSourceResponse:
+      type: object
+      properties:
+        source:
+          $ref: "#/components/schemas/GitOpsSource"
+    ListGitOpsSourcesResponse:
+      type: object
+      properties:
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/GitOpsSource"
     ScaleServiceRequest:
       type: object
       required: [replicas]

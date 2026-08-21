@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -14,8 +15,11 @@ import (
 	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/gitops"
+	imageinfo "github.com/alekpopovic/orch/internal/image"
 	"github.com/alekpopovic/orch/internal/namespace"
 	"github.com/alekpopovic/orch/internal/policy"
+	"github.com/alekpopovic/orch/internal/quota"
 	"github.com/alekpopovic/orch/internal/secrets"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -25,6 +29,13 @@ type Service interface {
 	CreateNamespace(ctx context.Context, name string) (types.Namespace, error)
 	ListNamespaces(ctx context.Context) ([]types.Namespace, error)
 	DeleteNamespace(ctx context.Context, name string) error
+	GetResourceQuota(ctx context.Context) (types.ResourceQuota, types.ResourceUsage, error)
+	SetResourceQuota(ctx context.Context, value types.ResourceQuota) (types.ResourceQuota, types.ResourceUsage, error)
+	CreateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error)
+	ListGitOpsSources(ctx context.Context) ([]types.GitOpsSource, error)
+	GetGitOpsSource(ctx context.Context, id string) (types.GitOpsSource, error)
+	UpdateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error)
+	DeleteGitOpsSource(ctx context.Context, id string) error
 	RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error)
 	HeartbeatNode(ctx context.Context, heartbeat NodeHeartbeat) (NodeCommand, error)
 	MarkStaleNodesOffline(ctx context.Context, timeout time.Duration) ([]types.Node, error)
@@ -45,6 +56,7 @@ type Service interface {
 	ListRegistryCredentials(ctx context.Context) ([]types.RegistryCredentialMetadata, error)
 	DeleteRegistryCredential(ctx context.Context, id string) error
 	CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error)
+	ApplyService(ctx context.Context, spec types.ServiceSpec) (types.Service, error)
 	ListServices(ctx context.Context) ([]types.Service, error)
 	GetService(ctx context.Context, id types.ServiceID) (types.Service, error)
 	DeleteService(ctx context.Context, id types.ServiceID) error
@@ -148,21 +160,24 @@ type RolloutSpec struct {
 }
 
 type MemoryService struct {
-	mu          sync.RWMutex
-	nodes       map[types.NodeID]types.Node
-	services    map[types.ServiceID]types.Service
-	versions    map[types.ServiceID]map[int64]types.ServiceSpec
-	tasks       map[types.TaskID]types.Task
-	deployments map[types.DeploymentID]types.Deployment
-	secrets     map[string]types.Secret
-	registries  map[string]types.RegistryCredential
-	envelope    secrets.Envelope
-	policy      policy.ClusterPolicy
-	events      []types.Event
-	auditLogs   []audit.Log
-	namespaces  map[string]types.Namespace
-	now         func() time.Time
-	admission   *admission.Controller
+	mu            sync.RWMutex
+	nodes         map[types.NodeID]types.Node
+	services      map[types.ServiceID]types.Service
+	versions      map[types.ServiceID]map[int64]types.ServiceSpec
+	tasks         map[types.TaskID]types.Task
+	deployments   map[types.DeploymentID]types.Deployment
+	secrets       map[string]types.Secret
+	registries    map[string]types.RegistryCredential
+	quotas        map[string]types.ResourceQuota
+	gitops        map[string]types.GitOpsSource
+	envelope      secrets.Envelope
+	policy        policy.ClusterPolicy
+	events        []types.Event
+	auditLogs     []audit.Log
+	namespaces    map[string]types.Namespace
+	now           func() time.Time
+	admission     *admission.Controller
+	imageResolver imageinfo.Resolver
 }
 
 type Option func(*MemoryService)
@@ -181,21 +196,32 @@ func WithClusterPolicy(clusterPolicy policy.ClusterPolicy) Option {
 	}
 }
 
+func WithImageResolver(resolver imageinfo.Resolver) Option {
+	return func(service *MemoryService) {
+		if resolver != nil {
+			service.imageResolver = resolver
+		}
+	}
+}
+
 func NewMemoryService(opts ...Option) *MemoryService {
 	now := func() time.Time { return time.Now().UTC() }
 	envelope, _ := secrets.NewLocalEnvelope("dev-secret-key-change-me")
 	service := &MemoryService{
-		nodes:       make(map[types.NodeID]types.Node),
-		services:    make(map[types.ServiceID]types.Service),
-		versions:    make(map[types.ServiceID]map[int64]types.ServiceSpec),
-		tasks:       make(map[types.TaskID]types.Task),
-		deployments: make(map[types.DeploymentID]types.Deployment),
-		secrets:     make(map[string]types.Secret),
-		registries:  make(map[string]types.RegistryCredential),
-		namespaces:  make(map[string]types.Namespace),
-		envelope:    envelope,
-		policy:      policy.DefaultClusterPolicy(),
-		now:         now,
+		nodes:         make(map[types.NodeID]types.Node),
+		services:      make(map[types.ServiceID]types.Service),
+		versions:      make(map[types.ServiceID]map[int64]types.ServiceSpec),
+		tasks:         make(map[types.TaskID]types.Task),
+		deployments:   make(map[types.DeploymentID]types.Deployment),
+		secrets:       make(map[string]types.Secret),
+		registries:    make(map[string]types.RegistryCredential),
+		quotas:        make(map[string]types.ResourceQuota),
+		gitops:        make(map[string]types.GitOpsSource),
+		namespaces:    make(map[string]types.Namespace),
+		envelope:      envelope,
+		policy:        policy.DefaultClusterPolicy(),
+		imageResolver: imageinfo.ParserResolver{},
+		now:           now,
 	}
 	for _, opt := range opts {
 		opt(service)
@@ -285,7 +311,136 @@ func (s *MemoryService) DeleteNamespace(ctx context.Context, name string) error 
 			return fmt.Errorf("%w: namespace %q is not empty", store.ErrConflict, name)
 		}
 	}
+	for _, source := range s.gitops {
+		if source.Namespace == name {
+			return fmt.Errorf("%w: namespace %q is not empty", store.ErrConflict, name)
+		}
+	}
 	delete(s.namespaces, name)
+	delete(s.quotas, name)
+	return nil
+}
+
+func (s *MemoryService) GetResourceQuota(ctx context.Context) (types.ResourceQuota, types.ResourceUsage, error) {
+	if err := ctx.Err(); err != nil {
+		return types.ResourceQuota{}, types.ResourceUsage{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	namespaceName := namespace.FromContext(ctx)
+	if _, ok := s.namespaces[namespaceName]; !ok {
+		return types.ResourceQuota{}, types.ResourceUsage{}, store.ErrNotFound
+	}
+	value := s.quotas[namespaceName]
+	value.Namespace = namespaceName
+	return value, s.resourceUsageLocked(namespaceName, "", nil), nil
+}
+
+func (s *MemoryService) SetResourceQuota(ctx context.Context, value types.ResourceQuota) (types.ResourceQuota, types.ResourceUsage, error) {
+	if err := ctx.Err(); err != nil {
+		return types.ResourceQuota{}, types.ResourceUsage{}, err
+	}
+	value.Namespace = namespace.FromContext(ctx)
+	if err := quota.Validate(value); err != nil {
+		return types.ResourceQuota{}, types.ResourceUsage{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.namespaces[value.Namespace]; !ok {
+		return types.ResourceQuota{}, types.ResourceUsage{}, store.ErrNotFound
+	}
+	usage := s.resourceUsageLocked(value.Namespace, "", nil)
+	if err := quota.Check(value, usage); err != nil {
+		return types.ResourceQuota{}, usage, err
+	}
+	value.UpdatedAt = s.now()
+	s.quotas[value.Namespace] = value
+	return value, usage, nil
+}
+
+func (s *MemoryService) CreateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error) {
+	if err := ctx.Err(); err != nil {
+		return types.GitOpsSource{}, err
+	}
+	source.Namespace = namespace.FromContext(ctx)
+	source.RepositoryURL = strings.TrimSpace(source.RepositoryURL)
+	source.Branch = strings.TrimSpace(source.Branch)
+	source.Path = strings.TrimSpace(source.Path)
+	if source.RepositoryURL == "" || source.SyncInterval <= 0 {
+		return types.GitOpsSource{}, fmt.Errorf("%w: repository_url and positive sync_interval are required", store.ErrInvalidState)
+	}
+	if source.Branch == "" {
+		source.Branch = "main"
+	}
+	if source.Path == "" {
+		source.Path = "."
+	}
+	if err := gitops.ValidateSource(source); err != nil {
+		return types.GitOpsSource{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.namespaces[source.Namespace]; !ok {
+		return types.GitOpsSource{}, store.ErrNotFound
+	}
+	source.ID = newUUID()
+	now := s.now()
+	source.CreatedAt, source.UpdatedAt = now, now
+	s.gitops[source.ID] = source
+	return source, nil
+}
+
+func (s *MemoryService) ListGitOpsSources(ctx context.Context) ([]types.GitOpsSource, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	items := make([]types.GitOpsSource, 0)
+	for _, source := range s.gitops {
+		if namespace.Matches(ctx, source.Namespace) {
+			items = append(items, source)
+		}
+	}
+	slices.SortFunc(items, func(a, b types.GitOpsSource) int { return strings.Compare(a.ID, b.ID) })
+	return items, nil
+}
+
+func (s *MemoryService) GetGitOpsSource(ctx context.Context, id string) (types.GitOpsSource, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	source, ok := s.gitops[strings.TrimSpace(id)]
+	if !ok || !namespace.Matches(ctx, source.Namespace) {
+		return types.GitOpsSource{}, store.ErrNotFound
+	}
+	return source, nil
+}
+
+func (s *MemoryService) UpdateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error) {
+	if err := ctx.Err(); err != nil {
+		return types.GitOpsSource{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.gitops[source.ID]
+	if !ok || !namespace.Matches(ctx, existing.Namespace) {
+		return types.GitOpsSource{}, store.ErrNotFound
+	}
+	source.Namespace = existing.Namespace
+	source.CreatedAt = existing.CreatedAt
+	source.UpdatedAt = s.now()
+	s.gitops[source.ID] = source
+	return source, nil
+}
+
+func (s *MemoryService) DeleteGitOpsSource(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	source, ok := s.gitops[strings.TrimSpace(id)]
+	if !ok || !namespace.Matches(ctx, source.Namespace) {
+		return store.ErrNotFound
+	}
+	delete(s.gitops, source.ID)
 	return nil
 }
 
@@ -788,6 +943,11 @@ func (s *MemoryService) CreateSecret(ctx context.Context, name string, plaintext
 		s.secrets[key] = existing
 		return existing.Metadata(), nil
 	}
+	usage := s.resourceUsageLocked(namespaceName, "", nil)
+	usage.Secrets++
+	if err := quota.Check(s.quotaLocked(namespaceName), usage); err != nil {
+		return types.SecretMetadata{}, err
+	}
 	secret := types.Secret{
 		Name:           name,
 		Namespace:      namespaceName,
@@ -902,6 +1062,11 @@ func (s *MemoryService) CreateRegistryCredential(ctx context.Context, spec Regis
 		s.registries[key] = existing
 		return existing.Metadata(), nil
 	}
+	usage := s.resourceUsageLocked(namespaceName, "", nil)
+	usage.RegistryCredentials++
+	if err := quota.Check(s.quotaLocked(namespaceName), usage); err != nil {
+		return types.RegistryCredentialMetadata{}, err
+	}
 	credential := types.RegistryCredential{
 		ID:                spec.ID,
 		Namespace:         namespaceName,
@@ -965,6 +1130,12 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 	if err := ctx.Err(); err != nil {
 		return types.Service{}, err
 	}
+	resolved, err := s.imageResolver.Resolve(ctx, spec.Image)
+	if err != nil {
+		return types.Service{}, fmt.Errorf("%w: resolve image: %v", store.ErrInvalidState, err)
+	}
+	resolved.Pinned = s.policy.RequireDigest
+	spec.ImageMetadata = resolved
 	if err := spec.Validate(); err != nil {
 		return types.Service{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
 	}
@@ -1005,6 +1176,10 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 		}
 		spec.ImagePullSecret = imagePullSecret
 	}
+	usage := s.resourceUsageLocked(namespaceName, "", &spec)
+	if err := quota.Check(s.quotaLocked(namespaceName), usage); err != nil {
+		return types.Service{}, err
+	}
 
 	now := s.now()
 	service := types.Service{
@@ -1021,6 +1196,77 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 	s.reconcileServiceTasksLocked(service, now)
 	s.appendEventLocked(events.TypeServiceCreated, types.EventInfo, "controlplane", "service created", "service", string(service.ID), now)
 	return service, nil
+}
+
+func (s *MemoryService) ApplyService(ctx context.Context, spec types.ServiceSpec) (types.Service, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Service{}, err
+	}
+	namespaceName := namespace.FromContext(ctx)
+	s.mu.RLock()
+	var existing types.Service
+	for _, service := range s.services {
+		if service.Namespace == namespaceName && service.Spec.Name == strings.TrimSpace(spec.Name) {
+			existing = service
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if existing.ID == "" {
+		return s.CreateService(ctx, spec)
+	}
+	resolved, err := s.imageResolver.Resolve(ctx, spec.Image)
+	if err != nil {
+		return types.Service{}, fmt.Errorf("%w: resolve image: %v", store.ErrInvalidState, err)
+	}
+	resolved.Pinned = s.policy.RequireDigest
+	spec.ImageMetadata = resolved
+	if err := s.admission.Admit(ctx, admission.Request{Actor: admissionActor(ctx), Operation: admission.OperationUpdate, Namespace: namespaceName, Spec: spec, Policy: s.policy}); err != nil {
+		return types.Service{}, err
+	}
+	normalized, err := types.NormalizeServiceSpec(spec, types.DefaultResourceDefaults())
+	if err != nil {
+		return types.Service{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	if err := normalized.Validate(); err != nil {
+		return types.Service{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.services[existing.ID]
+	if !ok || existing.Namespace != namespaceName || (existing.Status != types.ServiceActive && existing.Status != types.ServiceDeleted) {
+		return types.Service{}, store.ErrConflict
+	}
+	if existing.Status == types.ServiceActive && reflect.DeepEqual(existing.Spec, normalized) {
+		return existing, nil
+	}
+	if active := s.activeDeploymentLocked(existing.ID); active.ID != "" {
+		return types.Service{}, operationConflict(string(operationForDeployment(active)))
+	}
+	for _, ref := range normalized.SecretRefs {
+		if _, ok := s.secrets[namespacedKey(namespaceName, ref.Name)]; !ok {
+			return types.Service{}, fmt.Errorf("%w: referenced secret %q not found", store.ErrInvalidState, ref.Name)
+		}
+	}
+	if imagePullSecret := strings.TrimSpace(normalized.ImagePullSecret); imagePullSecret != "" {
+		if _, ok := s.registries[namespacedKey(namespaceName, imagePullSecret)]; !ok {
+			return types.Service{}, fmt.Errorf("%w: registry credential %q not found", store.ErrInvalidState, imagePullSecret)
+		}
+	}
+	usage := s.resourceUsageLocked(namespaceName, existing.ID, &normalized)
+	if err := quota.Check(s.quotaLocked(namespaceName), usage); err != nil {
+		return types.Service{}, err
+	}
+	now := s.now()
+	existing.Spec = normalized
+	existing.Status = types.ServiceActive
+	existing.DeploymentVersion++
+	existing.UpdatedAt = now
+	s.services[existing.ID] = existing
+	s.storeServiceVersionLocked(existing.ID, existing.DeploymentVersion, normalized)
+	s.reconcileServiceTasksLocked(existing, now)
+	s.appendEventLocked(events.TypeServiceUpdated, types.EventInfo, "gitops", "service applied", "service", string(existing.ID), now)
+	return existing, nil
 }
 
 func (s *MemoryService) ListServices(ctx context.Context) ([]types.Service, error) {
@@ -1140,6 +1386,10 @@ func (s *MemoryService) ScaleService(ctx context.Context, id types.ServiceID, re
 	}
 	candidate = service.Spec
 	candidate.Replicas = replicas
+	usage := s.resourceUsageLocked(service.Namespace, service.ID, &candidate)
+	if err := quota.Check(s.quotaLocked(service.Namespace), usage); err != nil {
+		return types.Service{}, err
+	}
 	service.Spec = candidate
 	service.UpdatedAt = s.now()
 	s.services[id] = service
@@ -1165,6 +1415,11 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 	if spec.MaxUnavailable == 0 && spec.MaxSurge == 0 {
 		return types.Deployment{}, fmt.Errorf("%w: maxUnavailable and maxSurge cannot both be zero", store.ErrInvalidState)
 	}
+	resolved, err := s.imageResolver.Resolve(ctx, spec.Image)
+	if err != nil {
+		return types.Deployment{}, fmt.Errorf("%w: resolve image: %v", store.ErrInvalidState, err)
+	}
+	resolved.Pinned = s.policy.RequireDigest
 
 	s.mu.RLock()
 	service, ok := s.services[id]
@@ -1175,6 +1430,7 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 	s.mu.RUnlock()
 	candidate := service.Spec
 	candidate.Image = spec.Image
+	candidate.ImageMetadata = resolved
 	if err := s.admission.Admit(ctx, admission.Request{
 		Actor: admissionActor(ctx), Operation: admission.OperationRollout,
 		Namespace: service.Namespace, Spec: candidate, Policy: s.policy,
@@ -1194,6 +1450,7 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 	if active := s.activeDeploymentLocked(id); active.ID != "" {
 		if operationForDeployment(active) == serviceOperationRollout &&
 			service.Spec.Image == spec.Image &&
+			service.Spec.ImageMetadata.Digest == resolved.Digest &&
 			active.MaxUnavailable == spec.MaxUnavailable &&
 			active.MaxSurge == spec.MaxSurge {
 			return active, nil
@@ -1203,6 +1460,7 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 	now := s.now()
 	fromVersion := service.DeploymentVersion
 	service.Spec.Image = spec.Image
+	service.Spec.ImageMetadata = resolved
 	service.DeploymentVersion++
 	service.UpdatedAt = now
 	s.services[id] = service
@@ -1743,6 +2001,48 @@ func namespacedKey(namespaceName string, name string) string {
 	return namespace.Normalize(namespaceName) + "\x00" + strings.TrimSpace(name)
 }
 
+func (s *MemoryService) quotaLocked(namespaceName string) types.ResourceQuota {
+	value := s.quotas[namespaceName]
+	value.Namespace = namespaceName
+	return value
+}
+
+func (s *MemoryService) resourceUsageLocked(namespaceName string, replaceID types.ServiceID, replacement *types.ServiceSpec) types.ResourceUsage {
+	var usage types.ResourceUsage
+	for _, service := range s.services {
+		if service.Namespace != namespaceName || service.Status == types.ServiceDeleted || service.ID == replaceID {
+			continue
+		}
+		addServiceUsage(&usage, service.Spec)
+	}
+	if replacement != nil {
+		addServiceUsage(&usage, *replacement)
+	}
+	for _, secret := range s.secrets {
+		if secret.Namespace == namespaceName {
+			usage.Secrets++
+		}
+	}
+	for _, credential := range s.registries {
+		if credential.Namespace == namespaceName {
+			usage.RegistryCredentials++
+		}
+	}
+	return usage
+}
+
+func addServiceUsage(usage *types.ResourceUsage, spec types.ServiceSpec) {
+	usage.Services++
+	usage.Replicas += spec.Replicas
+	usage.CPUMillicores += spec.ResourceRequirements.Requests.CPU * int64(spec.Replicas)
+	usage.MemoryBytes += spec.ResourceRequirements.Requests.Memory * int64(spec.Replicas)
+	for _, port := range spec.Ports {
+		if port.PublishedPort > 0 {
+			usage.PublicPorts++
+		}
+	}
+}
+
 func admissionActor(ctx context.Context) admission.Actor {
 	principal, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
@@ -1818,7 +2118,7 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 		if !countsTowardDesiredReplicas(task) {
 			continue
 		}
-		if task.Image != service.Spec.Image || task.Version != service.DeploymentVersion {
+		if task.Image != service.Spec.EffectiveImage() || task.Version != service.DeploymentVersion {
 			if err := types.ValidateTaskDesiredTransition(task.DesiredStatus, types.TaskRemoved); err != nil {
 				continue
 			}
@@ -1839,17 +2139,22 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 	for len(active) < service.Spec.Replicas {
 		node := nodes[len(active)%len(nodes)]
 		task := types.Task{
-			ID:            types.TaskID(newUUID()),
-			Namespace:     service.Namespace,
-			ServiceID:     service.ID,
-			NodeID:        node.ID,
-			DesiredStatus: types.TaskRunning,
-			ActualStatus:  types.TaskAssigned,
-			Image:         service.Spec.Image,
-			Version:       service.DeploymentVersion,
-			Ports:         s.assignPortsForNodeLocked(service.Spec.Ports, node.ID),
-			CreatedAt:     timestamp,
-			UpdatedAt:     timestamp,
+			ID:                  types.TaskID(newUUID()),
+			Namespace:           service.Namespace,
+			ServiceID:           service.ID,
+			NodeID:              node.ID,
+			DesiredStatus:       types.TaskRunning,
+			ActualStatus:        types.TaskAssigned,
+			Image:               service.Spec.EffectiveImage(),
+			RequestedImage:      service.Spec.ImageMetadata.RequestedImage,
+			ResolvedImageDigest: service.Spec.ImageMetadata.Digest,
+			ImageRegistry:       service.Spec.ImageMetadata.Registry,
+			ImageName:           service.Spec.ImageMetadata.Name,
+			ImageTag:            service.Spec.ImageMetadata.Tag,
+			Version:             service.DeploymentVersion,
+			Ports:               s.assignPortsForNodeLocked(service.Spec.Ports, node.ID),
+			CreatedAt:           timestamp,
+			UpdatedAt:           timestamp,
 		}
 		s.tasks[task.ID] = task
 		active = append(active, task)
@@ -1918,17 +2223,22 @@ func (s *MemoryService) reconcileNodeDrainLocked(nodeID types.NodeID, timestamp 
 		for len(offNodeActive) < service.Spec.Replicas {
 			node := readyNodes[len(offNodeActive)%len(readyNodes)]
 			task := types.Task{
-				ID:            types.TaskID(newUUID()),
-				Namespace:     service.Namespace,
-				ServiceID:     service.ID,
-				NodeID:        node.ID,
-				DesiredStatus: types.TaskRunning,
-				ActualStatus:  types.TaskAssigned,
-				Image:         service.Spec.Image,
-				Version:       service.DeploymentVersion,
-				Ports:         s.assignPortsForNodeLocked(service.Spec.Ports, node.ID),
-				CreatedAt:     timestamp,
-				UpdatedAt:     timestamp,
+				ID:                  types.TaskID(newUUID()),
+				Namespace:           service.Namespace,
+				ServiceID:           service.ID,
+				NodeID:              node.ID,
+				DesiredStatus:       types.TaskRunning,
+				ActualStatus:        types.TaskAssigned,
+				Image:               service.Spec.EffectiveImage(),
+				RequestedImage:      service.Spec.ImageMetadata.RequestedImage,
+				ResolvedImageDigest: service.Spec.ImageMetadata.Digest,
+				ImageRegistry:       service.Spec.ImageMetadata.Registry,
+				ImageName:           service.Spec.ImageMetadata.Name,
+				ImageTag:            service.Spec.ImageMetadata.Tag,
+				Version:             service.DeploymentVersion,
+				Ports:               s.assignPortsForNodeLocked(service.Spec.Ports, node.ID),
+				CreatedAt:           timestamp,
+				UpdatedAt:           timestamp,
 			}
 			s.tasks[task.ID] = task
 			offNodeActive = append(offNodeActive, task)

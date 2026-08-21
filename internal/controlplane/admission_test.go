@@ -13,6 +13,7 @@ import (
 
 func TestAdmissionCannotBeBypassedByScaleOrRollout(t *testing.T) {
 	service := NewMemoryService(WithClusterPolicy(policy.ClusterPolicy{
+		AllowMutableTags:      true,
 		MaxReplicasPerService: 2,
 		BlockLatestTag:        true,
 	}))
