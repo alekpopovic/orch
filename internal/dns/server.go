@@ -23,7 +23,11 @@ type Metrics struct {
 	queries atomic.Uint64
 	errors  atomic.Uint64
 }
-type MetricsRecorder interface { IncDNSQuery(); IncDNSError() }
+type MetricsRecorder interface {
+	IncDNSQuery()
+	IncDNSError()
+}
+
 func (m *Metrics) IncDNSQuery() { m.queries.Add(1) }
 func (m *Metrics) IncDNSError() { m.errors.Add(1) }
 

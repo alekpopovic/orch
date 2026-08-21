@@ -200,7 +200,7 @@ func (s *MemoryService) updateJobForTaskLocked(task types.Task) {
 			job.Status = types.JobSucceeded
 			job.CompletedAt = now
 		} else {
-			s.retryOrFailJobLocked(&job, task, code, now)
+			s.retryOrFailJobLocked(&job, task, now)
 		}
 	case types.TaskFailed:
 		code := 1
@@ -208,13 +208,13 @@ func (s *MemoryService) updateJobForTaskLocked(task types.Task) {
 			code = *task.ExitCode
 		}
 		job.LastExitCode = &code
-		s.retryOrFailJobLocked(&job, task, code, now)
+		s.retryOrFailJobLocked(&job, task, now)
 	}
 	job.UpdatedAt = now
 	s.jobs[job.ID] = job
 }
 
-func (s *MemoryService) retryOrFailJobLocked(job *types.Job, previous types.Task, code int, now time.Time) {
+func (s *MemoryService) retryOrFailJobLocked(job *types.Job, previous types.Task, now time.Time) {
 	if job.Attempts > job.Spec.BackoffLimit {
 		job.Status = types.JobFailed
 		job.CompletedAt = now

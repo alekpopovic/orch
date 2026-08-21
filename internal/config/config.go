@@ -768,7 +768,7 @@ func (cfg AgentConfig) Validate() error {
 		return fmt.Errorf("agent registration token is required")
 	}
 	if cfg.DockerSocketPath == "" {
-		return fmt.Errorf("Docker socket path is required")
+		return fmt.Errorf("docker socket path is required")
 	}
 	if cfg.HeartbeatInterval <= 0 {
 		return fmt.Errorf("heartbeat interval must be positive")

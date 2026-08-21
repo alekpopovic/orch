@@ -1,19 +1,43 @@
+version: "2"
 run:
-  timeout: 5m
   tests: true
-
 linters:
   enable:
-    - errcheck
-    - gofmt
-    - govet
-    - ineffassign
     - misspell
     - revive
-    - staticcheck
     - unconvert
-    - unused
-
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+    rules:
+      - path: _test\.go
+        linters:
+          - revive
+        text: context-as-argument
+      - path: internal/docker/
+        linters:
+          - staticcheck
+        text: SA1019
+      - linters:
+          - staticcheck
+        text: QF[0-9]+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

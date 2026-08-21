@@ -551,11 +551,11 @@ func (r *Runner) healthJitter(interval time.Duration) time.Duration {
 	if interval <= 0 {
 		return 0
 	}
-	max := interval / 5
-	if max <= 0 {
+	maximum := interval / 5
+	if maximum <= 0 {
 		return 0
 	}
-	return time.Duration(r.rand.Int63n(int64(max)))
+	return time.Duration(r.rand.Int63n(int64(maximum)))
 }
 
 func healthProbe(check types.Healthcheck, ports []types.Port) (health.Check, bool) {

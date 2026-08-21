@@ -140,7 +140,8 @@ func TestFakeRuntimeStreamLogsCanBlockUntilContextCancellation(t *testing.T) {
 		t.Fatal("expected stream logs to start")
 	}
 	cancel()
-	for range lines {
+	for line := range lines {
+		_ = line
 	}
 	for err := range errs {
 		if err != nil {

@@ -246,7 +246,7 @@ type HealthResponse struct {
 	Time   time.Time `json:"time"`
 }
 
-type APIVersionResponse struct {
+type VersionResponse struct {
 	APIVersion                string `json:"api_version"`
 	ServerVersion             string `json:"server_version"`
 	MinimumAgentVersion       string `json:"minimum_agent_version"`
@@ -443,7 +443,7 @@ func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) apiVersion(w http.ResponseWriter, _ *http.Request) {
 	info := versioninfo.Info()
-	writeJSON(w, http.StatusOK, APIVersionResponse{
+	writeJSON(w, http.StatusOK, VersionResponse{
 		APIVersion: info.APIVersion, ServerVersion: info.ServerVersion,
 		MinimumAgentVersion: info.MinimumAgentVersion, MaximumTestedAgentVersion: info.MaximumTestedAgentVersion,
 		DatabaseSchemaVersion: info.DatabaseSchemaVersion, MinimumSchemaVersion: info.MinimumSchemaVersion,
@@ -1159,7 +1159,7 @@ func (s *Server) traefikConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	endpointSets := discovery.BuildAllServiceEndpoints(services, tasks, nodes, false)
-	writeJSON(w, http.StatusOK, TraefikConfigResponse(traefik.BuildConfig(services, endpointSets)))
+	writeJSON(w, http.StatusOK, traefik.BuildConfig(services, endpointSets))
 }
 
 func (s *Server) discoverySnapshot(ctx context.Context) ([]types.Service, []types.Task, []types.Node, error) {
@@ -1443,7 +1443,7 @@ func (s *Server) accessLogMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func metricRoute(method string, path string) (string, bool) {
+func metricRoute(_ string, path string) (string, bool) {
 	if path == "/metrics" {
 		return "", false
 	}
@@ -1868,11 +1868,6 @@ func sourceIP(r *http.Request) string {
 		return host
 	}
 	return strings.TrimSpace(r.RemoteAddr)
-}
-
-func errorStatus(err error) (int, string) {
-	status, code, _, _ := errorAttributes(err)
-	return status, string(code)
 }
 
 func errorAttributes(err error) (int, apperrors.Code, string, map[string]any) {

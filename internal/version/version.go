@@ -36,12 +36,12 @@ func CheckAgent(value string) (Compatibility, error) {
 	if err != nil {
 		return "", err
 	}
-	min, _ := parse(MinimumAgent)
-	max, _ := parse(MaximumTestedAgent)
-	if compare(v, min) < 0 {
+	minimum, _ := parse(MinimumAgent)
+	maximum, _ := parse(MaximumTestedAgent)
+	if compare(v, minimum) < 0 {
 		return TooOld, nil
 	}
-	if compare(v, max) > 0 {
+	if compare(v, maximum) > 0 {
 		return UntestedNewer, nil
 	}
 	return Compatible, nil

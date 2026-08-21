@@ -136,7 +136,7 @@ func WithTx[S any](ctx context.Context, candidate S, fn func(context.Context, S)
 		return fn(ctx, candidate)
 	}
 	return transactor.WithTx(ctx, func(txCtx context.Context, tx any) error {
-		scoped, ok := any(tx).(S)
+		scoped, ok := tx.(S)
 		if !ok {
 			return fmt.Errorf("%w: transaction store does not implement requested boundary", ErrInvalidState)
 		}

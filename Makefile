@@ -11,7 +11,8 @@ lint:
 		golangci-lint run ./...; \
 	else \
 		echo "golangci-lint not found; running gofmt check and go vet ./..."; \
-		test -z "$$(gofmt -l .)"; \
+		unformatted="$$(gofmt -l $$(git ls-files '*.go'))"; \
+		test -z "$$unformatted"; \
 		go vet ./...; \
 	fi
 

@@ -17,7 +17,7 @@ func TestV1RoutingAndVersionMetadata(t *testing.T) {
 	if rec.Header().Get("API-Version") != "v1" {
 		t.Fatalf("expected API-Version v1, got %q", rec.Header().Get("API-Version"))
 	}
-	var version APIVersionResponse
+	var version VersionResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &version); err != nil {
 		t.Fatal(err)
 	}

@@ -150,7 +150,7 @@ func Parse(value string) (Schedule, error) {
 	}
 	return s, nil
 }
-func parseField(raw string, min, max int) (field, error) {
+func parseField(raw string, minimum, maximum int) (field, error) {
 	out := field{}
 	for _, part := range strings.Split(raw, ",") {
 		step := 1
@@ -165,7 +165,7 @@ func parseField(raw string, min, max int) (field, error) {
 		} else if len(x) > 2 {
 			return nil, fmt.Errorf("invalid field")
 		}
-		lo, hi := min, max
+		lo, hi := minimum, maximum
 		if base != "*" {
 			r := strings.Split(base, "-")
 			v, err := strconv.Atoi(r[0])
@@ -182,8 +182,8 @@ func parseField(raw string, min, max int) (field, error) {
 				return nil, fmt.Errorf("invalid range")
 			}
 		}
-		if lo < min || hi > max || lo > hi {
-			return nil, fmt.Errorf("value outside %d-%d", min, max)
+		if lo < minimum || hi > maximum || lo > hi {
+			return nil, fmt.Errorf("value outside %d-%d", minimum, maximum)
 		}
 		for v := lo; v <= hi; v += step {
 			out[v] = struct{}{}

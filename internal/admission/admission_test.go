@@ -35,7 +35,7 @@ func TestAdmissionPolicies(t *testing.T) {
 		{"privileged", func(s *types.ServiceSpec, _ *policy.ClusterPolicy) { s.SecurityContext.Privileged = true }, "security.privileged.denied"},
 		{"host network", func(s *types.ServiceSpec, _ *policy.ClusterPolicy) { s.SecurityContext.HostNetwork = true }, "security.host_network.denied"},
 		{"host pid", func(s *types.ServiceSpec, _ *policy.ClusterPolicy) { s.SecurityContext.HostPID = true }, "security.host_pid.denied"},
-		{"registry", func(s *types.ServiceSpec, p *policy.ClusterPolicy) {
+		{"registry", func(_ *types.ServiceSpec, p *policy.ClusterPolicy) {
 			p.AllowedImageRegistries = []string{"approved.example"}
 		}, "image.registry.denied"},
 		{"latest", func(s *types.ServiceSpec, p *policy.ClusterPolicy) {
@@ -47,7 +47,7 @@ func TestAdmissionPolicies(t *testing.T) {
 			p.AllowedHostPathPrefixes = []string{"/srv/orch"}
 			s.SecurityContext.HostPathMounts = []types.HostPathMount{{HostPath: "/etc", ContainerPath: "/host"}}
 		}, "security.host_path.denied"},
-		{"replicas", func(s *types.ServiceSpec, p *policy.ClusterPolicy) { p.MaxReplicasPerService = 1 }, "replicas.maximum"},
+		{"replicas", func(_ *types.ServiceSpec, p *policy.ClusterPolicy) { p.MaxReplicasPerService = 1 }, "replicas.maximum"},
 		{"public ports", func(s *types.ServiceSpec, p *policy.ClusterPolicy) {
 			p.MaxPublicPortsPerService = 1
 			s.Ports = []types.Port{{PublishedPort: 80}, {PublishedPort: 443}}
