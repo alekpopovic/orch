@@ -1,6 +1,6 @@
 # GitHub Pages Documentation Site
 
-The documentation portal is a static GitHub Pages site built from Markdown files in `docs/` plus release artifacts from the repository root.
+The documentation portal is a static GitHub Pages site built from Markdown files in `docs/` plus release documentation from the repository root. It is the canonical rendered documentation for the latest stable release, currently v0.3.0.
 
 Canonical URL:
 
@@ -9,6 +9,12 @@ https://alekpopovic.github.io/orch/
 ```
 
 Repository README and cross-document documentation links point at this GitHub Pages portal so readers land on the styled documentation experience instead of raw Markdown.
+
+Start with:
+
+- [Installation](https://alekpopovic.github.io/orch/#INSTALLATION.md) for release downloads, checksums, upgrades, and uninstalling.
+- [CLI reference](https://alekpopovic.github.io/orch/#CLI.md) for global configuration and every v0.3.0 command group.
+- [Release notes](https://alekpopovic.github.io/orch/#RELEASE_NOTES.md) for compatibility and known boundaries.
 
 ## What Gets Published
 
@@ -20,6 +26,8 @@ The Pages workflow publishes:
 - `README.md`, `CHANGELOG.md`, and `RELEASE_NOTES.md` for release-oriented pages.
 - `api/openapi.yaml` as `openapi.yaml` for the API contract page.
 - SVG brand assets and Mermaid chart pages for a colorful release portal.
+
+GitHub release binaries are linked from the documentation but are not copied into the Pages artifact. Downloads stay on the immutable GitHub release at tag `0.3.0`.
 
 ## Theme Modes
 
@@ -33,7 +41,7 @@ The selected mode is stored in local browser storage.
 
 ## Charts
 
-The site loads Mermaid and renders fenced `mermaid` code blocks from Markdown. README and `CHARTS.md` use this for architecture, release-focus, and lifecycle diagrams.
+The site loads Mermaid and renders fenced `mermaid` code blocks from Markdown. README and `CHARTS.md` use this for architecture and lifecycle diagrams.
 
 ## Deployment
 

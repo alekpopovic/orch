@@ -114,6 +114,8 @@ Common agent flags mirror config keys: `--node-name`, `--advertise-address`, `--
 
 The CLI reads `--server`, `--token`, and `--namespace` (`-n`) flags, `ORCH_SERVER_URL`, `ORCH_TOKEN`, and `ORCH_NAMESPACE`, then its YAML config file. The default config path is the OS user config directory under `orch/config.yaml`. The namespace defaults to `default`.
 
+Install the v0.3.0 CLI with the [installation guide](https://alekpopovic.github.io/orch/#INSTALLATION.md). The [CLI reference](https://alekpopovic.github.io/orch/#CLI.md) documents all global flags and commands.
+
 Example CLI config:
 
 ```yaml

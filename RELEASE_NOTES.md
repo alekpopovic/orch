@@ -2,6 +2,19 @@
 
 v0.3.0 turns the MVP into a substantially stronger platform contract. The release adds a documented, stable v1 API; namespace-aware policy and quota boundaries; GitOps and scheduled/one-shot workloads; and explicit operational safety for upgrades, migrations, disruptive maintenance, retention, and capacity testing.
 
+Published on 21 August 2026 under tag [`0.3.0`](https://github.com/alekpopovic/orch/releases/tag/0.3.0).
+
+## Install
+
+Linux and macOS (`amd64` and `arm64`):
+
+```sh
+curl -fsSL https://github.com/alekpopovic/orch/releases/latest/download/install.sh | sh
+orch version
+```
+
+The installer verifies the platform archive against `checksums.txt` and installs the CLI. Release archives also contain `orch-server` and `orch-agent`; Windows users can download the matching ZIP. See the [installation guide](docs/INSTALLATION.md) for pinned, manual, and Windows instructions and the [CLI reference](docs/CLI.md) for all commands.
+
 ## Highlights
 
 - Namespace isolation covers services, tasks, deployments, events, secrets, registry credentials, audit history, maintenance windows, and usage reports.
