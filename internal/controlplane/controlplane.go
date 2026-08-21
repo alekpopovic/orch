@@ -36,6 +36,27 @@ type Service interface {
 	GetGitOpsSource(ctx context.Context, id string) (types.GitOpsSource, error)
 	UpdateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error)
 	DeleteGitOpsSource(ctx context.Context, id string) error
+	GitOpsStatus(ctx context.Context) ([]types.Service, error)
+	GitOpsDiff(ctx context.Context, service string) (gitops.Diff, error)
+	CreateJob(ctx context.Context, spec types.JobSpec) (types.Job, error)
+	ListJobs(ctx context.Context) ([]types.Job, error)
+	GetJob(ctx context.Context, id string) (types.Job, error)
+	DeleteJob(ctx context.Context, id string) error
+	CreateCronJob(ctx context.Context, spec types.CronJobSpec) (types.CronJob, error)
+	ListCronJobs(ctx context.Context) ([]types.CronJob, error)
+	GetCronJob(ctx context.Context, id string) (types.CronJob, error)
+	DeleteCronJob(ctx context.Context, id string) error
+	SetCronJobSuspended(ctx context.Context, id string, suspended bool) (types.CronJob, error)
+	CreateVolume(ctx context.Context, volume types.Volume) (types.Volume, error)
+	ListVolumes(ctx context.Context) ([]types.Volume, error)
+	GetVolume(ctx context.Context, id string) (types.Volume, error)
+	DeleteVolume(ctx context.Context, id string) error
+	CreateVolumeClaim(ctx context.Context, claim types.VolumeClaim) (types.VolumeClaim, error)
+	ListVolumeClaims(ctx context.Context) ([]types.VolumeClaim, error)
+	CreateNotificationSink(ctx context.Context, sink types.NotificationSink) (types.NotificationSink, error)
+	ListNotificationSinks(ctx context.Context) ([]types.NotificationSink, error)
+	GetNotificationSink(ctx context.Context, id string) (types.NotificationSink, error)
+	DeleteNotificationSink(ctx context.Context, id string) error
 	RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error)
 	HeartbeatNode(ctx context.Context, heartbeat NodeHeartbeat) (NodeCommand, error)
 	MarkStaleNodesOffline(ctx context.Context, timeout time.Duration) ([]types.Node, error)
@@ -145,6 +166,7 @@ type TaskStatusReport struct {
 	Status        types.TaskStatus
 	ContainerID   string
 	FailureReason string
+	ExitCode      *int
 }
 
 type TaskFilter struct {
@@ -160,16 +182,25 @@ type RolloutSpec struct {
 }
 
 type MemoryService struct {
-	mu            sync.RWMutex
-	nodes         map[types.NodeID]types.Node
-	services      map[types.ServiceID]types.Service
-	versions      map[types.ServiceID]map[int64]types.ServiceSpec
-	tasks         map[types.TaskID]types.Task
-	deployments   map[types.DeploymentID]types.Deployment
-	secrets       map[string]types.Secret
-	registries    map[string]types.RegistryCredential
-	quotas        map[string]types.ResourceQuota
-	gitops        map[string]types.GitOpsSource
+	mu                     sync.RWMutex
+	nodes                  map[types.NodeID]types.Node
+	services               map[types.ServiceID]types.Service
+	versions               map[types.ServiceID]map[int64]types.ServiceSpec
+	tasks                  map[types.TaskID]types.Task
+	deployments            map[types.DeploymentID]types.Deployment
+	secrets                map[string]types.Secret
+	registries             map[string]types.RegistryCredential
+	quotas                 map[string]types.ResourceQuota
+	gitops                 map[string]types.GitOpsSource
+	jobs                   map[string]types.Job
+	cronJobs               map[string]types.CronJob
+	volumes                map[string]types.Volume
+	volumeClaims           map[string]types.VolumeClaim
+	attachments            map[string]types.VolumeAttachment
+	notificationSinks      map[string]types.NotificationSink
+	notificationDispatcher interface {
+		Notify(context.Context, types.Event) error
+	}
 	envelope      secrets.Envelope
 	policy        policy.ClusterPolicy
 	events        []types.Event
@@ -208,20 +239,26 @@ func NewMemoryService(opts ...Option) *MemoryService {
 	now := func() time.Time { return time.Now().UTC() }
 	envelope, _ := secrets.NewLocalEnvelope("dev-secret-key-change-me")
 	service := &MemoryService{
-		nodes:         make(map[types.NodeID]types.Node),
-		services:      make(map[types.ServiceID]types.Service),
-		versions:      make(map[types.ServiceID]map[int64]types.ServiceSpec),
-		tasks:         make(map[types.TaskID]types.Task),
-		deployments:   make(map[types.DeploymentID]types.Deployment),
-		secrets:       make(map[string]types.Secret),
-		registries:    make(map[string]types.RegistryCredential),
-		quotas:        make(map[string]types.ResourceQuota),
-		gitops:        make(map[string]types.GitOpsSource),
-		namespaces:    make(map[string]types.Namespace),
-		envelope:      envelope,
-		policy:        policy.DefaultClusterPolicy(),
-		imageResolver: imageinfo.ParserResolver{},
-		now:           now,
+		nodes:             make(map[types.NodeID]types.Node),
+		services:          make(map[types.ServiceID]types.Service),
+		versions:          make(map[types.ServiceID]map[int64]types.ServiceSpec),
+		tasks:             make(map[types.TaskID]types.Task),
+		deployments:       make(map[types.DeploymentID]types.Deployment),
+		secrets:           make(map[string]types.Secret),
+		registries:        make(map[string]types.RegistryCredential),
+		quotas:            make(map[string]types.ResourceQuota),
+		gitops:            make(map[string]types.GitOpsSource),
+		jobs:              make(map[string]types.Job),
+		cronJobs:          make(map[string]types.CronJob),
+		volumes:           make(map[string]types.Volume),
+		volumeClaims:      make(map[string]types.VolumeClaim),
+		attachments:       make(map[string]types.VolumeAttachment),
+		notificationSinks: make(map[string]types.NotificationSink),
+		namespaces:        make(map[string]types.Namespace),
+		envelope:          envelope,
+		policy:            policy.DefaultClusterPolicy(),
+		imageResolver:     imageinfo.ParserResolver{},
+		now:               now,
 	}
 	for _, opt := range opts {
 		opt(service)
@@ -374,6 +411,9 @@ func (s *MemoryService) CreateGitOpsSource(ctx context.Context, source types.Git
 	}
 	if source.Path == "" {
 		source.Path = "."
+	}
+	if source.DriftPolicy == "" {
+		source.DriftPolicy = types.GitOpsWarnOnly
 	}
 	if err := gitops.ValidateSource(source); err != nil {
 		return types.GitOpsSource{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
@@ -667,6 +707,10 @@ func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.Node
 		if task.DesiredStatus == types.TaskRunning && !countsTowardDesiredReplicas(task) {
 			continue
 		}
+		if task.JobID != "" {
+			tasks = append(tasks, AgentTask{Task: task})
+			continue
+		}
 		service := s.services[task.ServiceID]
 		env, err := s.resolveEnvLocked(ctx, service.Namespace, service.Spec)
 		if err != nil {
@@ -817,6 +861,7 @@ func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusR
 	task.ActualStatus = status
 	task.ContainerID = report.ContainerID
 	task.FailureReason = report.FailureReason
+	task.ExitCode = report.ExitCode
 	task.UpdatedAt = s.now()
 	if (status == types.TaskRunning || status == types.TaskHealthy) && task.StartedAt.IsZero() {
 		task.StartedAt = task.UpdatedAt
@@ -825,8 +870,14 @@ func (s *MemoryService) ReportTaskStatus(ctx context.Context, report TaskStatusR
 		task.FinishedAt = task.UpdatedAt
 	}
 	s.tasks[task.ID] = task
+	if task.JobID != "" && (status == types.TaskRunning || status == types.TaskHealthy || status == types.TaskFailed || status == types.TaskStopped) {
+		s.updateJobForTaskLocked(task)
+	}
 	if status == types.TaskRemoved {
-		s.maybeFinalizeServiceDeletionLocked(task.ServiceID, task.UpdatedAt)
+		if task.ServiceID != "" {
+			s.maybeFinalizeServiceDeletionLocked(task.ServiceID, task.UpdatedAt)
+		}
+		s.detachTaskVolumesLocked(task.ID)
 	}
 	s.reconcileDrainingNodesLocked(task.UpdatedAt)
 	s.appendEventLocked(eventType, severity, "agent", message, "task", string(task.ID), task.UpdatedAt)
@@ -1968,7 +2019,7 @@ func upsertTaskCondition(conditions []types.TaskCondition, condition types.TaskC
 }
 
 func (s *MemoryService) appendEventLocked(eventType string, severity types.EventSeverity, source string, message string, objectType string, objectID string, timestamp time.Time) {
-	s.events = append(s.events, types.Event{
+	event := types.Event{
 		ID:                types.EventID(newUUID()),
 		Namespace:         s.namespaceForObjectLocked(objectType, objectID),
 		Type:              eventType,
@@ -1978,7 +2029,11 @@ func (s *MemoryService) appendEventLocked(eventType string, severity types.Event
 		RelatedObjectType: objectType,
 		RelatedObjectID:   objectID,
 		Timestamp:         timestamp.UTC(),
-	})
+	}
+	s.events = append(s.events, event)
+	if s.notificationDispatcher != nil {
+		go func() { _ = s.notificationDispatcher.Notify(context.Background(), event) }()
+	}
 }
 
 func (s *MemoryService) namespaceForObjectLocked(objectType string, objectID string) string {
@@ -2132,12 +2187,21 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 	sortTasksForReplicaRetention(active)
 
 	nodes := s.readyNodesLocked()
+	resolvedMounts, mountErr := s.resolveVolumeMountsLocked(service.Namespace, service.Spec.VolumeClaims)
+	if mountErr != nil {
+		return
+	}
+	nodes = s.nodesForVolumeMountsLocked(nodes, resolvedMounts)
 	if len(nodes) == 0 {
 		return
 	}
 
 	for len(active) < service.Spec.Replicas {
-		node := nodes[len(active)%len(nodes)]
+		eligibleNodes := s.nodesForVolumeMountsLocked(nodes, resolvedMounts)
+		if len(eligibleNodes) == 0 {
+			break
+		}
+		node := eligibleNodes[len(active)%len(eligibleNodes)]
 		task := types.Task{
 			ID:                  types.TaskID(newUUID()),
 			Namespace:           service.Namespace,
@@ -2153,10 +2217,12 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 			ImageTag:            service.Spec.ImageMetadata.Tag,
 			Version:             service.DeploymentVersion,
 			Ports:               s.assignPortsForNodeLocked(service.Spec.Ports, node.ID),
+			VolumeMounts:        append([]types.ResolvedVolumeMount(nil), resolvedMounts...),
 			CreatedAt:           timestamp,
 			UpdatedAt:           timestamp,
 		}
 		s.tasks[task.ID] = task
+		s.attachTaskVolumesLocked(task, node.ID)
 		active = append(active, task)
 	}
 

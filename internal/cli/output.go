@@ -87,6 +87,53 @@ func writeGitOpsSources(w io.Writer, output string, sources []types.GitOpsSource
 	return tw.Flush()
 }
 
+func writeGitOpsStatus(w io.Writer, output string, services []types.Service) error {
+	if output == "json" {
+		return writeValue(w, output, services)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "SERVICE\tSTATUS\tSOURCE\tCOMMIT\tPATH")
+	for _, v := range services {
+		if v.GitOps != nil {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", v.Spec.Name, v.GitOps.Status, v.GitOps.SourceID, v.GitOps.SourceCommit, v.GitOps.SourcePath)
+		}
+	}
+	return tw.Flush()
+}
+func writeJobs(w io.Writer, output string, items []types.Job) error {
+	if output == "json" {
+		return writeValue(w, output, items)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tNAME\tSTATUS\tATTEMPTS\tIMAGE")
+	for _, v := range items {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", v.ID, v.Spec.Name, v.Status, v.Attempts, v.Spec.Image)
+	}
+	return tw.Flush()
+}
+func writeCronJobs(w io.Writer, output string, items []types.CronJob) error {
+	if output == "json" {
+		return writeValue(w, output, items)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tNAME\tSCHEDULE\tTIMEZONE\tSUSPENDED")
+	for _, v := range items {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%t\n", v.ID, v.Spec.Name, v.Spec.Schedule, v.Spec.Timezone, v.Spec.Suspended)
+	}
+	return tw.Flush()
+}
+func writeVolumes(w io.Writer, output string, items []types.Volume) error {
+	if output == "json" {
+		return writeValue(w, output, items)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tNAME\tDRIVER\tNODE")
+	for _, v := range items {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", v.ID, v.Name, v.Driver, v.NodeID)
+	}
+	return tw.Flush()
+}
+
 func writeNode(w io.Writer, output string, node types.Node) error {
 	if output == "json" {
 		return writeValue(w, output, node)

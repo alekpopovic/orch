@@ -35,6 +35,34 @@ type GitOpsStore interface {
 	DeleteGitOpsSource(ctx context.Context, id string) error
 }
 
+type JobStore interface {
+	CreateJob(context.Context, types.JobSpec) (types.Job, error)
+	ListJobs(context.Context) ([]types.Job, error)
+	GetJob(context.Context, string) (types.Job, error)
+	DeleteJob(context.Context, string) error
+}
+type CronJobStore interface {
+	CreateCronJob(context.Context, types.CronJobSpec) (types.CronJob, error)
+	ListCronJobs(context.Context) ([]types.CronJob, error)
+	GetCronJob(context.Context, string) (types.CronJob, error)
+	UpdateCronJob(context.Context, types.CronJob) (types.CronJob, error)
+	DeleteCronJob(context.Context, string) error
+}
+type VolumeStore interface {
+	CreateVolume(context.Context, types.Volume) (types.Volume, error)
+	ListVolumes(context.Context) ([]types.Volume, error)
+	GetVolume(context.Context, string) (types.Volume, error)
+	DeleteVolume(context.Context, string) error
+	CreateVolumeClaim(context.Context, types.VolumeClaim) (types.VolumeClaim, error)
+	ListVolumeClaims(context.Context) ([]types.VolumeClaim, error)
+}
+type NotificationSinkStore interface {
+	CreateNotificationSink(context.Context, types.NotificationSink) (types.NotificationSink, error)
+	ListNotificationSinks(context.Context) ([]types.NotificationSink, error)
+	GetNotificationSink(context.Context, string) (types.NotificationSink, error)
+	DeleteNotificationSink(context.Context, string) error
+}
+
 type ServiceStore interface {
 	CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error)
 	GetService(ctx context.Context, id types.ServiceID) (types.Service, error)

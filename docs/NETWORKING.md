@@ -1,5 +1,7 @@
 # Networking
 
+The optional internal DNS MVP provides stable names over the host-port endpoint model; it does not create overlay addresses. Containers use the orch DNS listener and published service port. See `deployments/examples/internal-dns-compose.yaml` and [NETWORKING_DESIGN.md](NETWORKING_DESIGN.md).
+
 `orch` supports host-port publishing for MVP services. It does not implement overlay networking yet.
 
 ## Service Ports

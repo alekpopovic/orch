@@ -214,16 +214,19 @@ func addServiceUsageStore(usage *types.ResourceUsage, spec types.ServiceSpec) {
 
 func (s *postgresStore) CreateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error) {
 	source.Namespace = namespace.FromContext(ctx)
+	if source.DriftPolicy == "" {
+		source.DriftPolicy = types.GitOpsWarnOnly
+	}
 	managed, err := jsonBytes(defaultSlice(source.ManagedServices))
 	if err != nil {
 		return types.GitOpsSource{}, err
 	}
 	row := s.db.QueryRow(ctx, `
-		INSERT INTO gitops_sources (namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
-		RETURNING id, namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services,
+		INSERT INTO gitops_sources (namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services, drift_policy)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		RETURNING id, namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services, drift_policy,
 			last_revision, last_error, last_synced_at, created_at, updated_at`, source.Namespace, source.RepositoryURL,
-		source.Branch, source.Path, int64(source.SyncInterval), source.Prune, managed)
+		source.Branch, source.Path, int64(source.SyncInterval), source.Prune, managed, source.DriftPolicy)
 	return scanGitOpsSource(row)
 }
 
@@ -255,12 +258,12 @@ func (s *postgresStore) UpdateGitOpsSource(ctx context.Context, source types.Git
 	}
 	row := s.db.QueryRow(ctx, `
 		UPDATE gitops_sources SET repository_url=$3, branch=$4, path=$5, sync_interval_ns=$6, prune=$7,
-			managed_services=$8, last_revision=nullif($9,''), last_error=nullif($10,''), last_synced_at=$11,
+			managed_services=$8, drift_policy=$9, last_revision=nullif($10,''), last_error=nullif($11,''), last_synced_at=$12,
 			updated_at=timezone('utc',now())
 		WHERE namespace=$1 AND id=nullif($2,'')::uuid
-		RETURNING id, namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services,
+		RETURNING id, namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services, drift_policy,
 			last_revision, last_error, last_synced_at, created_at, updated_at`, namespace.FromContext(ctx), source.ID,
-		source.RepositoryURL, source.Branch, source.Path, int64(source.SyncInterval), source.Prune, managed,
+		source.RepositoryURL, source.Branch, source.Path, int64(source.SyncInterval), source.Prune, managed, source.DriftPolicy,
 		source.LastRevision, source.LastError, nilTime(source.LastSyncedAt))
 	return scanGitOpsSource(row)
 }
@@ -277,7 +280,7 @@ func (s *postgresStore) DeleteGitOpsSource(ctx context.Context, id string) error
 }
 
 func gitOpsSelectSQL() string {
-	return `SELECT id, namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services,
+	return `SELECT id, namespace, repository_url, branch, path, sync_interval_ns, prune, managed_services, drift_policy,
 		last_revision, last_error, last_synced_at, created_at, updated_at FROM gitops_sources`
 }
 
@@ -288,7 +291,7 @@ func scanGitOpsSource(row pgx.Row) (types.GitOpsSource, error) {
 	var revision, lastError *string
 	var lastSynced *time.Time
 	err := row.Scan(&source.ID, &source.Namespace, &source.RepositoryURL, &source.Branch, &source.Path, &interval,
-		&source.Prune, &managed, &revision, &lastError, &lastSynced, &source.CreatedAt, &source.UpdatedAt)
+		&source.Prune, &managed, &source.DriftPolicy, &revision, &lastError, &lastSynced, &source.CreatedAt, &source.UpdatedAt)
 	if err != nil {
 		return types.GitOpsSource{}, mapPostgresError(err)
 	}

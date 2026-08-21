@@ -15,6 +15,7 @@ import (
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/gitops"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/spf13/cobra"
 )
@@ -61,6 +62,26 @@ type GitOpsClient interface {
 	ListGitOpsSources(context.Context) ([]types.GitOpsSource, error)
 	SyncGitOpsSource(context.Context, string) (types.GitOpsSource, error)
 	DeleteGitOpsSource(context.Context, string) error
+	GitOpsStatus(context.Context) ([]types.Service, error)
+	GitOpsDiff(context.Context, string) (gitops.Diff, error)
+}
+
+type JobClient interface {
+	CreateJob(context.Context, types.JobSpec) (types.Job, error)
+	ListJobs(context.Context) ([]types.Job, error)
+	GetJob(context.Context, string) (types.Job, error)
+	DeleteJob(context.Context, string) error
+	StreamLogs(context.Context, string, string, bool, string, io.Writer) error
+}
+type CronJobClient interface {
+	CreateCronJob(context.Context, types.CronJobSpec) (types.CronJob, error)
+	ListCronJobs(context.Context) ([]types.CronJob, error)
+	SetCronJobSuspended(context.Context, string, bool) (types.CronJob, error)
+}
+type VolumeClient interface {
+	CreateVolume(context.Context, types.Volume) (types.Volume, error)
+	ListVolumes(context.Context) ([]types.Volume, error)
+	GetVolume(context.Context, string) (types.Volume, error)
 }
 
 type Options struct {
@@ -142,6 +163,9 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(a.namespaceCommand())
 	root.AddCommand(a.quotaCommand())
 	root.AddCommand(a.gitopsCommand())
+	root.AddCommand(a.jobCommand())
+	root.AddCommand(a.cronJobCommand())
+	root.AddCommand(a.volumeCommand())
 	return root
 }
 
@@ -259,6 +283,7 @@ func (a *app) gitopsCommand() *cobra.Command {
 	var repositoryURL, branch, sourcePath string
 	var interval time.Duration
 	var prune bool
+	var driftPolicy string
 	add := &cobra.Command{
 		Use: "add", Short: "Add a GitOps source",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -270,7 +295,7 @@ func (a *app) gitopsCommand() *cobra.Command {
 			if !ok {
 				return fmt.Errorf("client does not support GitOps")
 			}
-			source, err := gitopsClient.CreateGitOpsSource(cmd.Context(), types.GitOpsSource{RepositoryURL: repositoryURL, Branch: branch, Path: sourcePath, SyncInterval: interval, Prune: prune})
+			source, err := gitopsClient.CreateGitOpsSource(cmd.Context(), types.GitOpsSource{RepositoryURL: repositoryURL, Branch: branch, Path: sourcePath, SyncInterval: interval, Prune: prune, DriftPolicy: types.GitOpsDriftPolicy(driftPolicy)})
 			if err != nil {
 				return err
 			}
@@ -282,6 +307,7 @@ func (a *app) gitopsCommand() *cobra.Command {
 	add.Flags().StringVar(&sourcePath, "path", ".", "manifest file or directory")
 	add.Flags().DurationVar(&interval, "interval", time.Minute, "sync interval")
 	add.Flags().BoolVar(&prune, "prune", false, "delete services whose manifests are removed")
+	add.Flags().StringVar(&driftPolicy, "drift-policy", string(types.GitOpsWarnOnly), "drift policy: warn or auto_revert")
 	_ = add.MarkFlagRequired("repo")
 	cmd.AddCommand(add)
 	cmd.AddCommand(&cobra.Command{
@@ -338,6 +364,36 @@ func (a *app) gitopsCommand() *cobra.Command {
 			return nil
 		},
 	})
+	cmd.AddCommand(&cobra.Command{Use: "status", Short: "Show drift status for GitOps-managed services", RunE: func(cmd *cobra.Command, _ []string) error {
+		client, err := a.client()
+		if err != nil {
+			return err
+		}
+		c, ok := client.(GitOpsClient)
+		if !ok {
+			return fmt.Errorf("client does not support GitOps")
+		}
+		items, err := c.GitOpsStatus(cmd.Context())
+		if err != nil {
+			return err
+		}
+		return writeGitOpsStatus(a.out, a.output, items)
+	}})
+	cmd.AddCommand(&cobra.Command{Use: "diff <service>", Short: "Compare live and Git desired service specs", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		client, err := a.client()
+		if err != nil {
+			return err
+		}
+		c, ok := client.(GitOpsClient)
+		if !ok {
+			return fmt.Errorf("client does not support GitOps")
+		}
+		diff, err := c.GitOpsDiff(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		return writeValue(a.out, "json", diff)
+	}})
 	return cmd
 }
 

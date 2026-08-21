@@ -21,7 +21,20 @@ import (
 const (
 	EventSyncSucceeded = "gitops.sync.succeeded"
 	EventSyncFailed    = "gitops.sync.failed"
+	EventDriftDetected = "gitops.drift.detected"
+	EventDriftReverted = "gitops.drift.reverted"
 )
+
+type Diff struct {
+	Service string                  `json:"service"`
+	Status  types.GitOpsDriftStatus `json:"status"`
+	Desired types.ServiceSpec       `json:"desired"`
+	Live    types.ServiceSpec       `json:"live"`
+}
+
+type managedStore interface {
+	MarkGitOpsManaged(context.Context, types.ServiceID, types.GitOpsManagedState) (types.Service, error)
+}
 
 type Store interface {
 	ListNamespaces(context.Context) ([]types.Namespace, error)
@@ -81,6 +94,9 @@ func ValidateSource(source types.GitOpsSource) error {
 	}
 	if source.SyncInterval <= 0 {
 		return fmt.Errorf("sync_interval must be positive")
+	}
+	if source.DriftPolicy != "" && source.DriftPolicy != types.GitOpsWarnOnly && source.DriftPolicy != types.GitOpsAutoRevert {
+		return fmt.Errorf("drift_policy must be warn or auto_revert")
 	}
 	parsed, err := url.Parse(source.RepositoryURL)
 	if err != nil {
@@ -210,8 +226,19 @@ func (controller *Controller) Sync(ctx context.Context, id string) (types.GitOps
 		if err != nil {
 			return controller.fail(syncCtx, source, fmt.Errorf("validate manifest %q: %w", file, err))
 		}
-		if _, err := controller.store.ApplyService(syncCtx, spec); err != nil {
+		service, err := controller.store.ApplyService(syncCtx, spec)
+		if err != nil {
 			return controller.fail(syncCtx, source, fmt.Errorf("apply service %q: %w", spec.Name, err))
+		}
+		if marker, ok := controller.store.(managedStore); ok {
+			relative, _ := filepath.Rel(checkout.Directory, file)
+			policy := source.DriftPolicy
+			if policy == "" {
+				policy = types.GitOpsWarnOnly
+			}
+			if _, err := marker.MarkGitOpsManaged(syncCtx, service.ID, types.GitOpsManagedState{SourceID: source.ID, SourceCommit: checkout.Revision, SourcePath: filepath.ToSlash(relative), Status: types.GitOpsInSync, Policy: policy, DesiredSpec: spec, LastCheckedAt: time.Now().UTC()}); err != nil {
+				return controller.fail(syncCtx, source, fmt.Errorf("mark service %q managed: %w", spec.Name, err))
+			}
 		}
 		managed = append(managed, spec.Name)
 	}

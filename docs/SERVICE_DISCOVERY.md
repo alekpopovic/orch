@@ -1,6 +1,8 @@
 # Service Discovery
 
-MVP service discovery exposes running task endpoints over the control-plane API and CLI. It does not provide DNS yet.
+Optional internal DNS resolves `<service>.<namespace>.svc.orch` and `<service>.svc.orch` to node addresses for healthy/running endpoints. Set `ORCH_DNS_ADDR` on `orch-server` (for example `0.0.0.0:53`) to enable UDP DNS. `ORCH_DNS_TTL` configures TTL and defaults to 30 seconds. The component tracks `dns_queries_total` and `dns_errors_total`.
+
+MVP service discovery also exposes running task endpoints over the control-plane API and CLI. DNS intentionally does not implement full Kubernetes compatibility.
 
 ## API
 

@@ -154,6 +154,16 @@ func (s *Scheduler) RunOnce(ctx context.Context) ([]Assignment, error) {
 			assignments = append(assignments, claimed)
 		}
 	}
+	plannedIDs := make(map[types.TaskID]struct{}, len(planned))
+	for _, assignment := range planned {
+		plannedIDs[assignment.TaskID] = struct{}{}
+	}
+	for _, task := range pending {
+		if _, ok := plannedIDs[task.ID]; ok {
+			continue
+		}
+		_ = events.Emit(ctx, s.store, types.Event{Namespace: task.Namespace, Type: "scheduler.unable_to_place", Severity: types.EventWarning, Source: "scheduler", Message: "scheduler unable to place task", RelatedObjectType: "task", RelatedObjectID: string(task.ID), Timestamp: s.now()})
+	}
 	return assignments, nil
 }
 
@@ -268,6 +278,9 @@ func Plan(input PlanInput) []Assignment {
 			continue
 		}
 		service, ok := input.Services[task.ServiceID]
+		if !ok && task.JobID != "" {
+			service, ok = jobTaskService(task)
+		}
 		if !ok {
 			continue
 		}
@@ -281,7 +294,7 @@ func Plan(input PlanInput) []Assignment {
 			Ports:             ports,
 			ExpectedUpdatedAt: task.UpdatedAt.UTC(),
 		})
-		state.addPlanned(node.ID, task.ServiceID, service.Spec.ResourceRequirements.Requests, ports)
+		state.addPlanned(node.ID, task, service.Spec.ResourceRequirements.Requests, ports)
 	}
 	return assignments
 }
@@ -291,6 +304,7 @@ type clusterState struct {
 	runningByNode        map[types.NodeID]int
 	runningByNodeService map[types.NodeID]map[types.ServiceID]int
 	portsByNode          map[types.NodeID]map[portKey]struct{}
+	volumeWriters        map[string]types.TaskID
 }
 
 func newClusterState(nodes []types.Node, runningTasks []types.Task, services map[types.ServiceID]types.Service) *clusterState {
@@ -299,6 +313,7 @@ func newClusterState(nodes []types.Node, runningTasks []types.Task, services map
 		runningByNode:        make(map[types.NodeID]int, len(nodes)),
 		runningByNodeService: make(map[types.NodeID]map[types.ServiceID]int, len(nodes)),
 		portsByNode:          make(map[types.NodeID]map[portKey]struct{}, len(nodes)),
+		volumeWriters:        make(map[string]types.TaskID),
 	}
 	knownNodes := make(map[types.NodeID]struct{}, len(nodes))
 	for _, node := range nodes {
@@ -311,12 +326,26 @@ func newClusterState(nodes []types.Node, runningTasks []types.Task, services map
 			continue
 		}
 		service, ok := services[task.ServiceID]
+		if !ok && task.JobID != "" {
+			service, ok = jobTaskService(task)
+		}
 		if !ok {
 			continue
 		}
 		state.addExisting(task, service)
 	}
 	return state
+}
+
+func jobTaskService(task types.Task) (types.Service, bool) {
+	if task.JobID == "" {
+		return types.Service{}, false
+	}
+	requirements := types.ResourceRequirements{}
+	if task.ResourceRequirements != nil {
+		requirements = *task.ResourceRequirements
+	}
+	return types.Service{ID: types.ServiceID("job-" + task.JobID), Namespace: task.Namespace, Status: types.ServiceActive, Spec: types.ServiceSpec{Name: "job-" + task.JobID, Image: task.Image, Replicas: 1, ResourceRequirements: requirements, PlacementConstraints: task.PlacementConstraints}}, true
 }
 
 func (s *clusterState) addExisting(task types.Task, service types.Service) {
@@ -326,11 +355,21 @@ func (s *clusterState) addExisting(task types.Task, service types.Service) {
 	if types.IsActiveTask(task) || isPortAllocationFailure(task) {
 		s.reservePorts(task.NodeID, portsForTask(task, service))
 	}
+	s.reserveVolumes(task)
 }
 
-func (s *clusterState) addPlanned(nodeID types.NodeID, serviceID types.ServiceID, requests types.Resources, ports []types.Port) {
-	s.addResourceUse(nodeID, serviceID, requests)
+func (s *clusterState) addPlanned(nodeID types.NodeID, task types.Task, requests types.Resources, ports []types.Port) {
+	s.addResourceUse(nodeID, task.ServiceID, requests)
 	s.reservePorts(nodeID, ports)
+	s.reserveVolumes(task)
+}
+
+func (s *clusterState) reserveVolumes(task types.Task) {
+	for _, m := range task.VolumeMounts {
+		if !m.ReadOnly && m.AccessMode == types.VolumeReadWriteOnce && !m.AllowConcurrentWriters {
+			s.volumeWriters[m.VolumeID] = task.ID
+		}
+	}
 }
 
 func (s *clusterState) addResourceUse(nodeID types.NodeID, serviceID types.ServiceID, requests types.Resources) {
@@ -382,9 +421,19 @@ func bestNode(task types.Task, service types.Service, nodes []types.Node, state 
 	return best, bestPorts, found
 }
 
-func fits(_ types.Task, service types.Service, node types.Node, state *clusterState, requests types.Resources) bool {
+func fits(task types.Task, service types.Service, node types.Node, state *clusterState, requests types.Resources) bool {
 	if node.Status != types.NodeReady {
 		return false
+	}
+	for _, mount := range task.VolumeMounts {
+		if mount.NodeID != "" && mount.NodeID != node.ID {
+			return false
+		}
+		if !mount.ReadOnly && mount.AccessMode == types.VolumeReadWriteOnce && !mount.AllowConcurrentWriters {
+			if owner, used := state.volumeWriters[mount.VolumeID]; used && owner != task.ID {
+				return false
+			}
+		}
 	}
 	if !placementMatches(service.Spec.PlacementConstraints, node.Labels) {
 		return false

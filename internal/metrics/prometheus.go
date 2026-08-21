@@ -34,6 +34,8 @@ type Server struct {
 	autoscalerRecommend *prometheus.GaugeVec
 	leaderStatus        *prometheus.GaugeVec
 	leaderFailures      *prometheus.CounterVec
+	dnsQueries          prometheus.Counter
+	dnsErrors           prometheus.Counter
 }
 
 func NewServer() *Server {
@@ -126,6 +128,8 @@ func NewServer() *Server {
 			Name: "controller_leader_acquisition_failures_total",
 			Help: "Total controller leader lock acquisition failures by controller name.",
 		}, []string{"controller"}),
+		dnsQueries: prometheus.NewCounter(prometheus.CounterOpts{Name: "dns_queries_total", Help: "Total internal DNS queries."}),
+		dnsErrors:  prometheus.NewCounter(prometheus.CounterOpts{Name: "dns_errors_total", Help: "Total internal DNS errors."}),
 	}
 	m.registry.MustRegister(
 		m.apiRequests,
@@ -149,9 +153,14 @@ func NewServer() *Server {
 		m.autoscalerRecommend,
 		m.leaderStatus,
 		m.leaderFailures,
+		m.dnsQueries,
+		m.dnsErrors,
 	)
 	return m
 }
+
+func (m *Server) IncDNSQuery() { m.dnsQueries.Inc() }
+func (m *Server) IncDNSError() { m.dnsErrors.Inc() }
 
 func (m *Server) Handler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})

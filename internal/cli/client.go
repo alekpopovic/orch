@@ -19,6 +19,7 @@ import (
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/gitops"
 	orchclient "github.com/alekpopovic/orch/pkg/client"
 	"github.com/alekpopovic/orch/pkg/types"
 )
@@ -124,7 +125,7 @@ func (c *APIClient) SetResourceQuota(ctx context.Context, value types.ResourceQu
 
 func (c *APIClient) CreateGitOpsSource(ctx context.Context, source types.GitOpsSource) (types.GitOpsSource, error) {
 	var out api.GitOpsSourceResponse
-	request := api.CreateGitOpsSourceRequest{RepositoryURL: source.RepositoryURL, Branch: source.Branch, Path: source.Path, SyncInterval: source.SyncInterval.String(), Prune: source.Prune}
+	request := api.CreateGitOpsSourceRequest{RepositoryURL: source.RepositoryURL, Branch: source.Branch, Path: source.Path, SyncInterval: source.SyncInterval.String(), Prune: source.Prune, DriftPolicy: source.DriftPolicy}
 	if err := c.do(ctx, http.MethodPost, "/v1/gitops/sources", request, &out); err != nil {
 		return types.GitOpsSource{}, err
 	}
@@ -149,6 +150,71 @@ func (c *APIClient) SyncGitOpsSource(ctx context.Context, id string) (types.GitO
 
 func (c *APIClient) DeleteGitOpsSource(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/gitops/sources/"+url.PathEscape(id), nil, nil)
+}
+
+func (c *APIClient) GitOpsStatus(ctx context.Context) ([]types.Service, error) {
+	var out api.ListServicesResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/gitops/status", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Services, nil
+}
+func (c *APIClient) GitOpsDiff(ctx context.Context, name string) (gitops.Diff, error) {
+	var out gitops.Diff
+	err := c.do(ctx, http.MethodGet, "/v1/gitops/diff/"+url.PathEscape(name), nil, &out)
+	return out, err
+}
+func (c *APIClient) CreateJob(ctx context.Context, v types.JobSpec) (types.Job, error) {
+	var out api.JobResponse
+	err := c.do(ctx, http.MethodPost, "/v1/jobs", v, &out)
+	return out.Job, err
+}
+func (c *APIClient) ListJobs(ctx context.Context) ([]types.Job, error) {
+	var out api.JobsResponse
+	err := c.do(ctx, http.MethodGet, "/v1/jobs", nil, &out)
+	return out.Jobs, err
+}
+func (c *APIClient) GetJob(ctx context.Context, id string) (types.Job, error) {
+	var out api.JobResponse
+	err := c.do(ctx, http.MethodGet, "/v1/jobs/"+url.PathEscape(id), nil, &out)
+	return out.Job, err
+}
+func (c *APIClient) DeleteJob(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/jobs/"+url.PathEscape(id), nil, nil)
+}
+func (c *APIClient) CreateCronJob(ctx context.Context, v types.CronJobSpec) (types.CronJob, error) {
+	var out api.CronJobResponse
+	err := c.do(ctx, http.MethodPost, "/v1/cronjobs", v, &out)
+	return out.CronJob, err
+}
+func (c *APIClient) ListCronJobs(ctx context.Context) ([]types.CronJob, error) {
+	var out api.CronJobsResponse
+	err := c.do(ctx, http.MethodGet, "/v1/cronjobs", nil, &out)
+	return out.CronJobs, err
+}
+func (c *APIClient) SetCronJobSuspended(ctx context.Context, id string, value bool) (types.CronJob, error) {
+	action := "resume"
+	if value {
+		action = "suspend"
+	}
+	var out api.CronJobResponse
+	err := c.do(ctx, http.MethodPost, "/v1/cronjobs/"+url.PathEscape(id)+"/"+action, nil, &out)
+	return out.CronJob, err
+}
+func (c *APIClient) CreateVolume(ctx context.Context, v types.Volume) (types.Volume, error) {
+	var out api.VolumeResponse
+	err := c.do(ctx, http.MethodPost, "/v1/volumes", v, &out)
+	return out.Volume, err
+}
+func (c *APIClient) ListVolumes(ctx context.Context) ([]types.Volume, error) {
+	var out api.VolumesResponse
+	err := c.do(ctx, http.MethodGet, "/v1/volumes", nil, &out)
+	return out.Volumes, err
+}
+func (c *APIClient) GetVolume(ctx context.Context, id string) (types.Volume, error) {
+	var out api.VolumeResponse
+	err := c.do(ctx, http.MethodGet, "/v1/volumes/"+url.PathEscape(id), nil, &out)
+	return out.Volume, err
 }
 
 func (c *APIClient) ListNodes(ctx context.Context) ([]types.Node, error) {

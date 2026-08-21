@@ -69,6 +69,13 @@ type ContainerSpec struct {
 	Healthcheck *Healthcheck
 	Labels      map[string]string
 	Command     []string
+	Volumes     []VolumeMount
+}
+
+type VolumeMount struct {
+	Name     string
+	Target   string
+	ReadOnly bool
 }
 
 type PortBinding struct {
@@ -394,6 +401,11 @@ func (spec ContainerSpec) Validate() error {
 			return fmt.Errorf("security host path mounts[%d]: container path is required", i)
 		}
 	}
+	for i, mount := range spec.Volumes {
+		if strings.TrimSpace(mount.Name) == "" || strings.TrimSpace(mount.Target) == "" {
+			return fmt.Errorf("volumes[%d]: name and target are required", i)
+		}
+	}
 	return nil
 }
 
@@ -427,7 +439,7 @@ func dockerContainerConfig(spec ContainerSpec) (*container.Config, *container.Ho
 		ReadonlyRootfs: spec.Security.ReadOnlyRootFilesystem,
 		CapAdd:         append([]string(nil), spec.Security.CapAdd...),
 		CapDrop:        dockerCapDrop(spec.Security.CapDrop),
-		Binds:          dockerHostPathMounts(spec.Security.HostPathMounts),
+		Binds:          append(dockerHostPathMounts(spec.Security.HostPathMounts), dockerVolumeBinds(spec.Volumes)...),
 	}
 	if spec.Security.HostNetwork {
 		hostConfig.NetworkMode = "host"
@@ -436,6 +448,19 @@ func dockerContainerConfig(spec ContainerSpec) (*container.Config, *container.Ho
 		hostConfig.PidMode = "host"
 	}
 	return config, hostConfig, nil
+}
+
+func dockerVolumeBinds(mounts []VolumeMount) []string {
+	binds := make([]string, 0, len(mounts))
+	for _, mount := range mounts {
+		mode := "rw"
+		if mount.ReadOnly {
+			mode = "ro"
+		}
+		binds = append(binds, mount.Name+":"+mount.Target+":"+mode)
+	}
+	sort.Strings(binds)
+	return binds
 }
 
 func dockerCapDrop(configured []string) []string {

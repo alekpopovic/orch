@@ -52,19 +52,20 @@ type ImageMetadata struct {
 }
 
 type GitOpsSource struct {
-	ID              string        `json:"id"`
-	Namespace       string        `json:"namespace"`
-	RepositoryURL   string        `json:"repository_url"`
-	Branch          string        `json:"branch"`
-	Path            string        `json:"path"`
-	SyncInterval    time.Duration `json:"sync_interval"`
-	Prune           bool          `json:"prune"`
-	ManagedServices []string      `json:"managed_services,omitempty"`
-	LastRevision    string        `json:"last_revision,omitempty"`
-	LastError       string        `json:"last_error,omitempty"`
-	LastSyncedAt    time.Time     `json:"last_synced_at,omitempty"`
-	CreatedAt       time.Time     `json:"created_at"`
-	UpdatedAt       time.Time     `json:"updated_at"`
+	ID              string            `json:"id"`
+	Namespace       string            `json:"namespace"`
+	RepositoryURL   string            `json:"repository_url"`
+	Branch          string            `json:"branch"`
+	Path            string            `json:"path"`
+	SyncInterval    time.Duration     `json:"sync_interval"`
+	Prune           bool              `json:"prune"`
+	DriftPolicy     GitOpsDriftPolicy `json:"drift_policy,omitempty"`
+	ManagedServices []string          `json:"managed_services,omitempty"`
+	LastRevision    string            `json:"last_revision,omitempty"`
+	LastError       string            `json:"last_error,omitempty"`
+	LastSyncedAt    time.Time         `json:"last_synced_at,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
 }
 
 type Node struct {
@@ -185,13 +186,14 @@ func (spec NodeSpec) Validate() error {
 }
 
 type Service struct {
-	ID                ServiceID     `json:"id"`
-	Namespace         string        `json:"namespace"`
-	Spec              ServiceSpec   `json:"spec"`
-	Status            ServiceStatus `json:"status"`
-	DeploymentVersion int64         `json:"deployment_version"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
+	ID                ServiceID           `json:"id"`
+	Namespace         string              `json:"namespace"`
+	Spec              ServiceSpec         `json:"spec"`
+	Status            ServiceStatus       `json:"status"`
+	DeploymentVersion int64               `json:"deployment_version"`
+	CreatedAt         time.Time           `json:"created_at"`
+	UpdatedAt         time.Time           `json:"updated_at"`
+	GitOps            *GitOpsManagedState `json:"gitops,omitempty"`
 }
 
 type ServiceStatus string
@@ -219,6 +221,7 @@ type ServiceSpec struct {
 	RestartPolicy        RestartPolicy         `json:"restart_policy"`
 	PlacementConstraints []PlacementConstraint `json:"placement_constraints,omitempty"`
 	Routes               []Route               `json:"routes,omitempty"`
+	VolumeClaims         []VolumeClaimMount    `json:"volume_claims,omitempty" yaml:"volumeClaims,omitempty"`
 }
 
 func (spec ServiceSpec) EffectiveImage() string {
@@ -279,6 +282,11 @@ func (spec ServiceSpec) Validate() error {
 	for i, route := range spec.Routes {
 		if err := route.Validate(); err != nil {
 			return fmt.Errorf("routes[%d]: %w", i, err)
+		}
+	}
+	for i, mount := range spec.VolumeClaims {
+		if strings.TrimSpace(mount.Claim) == "" || !strings.HasPrefix(strings.TrimSpace(mount.Target), "/") {
+			return fmt.Errorf("volume_claims[%d]: claim and absolute target are required", i)
 		}
 	}
 	return nil
@@ -761,28 +769,34 @@ const (
 )
 
 type Task struct {
-	ID                  TaskID          `json:"id"`
-	Namespace           string          `json:"namespace"`
-	ServiceID           ServiceID       `json:"service_id"`
-	NodeID              NodeID          `json:"node_id,omitempty"`
-	ContainerID         string          `json:"container_id,omitempty"`
-	DesiredStatus       TaskStatus      `json:"desired_status"`
-	ActualStatus        TaskStatus      `json:"actual_status"`
-	Image               string          `json:"image"`
-	RequestedImage      string          `json:"requested_image,omitempty"`
-	ResolvedImageDigest string          `json:"resolved_image_digest,omitempty"`
-	ImageRegistry       string          `json:"image_registry,omitempty"`
-	ImageName           string          `json:"image_name,omitempty"`
-	ImageTag            string          `json:"image_tag,omitempty"`
-	Version             int64           `json:"version"`
-	Ports               []Port          `json:"ports,omitempty"`
-	RestartCount        int             `json:"restart_count"`
-	FailureReason       string          `json:"failure_reason,omitempty"`
-	Conditions          []TaskCondition `json:"conditions,omitempty"`
-	CreatedAt           time.Time       `json:"created_at"`
-	UpdatedAt           time.Time       `json:"updated_at"`
-	StartedAt           time.Time       `json:"started_at,omitempty"`
-	FinishedAt          time.Time       `json:"finished_at,omitempty"`
+	ID                   TaskID                `json:"id"`
+	Namespace            string                `json:"namespace"`
+	ServiceID            ServiceID             `json:"service_id"`
+	JobID                string                `json:"job_id,omitempty"`
+	NodeID               NodeID                `json:"node_id,omitempty"`
+	ContainerID          string                `json:"container_id,omitempty"`
+	DesiredStatus        TaskStatus            `json:"desired_status"`
+	ActualStatus         TaskStatus            `json:"actual_status"`
+	Image                string                `json:"image"`
+	RequestedImage       string                `json:"requested_image,omitempty"`
+	ResolvedImageDigest  string                `json:"resolved_image_digest,omitempty"`
+	ImageRegistry        string                `json:"image_registry,omitempty"`
+	ImageName            string                `json:"image_name,omitempty"`
+	ImageTag             string                `json:"image_tag,omitempty"`
+	Version              int64                 `json:"version"`
+	Ports                []Port                `json:"ports,omitempty"`
+	RestartCount         int                   `json:"restart_count"`
+	FailureReason        string                `json:"failure_reason,omitempty"`
+	Conditions           []TaskCondition       `json:"conditions,omitempty"`
+	CreatedAt            time.Time             `json:"created_at"`
+	UpdatedAt            time.Time             `json:"updated_at"`
+	StartedAt            time.Time             `json:"started_at,omitempty"`
+	FinishedAt           time.Time             `json:"finished_at,omitempty"`
+	ExitCode             *int                  `json:"exit_code,omitempty"`
+	Command              []string              `json:"command,omitempty"`
+	VolumeMounts         []ResolvedVolumeMount `json:"volume_mounts,omitempty"`
+	ResourceRequirements *ResourceRequirements `json:"resource_requirements,omitempty"`
+	PlacementConstraints []PlacementConstraint `json:"placement_constraints,omitempty"`
 }
 
 type TaskCondition struct {

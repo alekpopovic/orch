@@ -218,9 +218,15 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 			assigned.Task.ContainerID = string(status.ID)
 			return r.checkTaskHealth(ctx, nodeID, assigned, status)
 		}
+		if task.JobID != "" && status.ExitCode == 0 {
+			code := status.ExitCode
+			_, err := r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskStopped, ContainerID: string(status.ID), ExitCode: &code})
+			return err
+		}
 		if status.ExitCode != 0 {
 			reason := fmt.Sprintf("container exited with code %d", status.ExitCode)
-			_, _ = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, ContainerID: string(status.ID), FailureReason: reason})
+			code := status.ExitCode
+			_, _ = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, ContainerID: string(status.ID), FailureReason: reason, ExitCode: &code})
 			return fmt.Errorf("%s", reason)
 		}
 		if err := r.runtime.StartContainer(ctx, status.ID); err != nil {
@@ -246,13 +252,15 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 	containerID, err := r.runtime.CreateContainer(ctx, orchdocker.ContainerSpec{
 		Name:      "orch-" + string(task.ID),
 		Image:     task.Image,
-		ServiceID: string(task.ServiceID),
+		ServiceID: taskWorkloadID(task),
 		TaskID:    string(task.ID),
 		NodeID:    string(nodeID),
 		Version:   task.Version,
 		Env:       assigned.Env,
 		Ports:     dockerPortBindings(assigned.Ports),
 		Security:  dockerSecurityContext(assigned.SecurityContext),
+		Command:   append([]string(nil), task.Command...),
+		Volumes:   dockerVolumeMounts(task.VolumeMounts),
 	})
 	if err != nil {
 		_, _ = r.reportTaskStatus(ctx, task.ID, api.AgentTaskStatusRequest{NodeID: nodeID, Status: types.TaskFailed, FailureReason: runtimeFailureReason(err)})
@@ -273,6 +281,21 @@ func (r *Runner) ensureTask(ctx context.Context, nodeID types.NodeID, assigned a
 	assigned.Task.ContainerID = string(containerID)
 	assigned.Task.ActualStatus = types.TaskRunning
 	return r.checkTaskHealth(ctx, nodeID, assigned, orchdocker.ContainerStatus{ID: containerID, Running: true})
+}
+
+func dockerVolumeMounts(mounts []types.ResolvedVolumeMount) []orchdocker.VolumeMount {
+	out := make([]orchdocker.VolumeMount, 0, len(mounts))
+	for _, mount := range mounts {
+		out = append(out, orchdocker.VolumeMount{Name: mount.VolumeName, Target: mount.Target, ReadOnly: mount.ReadOnly})
+	}
+	return out
+}
+
+func taskWorkloadID(task types.Task) string {
+	if task.ServiceID != "" {
+		return string(task.ServiceID)
+	}
+	return "job-" + task.JobID
 }
 
 func dockerPortBindings(ports []types.Port) []orchdocker.PortBinding {

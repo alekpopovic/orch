@@ -126,6 +126,9 @@ func WithGitOpsSyncer(syncer GitOpsSyncer) Option {
 }
 
 func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...Option) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if controlPlane == nil {
 		controlPlane = controlplane.NewMemoryService()
 	}
@@ -207,6 +210,28 @@ func (s *Server) registerV1(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/gitops/sources", s.listGitOpsSources)
 	mux.HandleFunc("DELETE /v1/gitops/sources/{id}", s.deleteGitOpsSource)
 	mux.HandleFunc("POST /v1/gitops/sources/{id}/sync", s.syncGitOpsSource)
+	mux.HandleFunc("GET /v1/gitops/status", s.gitopsStatus)
+	mux.HandleFunc("GET /v1/gitops/diff/{service}", s.gitopsDiff)
+	mux.HandleFunc("POST /v1/jobs", s.createJob)
+	mux.HandleFunc("GET /v1/jobs", s.listJobs)
+	mux.HandleFunc("GET /v1/jobs/{id}", s.getJob)
+	mux.HandleFunc("DELETE /v1/jobs/{id}", s.deleteJob)
+	mux.HandleFunc("POST /v1/cronjobs", s.createCronJob)
+	mux.HandleFunc("GET /v1/cronjobs", s.listCronJobs)
+	mux.HandleFunc("GET /v1/cronjobs/{id}", s.getCronJob)
+	mux.HandleFunc("DELETE /v1/cronjobs/{id}", s.deleteCronJob)
+	mux.HandleFunc("POST /v1/cronjobs/{id}/suspend", s.suspendCronJob)
+	mux.HandleFunc("POST /v1/cronjobs/{id}/resume", s.resumeCronJob)
+	mux.HandleFunc("POST /v1/volumes", s.createVolume)
+	mux.HandleFunc("GET /v1/volumes", s.listVolumes)
+	mux.HandleFunc("GET /v1/volumes/{id}", s.getVolume)
+	mux.HandleFunc("DELETE /v1/volumes/{id}", s.deleteVolume)
+	mux.HandleFunc("POST /v1/volume-claims", s.createVolumeClaim)
+	mux.HandleFunc("GET /v1/volume-claims", s.listVolumeClaims)
+	mux.HandleFunc("POST /v1/notification-sinks", s.createNotificationSink)
+	mux.HandleFunc("GET /v1/notification-sinks", s.listNotificationSinks)
+	mux.HandleFunc("DELETE /v1/notification-sinks/{id}", s.deleteNotificationSink)
+	mux.HandleFunc("POST /v1/notification-sinks/{id}/test", s.testNotificationSink)
 }
 
 type HealthResponse struct {
@@ -237,11 +262,12 @@ type ResourceQuotaResponse struct {
 }
 
 type CreateGitOpsSourceRequest struct {
-	RepositoryURL string `json:"repository_url"`
-	Branch        string `json:"branch"`
-	Path          string `json:"path"`
-	SyncInterval  string `json:"sync_interval"`
-	Prune         bool   `json:"prune"`
+	RepositoryURL string                  `json:"repository_url"`
+	Branch        string                  `json:"branch"`
+	Path          string                  `json:"path"`
+	SyncInterval  string                  `json:"sync_interval"`
+	Prune         bool                    `json:"prune"`
+	DriftPolicy   types.GitOpsDriftPolicy `json:"drift_policy,omitempty"`
 }
 
 type GitOpsSourceResponse struct {
@@ -302,6 +328,7 @@ type AgentTaskStatusRequest struct {
 	Status        types.TaskStatus `json:"status"`
 	ContainerID   string           `json:"container_id,omitempty"`
 	FailureReason string           `json:"failure_reason,omitempty"`
+	ExitCode      *int             `json:"exit_code,omitempty"`
 }
 
 type NodeResponse struct {
@@ -475,7 +502,7 @@ func (s *Server) createGitOpsSource(w http.ResponseWriter, r *http.Request) {
 	}
 	source, err := s.controlPlane.CreateGitOpsSource(r.Context(), types.GitOpsSource{
 		RepositoryURL: request.RepositoryURL, Branch: request.Branch, Path: request.Path,
-		SyncInterval: interval, Prune: request.Prune,
+		SyncInterval: interval, Prune: request.Prune, DriftPolicy: request.DriftPolicy,
 	})
 	if err != nil {
 		s.recordAudit(r, "gitops.source.create", "gitops_source", "unknown", audit.OutcomeFailure, nil)
@@ -643,6 +670,7 @@ func (s *Server) agentTaskStatus(w http.ResponseWriter, r *http.Request) {
 		Status:        req.Status,
 		ContainerID:   req.ContainerID,
 		FailureReason: req.FailureReason,
+		ExitCode:      req.ExitCode,
 	})
 	if err != nil {
 		s.writeError(w, r, err)

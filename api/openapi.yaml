@@ -163,6 +163,103 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GitOpsSourceResponse"
+  /v1/gitops/status:
+    get:
+      summary: List GitOps drift status
+      responses: {"200": {description: Drift status}}
+  /v1/gitops/diff/{service}:
+    get:
+      summary: Diff live and Git desired service
+      parameters:
+        - {name: service, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Service diff}}
+  /v1/jobs:
+    get:
+      summary: List jobs
+      responses: {"200": {description: Jobs}}
+    post:
+      summary: Run a one-shot job
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"201": {description: Job created}}
+  /v1/jobs/{id}:
+    get:
+      summary: Get job
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"200": {description: Job}}
+    delete:
+      summary: Delete job
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"204": {description: Job deleted}}
+  /v1/cronjobs:
+    get:
+      summary: List cron jobs
+      responses: {"200": {description: Cron jobs}}
+    post:
+      summary: Apply cron job
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"201": {description: Cron job created}}
+  /v1/cronjobs/{id}:
+    get:
+      summary: Get cron job
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"200": {description: Cron job}}
+    delete:
+      summary: Delete cron job
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"204": {description: Cron job deleted}}
+  /v1/cronjobs/{id}/suspend:
+    post:
+      summary: Suspend cron job
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"200": {description: Cron job suspended}}
+  /v1/cronjobs/{id}/resume:
+    post:
+      summary: Resume cron job
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"200": {description: Cron job resumed}}
+  /v1/volumes:
+    get:
+      summary: List volumes
+      responses: {"200": {description: Volumes}}
+    post:
+      summary: Create local volume
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"201": {description: Volume created}}
+  /v1/volumes/{id}:
+    get:
+      summary: Get volume
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"200": {description: Volume}}
+    delete:
+      summary: Delete volume
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"204": {description: Volume deleted}}
+  /v1/volume-claims:
+    get:
+      summary: List volume claims
+      responses: {"200": {description: Volume claims}}
+    post:
+      summary: Create volume claim
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"201": {description: Volume claim created}}
+  /v1/notification-sinks:
+    get:
+      summary: List notification sinks
+      responses: {"200": {description: Notification sinks}}
+    post:
+      summary: Create notification sink
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"201": {description: Notification sink created}}
+  /v1/notification-sinks/{id}:
+    delete:
+      summary: Delete notification sink
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"204": {description: Notification sink deleted}}
+  /v1/notification-sinks/{id}/test:
+    post:
+      summary: Test notification sink
+      parameters: [{$ref: "#/components/parameters/ID"}]
+      responses: {"200": {description: Test delivered}}
   /v1/nodes:
     get:
       summary: List nodes

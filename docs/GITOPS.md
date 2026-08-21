@@ -1,5 +1,9 @@
 # GitOps Sources
 
+Each applied Service records its GitOps source, commit SHA, repository-relative manifest path, desired spec, drift policy, and last check. `orch gitops status` reports `in_sync`, `drifted`, `unknown`, or `sync_error`; `orch gitops diff <service>` returns live and desired specs.
+
+Manual scale or rollout changes are drift. The default `warn` policy preserves the live change and emits `gitops.drift.detected`. `auto_revert` restores the desired spec and emits `gitops.drift.reverted`. With prune enabled, removing a managed manifest deletes the Service on the next successful sync.
+
 The GitOps controller periodically checks out a Git branch, validates deployment YAML with the same parser and admission path as `orch deploy`, and applies services in the source namespace. Each source records its last revision, managed service names, last sync time, and last error.
 
 ## Configure a Source

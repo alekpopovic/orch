@@ -17,11 +17,15 @@ import (
 	"github.com/alekpopovic/orch/internal/cli"
 	"github.com/alekpopovic/orch/internal/config"
 	"github.com/alekpopovic/orch/internal/controlplane"
+	"github.com/alekpopovic/orch/internal/cronjobs"
+	orchdns "github.com/alekpopovic/orch/internal/dns"
 	"github.com/alekpopovic/orch/internal/gitops"
 	"github.com/alekpopovic/orch/internal/logging"
 	"github.com/alekpopovic/orch/internal/metrics"
 	"github.com/alekpopovic/orch/internal/node"
+	"github.com/alekpopovic/orch/internal/notifications"
 	"github.com/alekpopovic/orch/internal/rollout"
+	"github.com/alekpopovic/orch/internal/scheduler"
 	"github.com/alekpopovic/orch/internal/secrets"
 	"gopkg.in/yaml.v3"
 )
@@ -90,13 +94,51 @@ func run(ctx context.Context, logger *slog.Logger, cfg config.ServerConfig) erro
 		return err
 	}
 	controlPlane := controlplane.NewMemoryService(controlplane.WithSecretEnvelope(envelope), controlplane.WithClusterPolicy(cfg.ClusterPolicy))
+	controlPlane.SetNotificationDispatcher(notifications.NewDispatcher(controlPlane, nil))
+	serverMetrics := metrics.NewServer()
+	if dnsAddress := os.Getenv("ORCH_DNS_ADDR"); dnsAddress != "" {
+		dnsTTL := 30 * time.Second
+		if raw := os.Getenv("ORCH_DNS_TTL"); raw != "" {
+			parsed, parseErr := time.ParseDuration(raw)
+			if parseErr != nil || parsed <= 0 {
+				return fmt.Errorf("ORCH_DNS_TTL must be a positive duration")
+			}
+			dnsTTL = parsed
+		}
+		dnsServer := orchdns.New(controlPlane, dnsTTL, "default", serverMetrics)
+		go func() {
+			if err := dnsServer.ServeUDP(ctx, dnsAddress); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Warn("internal DNS stopped", "error", err)
+			}
+		}()
+	}
 	gitopsController := gitops.NewController(controlPlane, nil, cli.ParseDeploy, logger)
 	go func() {
 		if err := gitopsController.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Warn("GitOps controller stopped", "error", err)
 		}
 	}()
-	serverMetrics := metrics.NewServer()
+	cronController := cronjobs.New(controlPlane, nil)
+	go func() {
+		if err := cronController.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Warn("cronjob controller stopped", "error", err)
+		}
+	}()
+	schedulerController := scheduler.New(controlPlane, scheduler.WithMetrics(serverMetrics))
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := schedulerController.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+					logger.Warn("scheduler iteration failed", "error", err)
+				}
+			}
+		}
+	}()
 	rolloutController := rollout.NewController(controlPlane, logger, rollout.WithMetrics(serverMetrics))
 	go func() {
 		if err := rolloutController.Run(ctx, 5*time.Second); err != nil && !errors.Is(err, context.Canceled) {
