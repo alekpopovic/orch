@@ -4,11 +4,11 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `61-openapi-specification-and-generated-clients.md`
-- Last matching commit: `same commit: Add OpenAPI spec and client`
-- Completed prompt range: `00` through `61`
-- Next prompt to execute: `62-api-versioning-strategy.md`
-- Updated: `2026-07-14`
+- Last executed prompt: `70-gitops-deployment-flow.md`
+- Last matching commit: `f2836ea Add quotas image pinning and GitOps`
+- Completed prompt range: `00` through `70`
+- Next prompt to execute: `71-drift-detection-between-gitops-desired-state-and-cluster-state.md`
+- Updated: `2026-08-21`
 
 ## Update Rule
 
