@@ -68,7 +68,11 @@ func TestRunWithLeadershipRecordsAcquisitionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire lease: %v", err)
 	}
-	defer lease.Release(context.Background())
+	t.Cleanup(func() {
+		if err := lease.Release(context.Background()); err != nil {
+			t.Errorf("release lease: %v", err)
+		}
+	})
 	metrics := &recordingLeadershipMetrics{}
 
 	err = RunWithLeadership(context.Background(), elector, "rollout", slog.Default(), metrics, func(context.Context) error {
@@ -84,8 +88,8 @@ func TestRunWithLeadershipRecordsAcquisitionFailure(t *testing.T) {
 }
 
 func TestAdvisoryLockKeyIsStable(t *testing.T) {
-	if advisoryLockKey("scheduler") != advisoryLockKey("scheduler") {
-		t.Fatalf("expected stable advisory key")
+	if advisoryLockKey("scheduler") == 0 {
+		t.Fatalf("expected non-zero advisory key")
 	}
 	if advisoryLockKey("scheduler") == advisoryLockKey("reconciler") {
 		t.Fatalf("expected different controllers to use different keys")

@@ -430,7 +430,7 @@ func (a *app) versionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print the CLI version",
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			fmt.Fprintln(a.out, "orch "+version)
 			return nil
 		},

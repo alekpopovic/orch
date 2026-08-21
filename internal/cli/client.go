@@ -349,7 +349,7 @@ func (c *APIClient) GetServiceEndpoints(ctx context.Context, id string, includeU
 	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return discovery.ServiceEndpoints{}, err
 	}
-	return discovery.ServiceEndpoints(out), nil
+	return out, nil
 }
 
 func (c *APIClient) DeleteService(ctx context.Context, id string) error {

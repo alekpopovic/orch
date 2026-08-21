@@ -242,7 +242,6 @@ func (spec ServiceSpec) Validate() error {
 	if !validImageReference(spec.Image) {
 		return fmt.Errorf("image reference is invalid")
 	}
-	spec.ImagePullSecret = strings.TrimSpace(spec.ImagePullSecret)
 	if spec.Replicas < 0 {
 		return fmt.Errorf("replicas cannot be negative")
 	}
