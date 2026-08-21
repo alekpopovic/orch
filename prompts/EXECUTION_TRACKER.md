@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `80-notification-sinks.md`
-- Last matching commit: `4d641bb Add jobs storage DNS and notifications`
-- Completed prompt range: `00` through `80`
-- Next prompt to execute: `81-maintenance-windows.md`
+- Last executed prompt: `90-v0-3-0-release-hardening.md`
+- Last matching commit: `7985b9e Harden v0.3 operations and release`
+- Completed prompt range: `00` through `90`
+- Next prompt to execute: none; all repository prompts are complete
 - Updated: `2026-08-21`
 
 ## Update Rule
