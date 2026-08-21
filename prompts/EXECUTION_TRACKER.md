@@ -4,10 +4,10 @@ This file tracks the latest prompt that has been executed against this repositor
 
 ## Current State
 
-- Last executed prompt: `70-gitops-deployment-flow.md`
-- Last matching commit: `f2836ea Add quotas image pinning and GitOps`
-- Completed prompt range: `00` through `70`
-- Next prompt to execute: `71-drift-detection-between-gitops-desired-state-and-cluster-state.md`
+- Last executed prompt: `80-notification-sinks.md`
+- Last matching commit: `4d641bb Add jobs storage DNS and notifications`
+- Completed prompt range: `00` through `80`
+- Next prompt to execute: `81-maintenance-windows.md`
 - Updated: `2026-08-21`
 
 ## Update Rule
