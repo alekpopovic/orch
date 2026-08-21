@@ -42,6 +42,9 @@ func TestRootCommandConstruction(t *testing.T) {
 		"events",
 		"audit",
 		"logs",
+		"namespace ls",
+		"namespace create",
+		"namespace delete",
 	} {
 		if _, _, err := root.Find(strings.Fields(path)); err != nil {
 			t.Fatalf("expected command %q: %v", path, err)
@@ -131,6 +134,21 @@ func TestServerURLPrecedence(t *testing.T) {
 	}
 	if gotServer != "http://flag.example" {
 		t.Fatalf("expected flag server, got %q", gotServer)
+	}
+}
+
+func TestNamespaceFlagIsAppliedToClient(t *testing.T) {
+	client := &fakeClient{}
+	cmd := NewRootCommand(Options{
+		Out: &bytes.Buffer{}, Err: &bytes.Buffer{},
+		NewClient: func(string) (Client, error) { return client, nil },
+	})
+	cmd.SetArgs([]string{"--server", "http://server.example", "--namespace", "payments", "service", "ls"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute service ls: %v", err)
+	}
+	if client.namespace != "payments" {
+		t.Fatalf("expected namespace payments, got %q", client.namespace)
 	}
 }
 
@@ -370,6 +388,7 @@ func TestRolloutStatusResolvesService(t *testing.T) {
 }
 
 type fakeClient struct {
+	namespace                string
 	services                 []types.Service
 	created                  types.Service
 	scaledID                 string
@@ -389,6 +408,18 @@ type fakeClient struct {
 	endpointIncludeUnhealthy bool
 	endpoints                discovery.ServiceEndpoints
 }
+
+func (f *fakeClient) SetNamespace(namespace string) { f.namespace = namespace }
+
+func (f *fakeClient) CreateNamespace(_ context.Context, name string) (types.Namespace, error) {
+	return types.Namespace{Name: name, CreatedAt: time.Now().UTC()}, nil
+}
+
+func (f *fakeClient) ListNamespaces(context.Context) ([]types.Namespace, error) {
+	return []types.Namespace{{Name: "default", CreatedAt: time.Now().UTC()}}, nil
+}
+
+func (f *fakeClient) DeleteNamespace(context.Context, string) error { return nil }
 
 func (f *fakeClient) ListNodes(context.Context) ([]types.Node, error) {
 	return []types.Node{{ID: "00000000-0000-4000-8000-000000000001", Hostname: "node-1", Status: types.NodeReady}}, nil

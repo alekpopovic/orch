@@ -47,6 +47,7 @@ const (
 type Event = types.Event
 
 type Filter struct {
+	Namespace string
 	ServiceID types.ServiceID
 	TaskID    types.TaskID
 	NodeID    types.NodeID

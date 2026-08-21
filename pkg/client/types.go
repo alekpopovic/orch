@@ -151,6 +151,7 @@ func (filter AuditFilter) query() url.Values {
 
 type AuditLog struct {
 	ID         string            `json:"id"`
+	Namespace  string            `json:"namespace"`
 	ActorType  string            `json:"actor_type"`
 	ActorID    string            `json:"actor_id"`
 	Action     string            `json:"action"`
@@ -196,6 +197,18 @@ type NodeDrainStatus struct {
 
 type createServiceRequest struct {
 	Spec types.ServiceSpec `json:"spec"`
+}
+
+type createNamespaceRequest struct {
+	Name string `json:"name"`
+}
+
+type namespaceResponse struct {
+	Namespace types.Namespace `json:"namespace"`
+}
+
+type listNamespacesResponse struct {
+	Namespaces []types.Namespace `json:"namespaces"`
 }
 
 type scaleServiceRequest struct {

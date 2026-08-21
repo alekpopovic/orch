@@ -14,6 +14,7 @@ const docsNav = [
     group: 'API and Operations',
     items: [
       { title: 'API', path: 'API.md', icon: '🔌' },
+      { title: 'API versioning', path: 'API_VERSIONING.md', icon: '🧬' },
       { title: 'OpenAPI YAML', path: 'openapi.yaml', icon: '🧾', fallbacks: ['../api/openapi.yaml'], format: 'code' },
       { title: 'Configuration', path: 'CONFIGURATION.md', icon: '⚙️' },
       { title: 'Production deployment', path: 'PRODUCTION_DEPLOYMENT.md', icon: '🚢' },
@@ -29,7 +30,8 @@ const docsNav = [
       { title: 'Scheduler', path: 'SCHEDULER.md', icon: '🧭' },
       { title: 'Reconciler', path: 'RECONCILER.md', icon: '🔁' },
       { title: 'Rollouts', path: 'ROLLOUTS.md', icon: '🚀' },
-      { title: 'HA control plane', path: 'HA_CONTROL_PLANE_DESIGN.md', icon: '👑' }
+      { title: 'HA control plane', path: 'HA_CONTROL_PLANE_DESIGN.md', icon: '👑' },
+      { title: 'Policy engine', path: 'POLICY_ENGINE_DESIGN.md', icon: '📜' }
     ]
   },
   {
@@ -52,7 +54,8 @@ const docsNav = [
       { title: 'Secrets', path: 'SECRETS.md', icon: '🔐' },
       { title: 'Registries', path: 'REGISTRIES.md', icon: '🗃️' },
       { title: 'Security', path: 'SECURITY.md', icon: '🛡️' },
-      { title: 'Security review', path: 'SECURITY_REVIEW.md', icon: '🧪' }
+      { title: 'Security review', path: 'SECURITY_REVIEW.md', icon: '🧪' },
+      { title: 'Multi-tenancy', path: 'MULTI_TENANCY.md', icon: '🏘️' }
     ]
   },
   {

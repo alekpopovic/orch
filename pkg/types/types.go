@@ -15,6 +15,11 @@ type ServiceID string
 type DeploymentID string
 type EventID string
 
+type Namespace struct {
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Node struct {
 	ID               NodeID            `json:"id"`
 	Hostname         string            `json:"hostname"`
@@ -134,6 +139,7 @@ func (spec NodeSpec) Validate() error {
 
 type Service struct {
 	ID                ServiceID     `json:"id"`
+	Namespace         string        `json:"namespace"`
 	Spec              ServiceSpec   `json:"spec"`
 	Status            ServiceStatus `json:"status"`
 	DeploymentVersion int64         `json:"deployment_version"`
@@ -264,6 +270,7 @@ func (ref SecretRef) EnvName() string {
 
 type Secret struct {
 	Name           string    `json:"name"`
+	Namespace      string    `json:"namespace"`
 	EncryptedValue []byte    `json:"-"`
 	KeyID          string    `json:"key_id,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -273,6 +280,7 @@ type Secret struct {
 func (secret Secret) Metadata() SecretMetadata {
 	return SecretMetadata{
 		Name:      secret.Name,
+		Namespace: secret.Namespace,
 		KeyID:     secret.KeyID,
 		CreatedAt: secret.CreatedAt.UTC(),
 		UpdatedAt: secret.UpdatedAt.UTC(),
@@ -281,6 +289,7 @@ func (secret Secret) Metadata() SecretMetadata {
 
 type SecretMetadata struct {
 	Name      string    `json:"name"`
+	Namespace string    `json:"namespace"`
 	KeyID     string    `json:"key_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -288,6 +297,7 @@ type SecretMetadata struct {
 
 type RegistryCredential struct {
 	ID                string    `json:"id"`
+	Namespace         string    `json:"namespace"`
 	Registry          string    `json:"registry"`
 	Username          string    `json:"username"`
 	EncryptedPassword []byte    `json:"-"`
@@ -299,6 +309,7 @@ type RegistryCredential struct {
 func (credential RegistryCredential) Metadata() RegistryCredentialMetadata {
 	return RegistryCredentialMetadata{
 		ID:        credential.ID,
+		Namespace: credential.Namespace,
 		Registry:  credential.Registry,
 		Username:  credential.Username,
 		KeyID:     credential.KeyID,
@@ -309,6 +320,7 @@ func (credential RegistryCredential) Metadata() RegistryCredentialMetadata {
 
 type RegistryCredentialMetadata struct {
 	ID        string    `json:"id"`
+	Namespace string    `json:"namespace"`
 	Registry  string    `json:"registry"`
 	Username  string    `json:"username"`
 	KeyID     string    `json:"key_id,omitempty"`
@@ -695,6 +707,7 @@ const (
 
 type Task struct {
 	ID            TaskID          `json:"id"`
+	Namespace     string          `json:"namespace"`
 	ServiceID     ServiceID       `json:"service_id"`
 	NodeID        NodeID          `json:"node_id,omitempty"`
 	ContainerID   string          `json:"container_id,omitempty"`
@@ -743,6 +756,7 @@ const (
 
 type Deployment struct {
 	ID             DeploymentID     `json:"id"`
+	Namespace      string           `json:"namespace"`
 	ServiceID      ServiceID        `json:"service_id"`
 	FromVersion    int64            `json:"from_version"`
 	ToVersion      int64            `json:"to_version"`
@@ -777,6 +791,7 @@ const (
 
 type Event struct {
 	ID                EventID           `json:"id"`
+	Namespace         string            `json:"namespace"`
 	Type              string            `json:"type"`
 	Severity          EventSeverity     `json:"severity"`
 	Source            string            `json:"source"`

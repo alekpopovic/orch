@@ -42,9 +42,24 @@ secret_key: change-me
 graceful_shutdown_ttl: 10s
 heartbeat_timeout: 30s
 node_monitor_interval: 5s
+cluster_policy:
+  require_resource_requests: true
+  require_resource_limits: true
+  allow_privileged: false
+  allow_host_network: false
+  allow_host_pid: false
+  allowed_image_registries: [registry.example.com]
+  block_latest_tag: true
+  require_healthcheck: true
+  allowed_host_path_prefixes: [/srv/orch]
+  allowed_capabilities: [NET_BIND_SERVICE]
+  max_replicas_per_service: 20
+  max_public_ports_per_service: 4
 ```
 
 Common server flags mirror config keys: `--addr`, `--database-url`, `--log-level`, `--bootstrap-token`, `--jwt-secret`, `--users`, `--secret-key`, `--shutdown-timeout`, `--node-heartbeat-timeout`, and `--node-monitor-interval`.
+
+Admission policy can also be supplied through `ORCH_POLICY_REQUIRE_RESOURCE_REQUESTS`, `ORCH_POLICY_REQUIRE_RESOURCE_LIMITS`, `ORCH_POLICY_ALLOW_PRIVILEGED`, `ORCH_POLICY_ALLOW_HOST_NETWORK`, `ORCH_POLICY_ALLOW_HOST_PID`, `ORCH_POLICY_ALLOWED_IMAGE_REGISTRIES`, `ORCH_POLICY_BLOCK_LATEST_TAG`, `ORCH_POLICY_REQUIRE_HEALTHCHECK`, `ORCH_POLICY_ALLOWED_HOST_PATH_PREFIXES`, `ORCH_POLICY_ALLOWED_CAPABILITIES`, `ORCH_POLICY_MAX_REPLICAS_PER_SERVICE`, and `ORCH_POLICY_MAX_PUBLIC_PORTS_PER_SERVICE`. List values are comma-separated.
 
 ## Agent
 
@@ -80,13 +95,14 @@ Common agent flags mirror config keys: `--node-name`, `--advertise-address`, `--
 
 ## CLI
 
-The CLI reads `--server` and `--token` flags, `ORCH_SERVER_URL` and `ORCH_TOKEN`, then its YAML config file. The default config path is the OS user config directory under `orch/config.yaml`.
+The CLI reads `--server`, `--token`, and `--namespace` (`-n`) flags, `ORCH_SERVER_URL`, `ORCH_TOKEN`, and `ORCH_NAMESPACE`, then its YAML config file. The default config path is the OS user config directory under `orch/config.yaml`. The namespace defaults to `default`.
 
 Example CLI config:
 
 ```yaml
 server_url: http://localhost:8080
 token: eyJ...
+namespace: default
 ```
 
 ## Redaction

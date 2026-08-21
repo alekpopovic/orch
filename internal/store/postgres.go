@@ -11,6 +11,7 @@ import (
 
 	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/namespace"
 	"github.com/alekpopovic/orch/pkg/types"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -78,6 +79,56 @@ func (s *postgresStore) withTx(ctx context.Context, fn func(*postgresStore) erro
 		return err
 	}
 	return mapPostgresError(tx.Commit(ctx))
+}
+
+func (s *postgresStore) CreateNamespace(ctx context.Context, name string) (types.Namespace, error) {
+	name = namespace.Normalize(name)
+	if err := namespace.Validate(name); err != nil {
+		return types.Namespace{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
+	var item types.Namespace
+	err := s.db.QueryRow(ctx, `
+		INSERT INTO namespaces (name) VALUES ($1)
+		RETURNING name, created_at`, name,
+	).Scan(&item.Name, &item.CreatedAt)
+	if err != nil {
+		return types.Namespace{}, mapPostgresError(err)
+	}
+	item.CreatedAt = item.CreatedAt.UTC()
+	return item, nil
+}
+
+func (s *postgresStore) ListNamespaces(ctx context.Context) ([]types.Namespace, error) {
+	rows, err := s.db.Query(ctx, `SELECT name, created_at FROM namespaces ORDER BY name`)
+	if err != nil {
+		return nil, mapPostgresError(err)
+	}
+	defer rows.Close()
+	items := make([]types.Namespace, 0)
+	for rows.Next() {
+		var item types.Namespace
+		if err := rows.Scan(&item.Name, &item.CreatedAt); err != nil {
+			return nil, mapPostgresError(err)
+		}
+		item.CreatedAt = item.CreatedAt.UTC()
+		items = append(items, item)
+	}
+	return items, mapPostgresError(rows.Err())
+}
+
+func (s *postgresStore) DeleteNamespace(ctx context.Context, name string) error {
+	name = namespace.Normalize(name)
+	if name == namespace.Default {
+		return fmt.Errorf("%w: default namespace cannot be deleted", ErrInvalidState)
+	}
+	tag, err := s.db.Exec(ctx, `DELETE FROM namespaces WHERE name = $1`, name)
+	if err != nil {
+		return mapPostgresError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *postgresStore) CreateNode(ctx context.Context, spec types.NodeSpec) (types.Node, error) {
@@ -235,7 +286,7 @@ func (s *postgresStore) CreateService(ctx context.Context, spec types.ServiceSpe
 
 	var service types.Service
 	err = s.withTx(ctx, func(tx *postgresStore) error {
-		created, err := insertService(ctx, tx.db, spec)
+		created, err := insertService(ctx, tx.db, namespace.FromContext(ctx), spec)
 		if err != nil {
 			return err
 		}
@@ -252,7 +303,7 @@ func (s *postgresStore) CreateService(ctx context.Context, spec types.ServiceSpe
 }
 
 func (s *postgresStore) GetService(ctx context.Context, id types.ServiceID) (types.Service, error) {
-	row := s.db.QueryRow(ctx, serviceSelectSQL()+` WHERE id = $1`, string(id))
+	row := s.db.QueryRow(ctx, serviceSelectSQL()+` WHERE id = $1 AND namespace = $2`, string(id), namespace.FromContext(ctx))
 	service, err := scanService(row)
 	if err != nil {
 		return types.Service{}, mapPostgresError(err)
@@ -261,7 +312,7 @@ func (s *postgresStore) GetService(ctx context.Context, id types.ServiceID) (typ
 }
 
 func (s *postgresStore) ListServices(ctx context.Context) ([]types.Service, error) {
-	rows, err := s.db.Query(ctx, serviceSelectSQL()+` ORDER BY name, id`)
+	rows, err := s.db.Query(ctx, serviceSelectSQL()+` WHERE namespace = $1 ORDER BY name, id`, namespace.FromContext(ctx))
 	if err != nil {
 		return nil, mapPostgresError(err)
 	}
@@ -293,7 +344,7 @@ func (s *postgresStore) UpdateService(ctx context.Context, id types.ServiceID, s
 
 	var service types.Service
 	err = s.withTx(ctx, func(tx *postgresStore) error {
-		updated, err := updateService(ctx, tx.db, id, spec, expectedUpdatedAt)
+		updated, err := updateService(ctx, tx.db, namespace.FromContext(ctx), id, spec, expectedUpdatedAt)
 		if err != nil {
 			return err
 		}
@@ -322,13 +373,14 @@ func (s *postgresStore) UpdateServiceStatus(ctx context.Context, id types.Servic
 		SET status = $2,
 			updated_at = timezone('utc', now()),
 			version = version + 1
-		WHERE id = $1 AND updated_at = $3
-		RETURNING id, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
+		WHERE id = $1 AND updated_at = $3 AND namespace = $4
+		RETURNING id, namespace, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 			resource_requirements, security_context, autoscaling, healthcheck, restart_policy, placement_constraints, routes,
 			status, deployment_version, created_at, updated_at`,
 		string(id),
 		string(status),
 		expectedUpdatedAt.UTC(),
+		namespace.FromContext(ctx),
 	)
 	service, err := scanService(row)
 	if err != nil {
@@ -341,6 +393,7 @@ func (s *postgresStore) UpdateServiceStatus(ctx context.Context, id types.Servic
 }
 
 func (s *postgresStore) CreateSecret(ctx context.Context, secret types.Secret) (types.Secret, error) {
+	secret.Namespace = namespace.FromContext(ctx)
 	secret.Name = strings.TrimSpace(secret.Name)
 	if secret.Name == "" {
 		return types.Secret{}, fmt.Errorf("%w: secret name is required", ErrInvalidState)
@@ -352,13 +405,14 @@ func (s *postgresStore) CreateSecret(ctx context.Context, secret types.Secret) (
 		return types.Secret{}, fmt.Errorf("%w: secret key id is required", ErrInvalidState)
 	}
 	row := s.db.QueryRow(ctx, `
-		INSERT INTO secrets (name, encrypted_value, key_id)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (name) DO UPDATE
+		INSERT INTO secrets (namespace, name, encrypted_value, key_id)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (namespace, name) DO UPDATE
 		SET encrypted_value = EXCLUDED.encrypted_value,
 			key_id = EXCLUDED.key_id,
 			updated_at = timezone('utc', now())
-		RETURNING name, encrypted_value, key_id, created_at, updated_at`,
+		RETURNING namespace, name, encrypted_value, key_id, created_at, updated_at`,
+		secret.Namespace,
 		secret.Name,
 		secret.EncryptedValue,
 		secret.KeyID,
@@ -372,10 +426,10 @@ func (s *postgresStore) CreateSecret(ctx context.Context, secret types.Secret) (
 
 func (s *postgresStore) GetSecret(ctx context.Context, name string) (types.Secret, error) {
 	row := s.db.QueryRow(ctx, `
-		SELECT name, encrypted_value, key_id, created_at, updated_at
+		SELECT namespace, name, encrypted_value, key_id, created_at, updated_at
 		FROM secrets
-		WHERE name = $1`,
-		strings.TrimSpace(name),
+		WHERE namespace = $1 AND name = $2`,
+		namespace.FromContext(ctx), strings.TrimSpace(name),
 	)
 	secret, err := scanSecret(row)
 	if err != nil {
@@ -386,9 +440,9 @@ func (s *postgresStore) GetSecret(ctx context.Context, name string) (types.Secre
 
 func (s *postgresStore) ListSecrets(ctx context.Context) ([]types.Secret, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT name, encrypted_value, key_id, created_at, updated_at
+		SELECT namespace, name, encrypted_value, key_id, created_at, updated_at
 		FROM secrets
-		ORDER BY name`)
+		WHERE namespace = $1 ORDER BY name`, namespace.FromContext(ctx))
 	if err != nil {
 		return nil, mapPostgresError(err)
 	}
@@ -409,7 +463,7 @@ func (s *postgresStore) ListSecrets(ctx context.Context) ([]types.Secret, error)
 }
 
 func (s *postgresStore) DeleteSecret(ctx context.Context, name string) error {
-	tag, err := s.db.Exec(ctx, `DELETE FROM secrets WHERE name = $1`, strings.TrimSpace(name))
+	tag, err := s.db.Exec(ctx, `DELETE FROM secrets WHERE namespace = $1 AND name = $2`, namespace.FromContext(ctx), strings.TrimSpace(name))
 	if err != nil {
 		return mapPostgresError(err)
 	}
@@ -420,6 +474,7 @@ func (s *postgresStore) DeleteSecret(ctx context.Context, name string) error {
 }
 
 func (s *postgresStore) CreateRegistryCredential(ctx context.Context, credential types.RegistryCredential) (types.RegistryCredential, error) {
+	credential.Namespace = namespace.FromContext(ctx)
 	credential.ID = strings.TrimSpace(credential.ID)
 	credential.Registry = strings.TrimSpace(credential.Registry)
 	credential.Username = strings.TrimSpace(credential.Username)
@@ -439,15 +494,16 @@ func (s *postgresStore) CreateRegistryCredential(ctx context.Context, credential
 		return types.RegistryCredential{}, fmt.Errorf("%w: registry credential key id is required", ErrInvalidState)
 	}
 	row := s.db.QueryRow(ctx, `
-		INSERT INTO registry_credentials (id, registry, username, encrypted_password, key_id)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (id) DO UPDATE
+		INSERT INTO registry_credentials (namespace, id, registry, username, encrypted_password, key_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (namespace, id) DO UPDATE
 		SET registry = EXCLUDED.registry,
 			username = EXCLUDED.username,
 			encrypted_password = EXCLUDED.encrypted_password,
 			key_id = EXCLUDED.key_id,
 			updated_at = timezone('utc', now())
-		RETURNING id, registry, username, encrypted_password, key_id, created_at, updated_at`,
+		RETURNING namespace, id, registry, username, encrypted_password, key_id, created_at, updated_at`,
+		credential.Namespace,
 		credential.ID,
 		credential.Registry,
 		credential.Username,
@@ -463,10 +519,10 @@ func (s *postgresStore) CreateRegistryCredential(ctx context.Context, credential
 
 func (s *postgresStore) GetRegistryCredential(ctx context.Context, id string) (types.RegistryCredential, error) {
 	row := s.db.QueryRow(ctx, `
-		SELECT id, registry, username, encrypted_password, key_id, created_at, updated_at
+		SELECT namespace, id, registry, username, encrypted_password, key_id, created_at, updated_at
 		FROM registry_credentials
-		WHERE id = $1`,
-		strings.TrimSpace(id),
+		WHERE namespace = $1 AND id = $2`,
+		namespace.FromContext(ctx), strings.TrimSpace(id),
 	)
 	credential, err := scanRegistryCredential(row)
 	if err != nil {
@@ -477,9 +533,9 @@ func (s *postgresStore) GetRegistryCredential(ctx context.Context, id string) (t
 
 func (s *postgresStore) ListRegistryCredentials(ctx context.Context) ([]types.RegistryCredential, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, registry, username, encrypted_password, key_id, created_at, updated_at
+		SELECT namespace, id, registry, username, encrypted_password, key_id, created_at, updated_at
 		FROM registry_credentials
-		ORDER BY id`)
+		WHERE namespace = $1 ORDER BY id`, namespace.FromContext(ctx))
 	if err != nil {
 		return nil, mapPostgresError(err)
 	}
@@ -500,7 +556,7 @@ func (s *postgresStore) ListRegistryCredentials(ctx context.Context) ([]types.Re
 }
 
 func (s *postgresStore) DeleteRegistryCredential(ctx context.Context, id string) error {
-	tag, err := s.db.Exec(ctx, `DELETE FROM registry_credentials WHERE id = $1`, strings.TrimSpace(id))
+	tag, err := s.db.Exec(ctx, `DELETE FROM registry_credentials WHERE namespace = $1 AND id = $2`, namespace.FromContext(ctx), strings.TrimSpace(id))
 	if err != nil {
 		return mapPostgresError(err)
 	}
@@ -511,6 +567,9 @@ func (s *postgresStore) DeleteRegistryCredential(ctx context.Context, id string)
 }
 
 func (s *postgresStore) CreateTask(ctx context.Context, task types.Task) (types.Task, error) {
+	if task.Namespace == "" {
+		task.Namespace = namespace.FromContext(ctx)
+	}
 	if task.DesiredStatus == "" {
 		task.DesiredStatus = types.TaskRunning
 	}
@@ -530,12 +589,13 @@ func (s *postgresStore) CreateTask(ctx context.Context, task types.Task) (types.
 	}
 	row := s.db.QueryRow(ctx, `
 		INSERT INTO tasks (
-			service_id, node_id, container_id, desired_status, actual_status,
+			namespace, service_id, node_id, container_id, desired_status, actual_status,
 			image, version, ports, conditions, restart_count, failure_reason, started_at, finished_at
 		)
-		VALUES ($1, nullif($2, '')::uuid, nullif($3, ''), $4, $5, $6, $7, $8, $9, $10, nullif($11, ''), $12, $13)
-		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
+		VALUES ($1, $2, nullif($3, '')::uuid, nullif($4, ''), $5, $6, $7, $8, $9, $10, $11, nullif($12, ''), $13, $14)
+		RETURNING id, namespace, service_id, node_id, container_id, desired_status, actual_status,
 			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
+		task.Namespace,
 		string(task.ServiceID),
 		string(task.NodeID),
 		task.ContainerID,
@@ -562,11 +622,11 @@ func (s *postgresStore) GetTask(ctx context.Context, id types.TaskID) (types.Tas
 }
 
 func (s *postgresStore) getTask(ctx context.Context, id types.TaskID, forUpdate bool) (types.Task, error) {
-	sql := taskSelectSQL() + ` WHERE id = $1`
+	sql := taskSelectSQL() + ` WHERE id = $1 AND namespace = $2`
 	if forUpdate {
 		sql += ` FOR UPDATE SKIP LOCKED`
 	}
-	row := s.db.QueryRow(ctx, sql, string(id))
+	row := s.db.QueryRow(ctx, sql, string(id), namespace.FromContext(ctx))
 	task, err := scanTask(row)
 	if err != nil {
 		return types.Task{}, mapPostgresError(err)
@@ -602,7 +662,7 @@ func (s *postgresStore) AssignTask(ctx context.Context, id types.TaskID, nodeID 
 			updated_at = timezone('utc', now()),
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $5 AND actual_status = 'pending'
-		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
+		RETURNING id, namespace, service_id, node_id, container_id, desired_status, actual_status,
 			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(nodeID),
@@ -637,7 +697,7 @@ func (s *postgresStore) StopTask(ctx context.Context, id types.TaskID, expectedU
 			updated_at = timezone('utc', now()),
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $3 AND desired_status <> $2
-		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
+		RETURNING id, namespace, service_id, node_id, container_id, desired_status, actual_status,
 			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(types.TaskStopped),
@@ -680,7 +740,7 @@ func (s *postgresStore) UpdateTaskStatus(ctx context.Context, id types.TaskID, d
 			updated_at = timezone('utc', now()),
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $6
-		RETURNING id, service_id, node_id, container_id, desired_status, actual_status,
+		RETURNING id, namespace, service_id, node_id, container_id, desired_status, actual_status,
 			image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at`,
 		string(id),
 		string(desired),
@@ -700,19 +760,19 @@ func (s *postgresStore) UpdateTaskStatus(ctx context.Context, id types.TaskID, d
 }
 
 func (s *postgresStore) ListTasksByService(ctx context.Context, serviceID types.ServiceID) ([]types.Task, error) {
-	return s.listTasks(ctx, taskSelectSQL()+` WHERE service_id = $1 ORDER BY created_at, id`, string(serviceID))
+	return s.listTasks(ctx, taskSelectSQL()+` WHERE namespace = $1 AND service_id = $2 ORDER BY created_at, id`, namespace.FromContext(ctx), string(serviceID))
 }
 
 func (s *postgresStore) ListTasksByNode(ctx context.Context, nodeID types.NodeID) ([]types.Task, error) {
-	return s.listTasks(ctx, taskSelectSQL()+` WHERE node_id = $1 ORDER BY created_at, id`, string(nodeID))
+	return s.listTasks(ctx, taskSelectSQL()+` WHERE namespace = $1 AND node_id = $2 ORDER BY created_at, id`, namespace.FromContext(ctx), string(nodeID))
 }
 
 func (s *postgresStore) ListTasksByStatus(ctx context.Context, status types.TaskStatus) ([]types.Task, error) {
-	return s.listTasks(ctx, taskSelectSQL()+` WHERE actual_status = $1 ORDER BY created_at, id`, string(status))
+	return s.listTasks(ctx, taskSelectSQL()+` WHERE namespace = $1 AND actual_status = $2 ORDER BY created_at, id`, namespace.FromContext(ctx), string(status))
 }
 
-func (s *postgresStore) listTasks(ctx context.Context, sql string, arg any) ([]types.Task, error) {
-	rows, err := s.db.Query(ctx, sql, arg)
+func (s *postgresStore) listTasks(ctx context.Context, sql string, args ...any) ([]types.Task, error) {
+	rows, err := s.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, mapPostgresError(err)
 	}
@@ -733,14 +793,18 @@ func (s *postgresStore) listTasks(ctx context.Context, sql string, arg any) ([]t
 }
 
 func (s *postgresStore) CreateDeployment(ctx context.Context, deployment types.Deployment) (types.Deployment, error) {
+	if deployment.Namespace == "" {
+		deployment.Namespace = namespace.FromContext(ctx)
+	}
 	row := s.db.QueryRow(ctx, `
 		INSERT INTO deployments (
-			service_id, from_version, to_version, strategy, status,
+			namespace, service_id, from_version, to_version, strategy, status,
 			max_unavailable, max_surge, started_at, completed_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, service_id, from_version, to_version, strategy, status,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id, namespace, service_id, from_version, to_version, strategy, status,
 			max_unavailable, max_surge, created_at, updated_at, started_at, completed_at`,
+		deployment.Namespace,
 		string(deployment.ServiceID),
 		deployment.FromVersion,
 		deployment.ToVersion,
@@ -759,7 +823,7 @@ func (s *postgresStore) CreateDeployment(ctx context.Context, deployment types.D
 }
 
 func (s *postgresStore) GetDeployment(ctx context.Context, id types.DeploymentID) (types.Deployment, error) {
-	row := s.db.QueryRow(ctx, deploymentSelectSQL()+` WHERE id = $1`, string(id))
+	row := s.db.QueryRow(ctx, deploymentSelectSQL()+` WHERE id = $1 AND namespace = $2`, string(id), namespace.FromContext(ctx))
 	deployment, err := scanDeployment(row)
 	if err != nil {
 		return types.Deployment{}, mapPostgresError(err)
@@ -768,7 +832,7 @@ func (s *postgresStore) GetDeployment(ctx context.Context, id types.DeploymentID
 }
 
 func (s *postgresStore) ListDeploymentsByStatus(ctx context.Context, status types.DeploymentStatus) ([]types.Deployment, error) {
-	rows, err := s.db.Query(ctx, deploymentSelectSQL()+` WHERE status = $1 ORDER BY created_at, id`, string(status))
+	rows, err := s.db.Query(ctx, deploymentSelectSQL()+` WHERE namespace = $1 AND status = $2 ORDER BY created_at, id`, namespace.FromContext(ctx), string(status))
 	if err != nil {
 		return nil, mapPostgresError(err)
 	}
@@ -804,7 +868,7 @@ func (s *postgresStore) UpdateDeploymentStatus(ctx context.Context, id types.Dep
 			updated_at = timezone('utc', now()),
 			row_version = row_version + 1
 		WHERE id = $1 AND updated_at = $3
-		RETURNING id, service_id, from_version, to_version, strategy, status,
+		RETURNING id, namespace, service_id, from_version, to_version, strategy, status,
 			max_unavailable, max_surge, created_at, updated_at, started_at, completed_at`,
 		string(id),
 		string(status),
@@ -821,12 +885,16 @@ func (s *postgresStore) UpdateDeploymentStatus(ctx context.Context, id types.Dep
 }
 
 func (s *postgresStore) AppendEvent(ctx context.Context, event types.Event) (types.Event, error) {
+	if event.Namespace == "" {
+		event.Namespace = namespace.FromContext(ctx)
+	}
 	row := s.db.QueryRow(ctx, `
 		INSERT INTO events (
-			type, severity, source, message, related_object_type, related_object_id, details, created_at
+			namespace, type, severity, source, message, related_object_type, related_object_id, details, created_at
 		)
-		VALUES ($1, $2, $3, $4, nullif($5, ''), nullif($6, '')::uuid, $7, COALESCE($8, timezone('utc', now())))
-		RETURNING id, type, severity, source, message, related_object_type, related_object_id, details, created_at`,
+		VALUES ($1, $2, $3, $4, $5, nullif($6, ''), nullif($7, '')::uuid, $8, COALESCE($9, timezone('utc', now())))
+		RETURNING id, namespace, type, severity, source, message, related_object_type, related_object_id, details, created_at`,
+		event.Namespace,
 		event.Type,
 		string(event.Severity),
 		event.Source,
@@ -850,7 +918,7 @@ func (s *postgresStore) ListEvents(ctx context.Context, filter events.Filter) ([
 	}
 
 	sql := `
-		SELECT id, type, severity, source, message, related_object_type, related_object_id, details, created_at
+		SELECT id, namespace, type, severity, source, message, related_object_type, related_object_id, details, created_at
 		FROM events`
 	args := make([]any, 0, 8)
 	conditions := make([]string, 0, 8)
@@ -858,6 +926,11 @@ func (s *postgresStore) ListEvents(ctx context.Context, filter events.Filter) ([
 		args = append(args, value)
 		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
 	}
+	filterNamespace := filter.Namespace
+	if filterNamespace == "" {
+		filterNamespace = namespace.FromContext(ctx)
+	}
+	add("namespace = $%d", namespace.Normalize(filterNamespace))
 	if filter.ServiceID != "" {
 		add("(related_object_type = 'service' AND related_object_id = $%d)", string(filter.ServiceID))
 	}
@@ -904,12 +977,16 @@ func (s *postgresStore) ListEvents(ctx context.Context, filter events.Filter) ([
 
 func (s *postgresStore) AppendAuditLog(ctx context.Context, log audit.Log) (audit.Log, error) {
 	log = audit.Normalize(log, time.Now().UTC())
+	if log.Namespace == "" {
+		log.Namespace = namespace.FromContext(ctx)
+	}
 	row := s.db.QueryRow(ctx, `
 		INSERT INTO audit_logs (
-			actor_type, actor_id, action, target_type, target_id, request_id, source_ip, outcome, metadata, created_at
+			namespace, actor_type, actor_id, action, target_type, target_id, request_id, source_ip, outcome, metadata, created_at
 		)
-		VALUES ($1, $2, $3, $4, $5, nullif($6, ''), nullif($7, ''), $8, $9, COALESCE($10, timezone('utc', now())))
-		RETURNING id, actor_type, actor_id, action, target_type, target_id, request_id, source_ip, outcome, metadata, created_at`,
+		VALUES ($1, $2, $3, $4, $5, $6, nullif($7, ''), nullif($8, ''), $9, $10, COALESCE($11, timezone('utc', now())))
+		RETURNING id, namespace, actor_type, actor_id, action, target_type, target_id, request_id, source_ip, outcome, metadata, created_at`,
+		log.Namespace,
 		string(log.ActorType),
 		log.ActorID,
 		log.Action,
@@ -935,7 +1012,7 @@ func (s *postgresStore) ListAuditLogs(ctx context.Context, filter audit.Filter) 
 	}
 
 	sql := `
-		SELECT id, actor_type, actor_id, action, target_type, target_id, request_id, source_ip, outcome, metadata, created_at
+		SELECT id, namespace, actor_type, actor_id, action, target_type, target_id, request_id, source_ip, outcome, metadata, created_at
 		FROM audit_logs`
 	args := make([]any, 0, 8)
 	conditions := make([]string, 0, 8)
@@ -943,6 +1020,11 @@ func (s *postgresStore) ListAuditLogs(ctx context.Context, filter audit.Filter) 
 		args = append(args, value)
 		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
 	}
+	filterNamespace := filter.Namespace
+	if filterNamespace == "" {
+		filterNamespace = namespace.FromContext(ctx)
+	}
+	add("namespace = $%d", namespace.Normalize(filterNamespace))
 	if filter.ActorType != "" {
 		add("actor_type = $%d", string(filter.ActorType))
 	}
@@ -990,20 +1072,21 @@ func (s *postgresStore) ListAuditLogs(ctx context.Context, filter audit.Filter) 
 	return logs, nil
 }
 
-func insertService(ctx context.Context, db postgresDB, spec types.ServiceSpec) (types.Service, error) {
+func insertService(ctx context.Context, db postgresDB, namespaceName string, spec types.ServiceSpec) (types.Service, error) {
 	env, secretRefs, ports, requirements, securityContext, autoscaling, healthcheck, restartPolicy, constraints, routes, err := serviceJSON(spec)
 	if err != nil {
 		return types.Service{}, err
 	}
 	row := db.QueryRow(ctx, `
 		INSERT INTO services (
-			name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
+			namespace, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 			resource_requirements, security_context, autoscaling, healthcheck, restart_policy, placement_constraints, routes
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-		RETURNING id, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		RETURNING id, namespace, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 			resource_requirements, security_context, autoscaling, healthcheck, restart_policy, placement_constraints, routes, status,
 			deployment_version, created_at, updated_at`,
+		namespaceName,
 		spec.Name,
 		spec.Image,
 		spec.ImagePullSecret,
@@ -1027,7 +1110,7 @@ func insertService(ctx context.Context, db postgresDB, spec types.ServiceSpec) (
 	return service, nil
 }
 
-func updateService(ctx context.Context, db postgresDB, id types.ServiceID, spec types.ServiceSpec, expectedUpdatedAt time.Time) (types.Service, error) {
+func updateService(ctx context.Context, db postgresDB, namespaceName string, id types.ServiceID, spec types.ServiceSpec, expectedUpdatedAt time.Time) (types.Service, error) {
 	env, secretRefs, ports, requirements, securityContext, autoscaling, healthcheck, restartPolicy, constraints, routes, err := serviceJSON(spec)
 	if err != nil {
 		return types.Service{}, err
@@ -1052,8 +1135,8 @@ func updateService(ctx context.Context, db postgresDB, id types.ServiceID, spec 
 				deployment_version = deployment_version + 1,
 				updated_at = timezone('utc', now()),
 				version = version + 1
-			WHERE id = $1 AND updated_at = $16
-			RETURNING id, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
+			WHERE id = $1 AND updated_at = $16 AND namespace = $18
+			RETURNING id, namespace, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 				resource_requirements, security_context, autoscaling, healthcheck, restart_policy, placement_constraints, routes,
 				status, deployment_version, created_at, updated_at`,
 		string(id),
@@ -1073,6 +1156,7 @@ func updateService(ctx context.Context, db postgresDB, id types.ServiceID, spec 
 		constraints,
 		expectedUpdatedAt.UTC(),
 		routes,
+		namespaceName,
 	)
 	service, err := scanService(row)
 	if err != nil {
@@ -1100,18 +1184,18 @@ func insertServiceVersion(ctx context.Context, db postgresDB, serviceID types.Se
 }
 
 func serviceSelectSQL() string {
-	return `SELECT id, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
+	return `SELECT id, namespace, name, image, image_pull_secret, stateful, replicas, env, secret_refs, ports,
 		resource_requirements, security_context, autoscaling, healthcheck, restart_policy, placement_constraints, routes,
 		status, deployment_version, created_at, updated_at FROM services`
 }
 
 func taskSelectSQL() string {
-	return `SELECT id, service_id, node_id, container_id, desired_status, actual_status,
+	return `SELECT id, namespace, service_id, node_id, container_id, desired_status, actual_status,
 		image, version, ports, conditions, restart_count, failure_reason, created_at, updated_at, started_at, finished_at FROM tasks`
 }
 
 func deploymentSelectSQL() string {
-	return `SELECT id, service_id, from_version, to_version, strategy, status,
+	return `SELECT id, namespace, service_id, from_version, to_version, strategy, status,
 		max_unavailable, max_surge, created_at, updated_at, started_at, completed_at FROM deployments`
 }
 
@@ -1168,6 +1252,7 @@ func scanService(row pgx.Row) (types.Service, error) {
 	var healthcheck []byte
 	err := row.Scan(
 		&id,
+		&service.Namespace,
 		&service.Spec.Name,
 		&service.Spec.Image,
 		&service.Spec.ImagePullSecret,
@@ -1211,6 +1296,7 @@ func scanTask(row pgx.Row) (types.Task, error) {
 	var startedAt, finishedAt *time.Time
 	err := row.Scan(
 		&id,
+		&task.Namespace,
 		&serviceID,
 		&nodeID,
 		&containerID,
@@ -1265,6 +1351,7 @@ func scanTask(row pgx.Row) (types.Task, error) {
 func scanSecret(row pgx.Row) (types.Secret, error) {
 	var secret types.Secret
 	err := row.Scan(
+		&secret.Namespace,
 		&secret.Name,
 		&secret.EncryptedValue,
 		&secret.KeyID,
@@ -1283,6 +1370,7 @@ func scanSecret(row pgx.Row) (types.Secret, error) {
 func scanRegistryCredential(row pgx.Row) (types.RegistryCredential, error) {
 	var credential types.RegistryCredential
 	err := row.Scan(
+		&credential.Namespace,
 		&credential.ID,
 		&credential.Registry,
 		&credential.Username,
@@ -1306,6 +1394,7 @@ func scanDeployment(row pgx.Row) (types.Deployment, error) {
 	var startedAt, completedAt *time.Time
 	err := row.Scan(
 		&id,
+		&deployment.Namespace,
 		&serviceID,
 		&deployment.FromVersion,
 		&deployment.ToVersion,
@@ -1341,6 +1430,7 @@ func scanEvent(row pgx.Row) (types.Event, error) {
 	var details []byte
 	err := row.Scan(
 		&id,
+		&event.Namespace,
 		&event.Type,
 		&event.Severity,
 		&event.Source,
@@ -1375,6 +1465,7 @@ func scanAuditLog(row pgx.Row) (audit.Log, error) {
 	var metadata []byte
 	err := row.Scan(
 		&log.ID,
+		&log.Namespace,
 		&log.ActorType,
 		&log.ActorID,
 		&log.Action,

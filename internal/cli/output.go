@@ -34,6 +34,18 @@ func writeNodes(w io.Writer, output string, nodes []types.Node) error {
 	return tw.Flush()
 }
 
+func writeNamespaces(w io.Writer, output string, namespaces []types.Namespace) error {
+	if output == "json" {
+		return writeValue(w, output, namespaces)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tCREATED")
+	for _, item := range namespaces {
+		fmt.Fprintf(tw, "%s\t%s\n", item.Name, item.CreatedAt.Format("2006-01-02T15:04:05Z07:00"))
+	}
+	return tw.Flush()
+}
+
 func writeNode(w io.Writer, output string, node types.Node) error {
 	if output == "json" {
 		return writeValue(w, output, node)

@@ -227,9 +227,9 @@ placement:
 | --- | --- |
 | 🌈 Brand + site | [GitHub Pages documentation site](https://alekpopovic.github.io/orch/#GITHUB_PAGES.md), [Brand kit](https://alekpopovic.github.io/orch/#BRAND.md), [Charts](https://alekpopovic.github.io/orch/#CHARTS.md) |
 | 🏗️ Architecture | [Architecture](https://alekpopovic.github.io/orch/#ARCHITECTURE.md), [State machines](https://alekpopovic.github.io/orch/#STATE_MACHINES.md) |
-| 🔌 API | [API](https://alekpopovic.github.io/orch/#API.md), [OpenAPI](https://alekpopovic.github.io/orch/#openapi.yaml) |
+| 🔌 API | [API](https://alekpopovic.github.io/orch/#API.md), [API versioning](https://alekpopovic.github.io/orch/#API_VERSIONING.md), [OpenAPI](https://alekpopovic.github.io/orch/#openapi.yaml) |
 | 🐳 Runtime | [Agent](https://alekpopovic.github.io/orch/#AGENT.md), [Service spec](https://alekpopovic.github.io/orch/#SERVICE_SPEC.md), [Resources](https://alekpopovic.github.io/orch/#RESOURCES.md) |
 | 🧭 Control loops | [Scheduler](https://alekpopovic.github.io/orch/#SCHEDULER.md), [Reconciler](https://alekpopovic.github.io/orch/#RECONCILER.md), [Rollouts](https://alekpopovic.github.io/orch/#ROLLOUTS.md) |
-| 🛡️ Security | [Security](https://alekpopovic.github.io/orch/#SECURITY.md), [Security review](https://alekpopovic.github.io/orch/#SECURITY_REVIEW.md), [Secrets](https://alekpopovic.github.io/orch/#SECRETS.md), [Registries](https://alekpopovic.github.io/orch/#REGISTRIES.md) |
+| 🛡️ Security | [Security](https://alekpopovic.github.io/orch/#SECURITY.md), [Policy engine](https://alekpopovic.github.io/orch/#POLICY_ENGINE_DESIGN.md), [Multi-tenancy](https://alekpopovic.github.io/orch/#MULTI_TENANCY.md), [Secrets](https://alekpopovic.github.io/orch/#SECRETS.md), [Registries](https://alekpopovic.github.io/orch/#REGISTRIES.md) |
 | 📈 Operations | [Observability](https://alekpopovic.github.io/orch/#OBSERVABILITY.md), [Reliability](https://alekpopovic.github.io/orch/#RELIABILITY.md), [Operations](https://alekpopovic.github.io/orch/#OPERATIONS.md), [Production deployment](https://alekpopovic.github.io/orch/#PRODUCTION_DEPLOYMENT.md) |
 | 🧪 Testing | [Load testing](https://alekpopovic.github.io/orch/#LOAD_TESTING.md), [Chaos testing](https://alekpopovic.github.io/orch/#CHAOS_TESTING.md), [Development](https://alekpopovic.github.io/orch/#DEVELOPMENT.md) |

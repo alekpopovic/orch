@@ -27,6 +27,7 @@ type APIClient struct {
 	baseURL    string
 	httpClient *http.Client
 	token      string
+	namespace  string
 }
 
 type APIError struct {
@@ -79,6 +80,30 @@ func NewAPIClient(serverURL string) (*APIClient, error) {
 
 func (c *APIClient) SetToken(token string) {
 	c.token = strings.TrimSpace(token)
+}
+
+func (c *APIClient) SetNamespace(namespace string) {
+	c.namespace = strings.TrimSpace(namespace)
+}
+
+func (c *APIClient) CreateNamespace(ctx context.Context, name string) (types.Namespace, error) {
+	var out api.NamespaceResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/namespaces", api.CreateNamespaceRequest{Name: name}, &out); err != nil {
+		return types.Namespace{}, err
+	}
+	return out.Namespace, nil
+}
+
+func (c *APIClient) ListNamespaces(ctx context.Context) ([]types.Namespace, error) {
+	var out api.ListNamespacesResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/namespaces", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Namespaces, nil
+}
+
+func (c *APIClient) DeleteNamespace(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/namespaces/"+url.PathEscape(name), nil, nil)
 }
 
 func (c *APIClient) ListNodes(ctx context.Context) ([]types.Node, error) {
@@ -316,6 +341,9 @@ func (c *APIClient) StreamLogs(ctx context.Context, serviceID string, taskID str
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
+	if c.namespace != "" {
+		req.Header.Set("X-Orch-Namespace", c.namespace)
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request logs failed: %w", err)
@@ -350,6 +378,9 @@ func (c *APIClient) do(ctx context.Context, method string, path string, body any
 	req.Header.Set("Accept", "application/json")
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if c.namespace != "" {
+		req.Header.Set("X-Orch-Namespace", c.namespace)
 	}
 
 	resp, err := c.httpClient.Do(req)

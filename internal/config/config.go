@@ -41,6 +41,7 @@ type AgentConfig struct {
 type CLIConfig struct {
 	ServerURL string `yaml:"server_url" json:"server_url"`
 	Token     string `yaml:"token" json:"token"`
+	Namespace string `yaml:"namespace" json:"namespace"`
 }
 
 type ServerOverrides struct {
@@ -72,6 +73,7 @@ type AgentOverrides struct {
 type CLIOverrides struct {
 	ServerURL string
 	Token     string
+	Namespace string
 }
 
 func LoadServer() ServerConfig {
@@ -127,11 +129,20 @@ func LoadCLI(path string, overrides CLIOverrides) (CLIConfig, error) {
 	if value := strings.TrimSpace(os.Getenv("ORCH_TOKEN")); value != "" {
 		cfg.Token = value
 	}
+	if value := strings.TrimSpace(os.Getenv("ORCH_NAMESPACE")); value != "" {
+		cfg.Namespace = value
+	}
 	if strings.TrimSpace(overrides.ServerURL) != "" {
 		cfg.ServerURL = strings.TrimSpace(overrides.ServerURL)
 	}
 	if strings.TrimSpace(overrides.Token) != "" {
 		cfg.Token = strings.TrimSpace(overrides.Token)
+	}
+	if strings.TrimSpace(overrides.Namespace) != "" {
+		cfg.Namespace = strings.TrimSpace(overrides.Namespace)
+	}
+	if strings.TrimSpace(cfg.Namespace) == "" {
+		cfg.Namespace = "default"
 	}
 	return cfg, nil
 }
@@ -360,6 +371,19 @@ func applyBool(target *bool, value string) error {
 	return nil
 }
 
+func applyInt(target *int, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+	*target = parsed
+	return nil
+}
+
 func applyCSV(target *[]string, value string) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -377,6 +401,12 @@ func applyCSV(target *[]string, value string) {
 }
 
 func applyClusterPolicyEnv(clusterPolicy *policy.ClusterPolicy) error {
+	if err := applyBool(&clusterPolicy.RequireResourceRequests, os.Getenv("ORCH_POLICY_REQUIRE_RESOURCE_REQUESTS")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_REQUIRE_RESOURCE_REQUESTS: %w", err)
+	}
+	if err := applyBool(&clusterPolicy.RequireResourceLimits, os.Getenv("ORCH_POLICY_REQUIRE_RESOURCE_LIMITS")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_REQUIRE_RESOURCE_LIMITS: %w", err)
+	}
 	if err := applyBool(&clusterPolicy.AllowPrivileged, os.Getenv("ORCH_POLICY_ALLOW_PRIVILEGED")); err != nil {
 		return fmt.Errorf("ORCH_POLICY_ALLOW_PRIVILEGED: %w", err)
 	}
@@ -386,12 +416,31 @@ func applyClusterPolicyEnv(clusterPolicy *policy.ClusterPolicy) error {
 	if err := applyBool(&clusterPolicy.AllowHostPID, os.Getenv("ORCH_POLICY_ALLOW_HOST_PID")); err != nil {
 		return fmt.Errorf("ORCH_POLICY_ALLOW_HOST_PID: %w", err)
 	}
+	if err := applyBool(&clusterPolicy.BlockLatestTag, os.Getenv("ORCH_POLICY_BLOCK_LATEST_TAG")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_BLOCK_LATEST_TAG: %w", err)
+	}
+	if err := applyBool(&clusterPolicy.RequireHealthcheck, os.Getenv("ORCH_POLICY_REQUIRE_HEALTHCHECK")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_REQUIRE_HEALTHCHECK: %w", err)
+	}
+	if err := applyInt(&clusterPolicy.MaxReplicasPerService, os.Getenv("ORCH_POLICY_MAX_REPLICAS_PER_SERVICE")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_MAX_REPLICAS_PER_SERVICE: %w", err)
+	}
+	if err := applyInt(&clusterPolicy.MaxPublicPortsPerService, os.Getenv("ORCH_POLICY_MAX_PUBLIC_PORTS_PER_SERVICE")); err != nil {
+		return fmt.Errorf("ORCH_POLICY_MAX_PUBLIC_PORTS_PER_SERVICE: %w", err)
+	}
+	applyCSV(&clusterPolicy.AllowedImageRegistries, os.Getenv("ORCH_POLICY_ALLOWED_IMAGE_REGISTRIES"))
 	applyCSV(&clusterPolicy.AllowedHostPathPrefixes, os.Getenv("ORCH_POLICY_ALLOWED_HOST_PATH_PREFIXES"))
 	applyCSV(&clusterPolicy.AllowedCapabilities, os.Getenv("ORCH_POLICY_ALLOWED_CAPABILITIES"))
 	return nil
 }
 
 func mergeClusterPolicy(target *policy.ClusterPolicy, source policy.ClusterPolicy) {
+	if source.RequireResourceRequests {
+		target.RequireResourceRequests = true
+	}
+	if source.RequireResourceLimits {
+		target.RequireResourceLimits = true
+	}
 	if source.AllowPrivileged {
 		target.AllowPrivileged = true
 	}
@@ -400,6 +449,21 @@ func mergeClusterPolicy(target *policy.ClusterPolicy, source policy.ClusterPolic
 	}
 	if source.AllowHostPID {
 		target.AllowHostPID = true
+	}
+	if source.BlockLatestTag {
+		target.BlockLatestTag = true
+	}
+	if source.RequireHealthcheck {
+		target.RequireHealthcheck = true
+	}
+	if source.AllowedImageRegistries != nil {
+		target.AllowedImageRegistries = append([]string(nil), source.AllowedImageRegistries...)
+	}
+	if source.MaxReplicasPerService != 0 {
+		target.MaxReplicasPerService = source.MaxReplicasPerService
+	}
+	if source.MaxPublicPortsPerService != 0 {
+		target.MaxPublicPortsPerService = source.MaxPublicPortsPerService
 	}
 	if source.AllowedHostPathPrefixes != nil {
 		target.AllowedHostPathPrefixes = append([]string(nil), source.AllowedHostPathPrefixes...)
@@ -526,6 +590,7 @@ func (cfg CLIConfig) Redacted() map[string]any {
 	return map[string]any{
 		"server_url": cfg.ServerURL,
 		"token":      redact(cfg.Token),
+		"namespace":  cfg.Namespace,
 	}
 }
 
@@ -554,6 +619,9 @@ func (cfg ServerConfig) Validate() error {
 	}
 	if strings.TrimSpace(cfg.SecretKey) == "" {
 		return fmt.Errorf("secret encryption key is required")
+	}
+	if cfg.ClusterPolicy.MaxReplicasPerService < 0 || cfg.ClusterPolicy.MaxPublicPortsPerService < 0 {
+		return fmt.Errorf("cluster policy maximums cannot be negative")
 	}
 	return nil
 }

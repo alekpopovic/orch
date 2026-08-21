@@ -45,6 +45,12 @@ type Client interface {
 
 type Config = config.CLIConfig
 
+type NamespaceClient interface {
+	CreateNamespace(ctx context.Context, name string) (types.Namespace, error)
+	ListNamespaces(ctx context.Context) ([]types.Namespace, error)
+	DeleteNamespace(ctx context.Context, name string) error
+}
+
 type Options struct {
 	Out           io.Writer
 	Err           io.Writer
@@ -53,12 +59,13 @@ type Options struct {
 }
 
 type app struct {
-	out        io.Writer
-	serverFlag string
-	tokenFlag  string
-	configPath string
-	output     string
-	newClient  func(serverURL string) (Client, error)
+	out           io.Writer
+	serverFlag    string
+	tokenFlag     string
+	namespaceFlag string
+	configPath    string
+	output        string
+	newClient     func(serverURL string) (Client, error)
 }
 
 func NewRootCommand(opts Options) *cobra.Command {
@@ -103,6 +110,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.SetErr(errOut)
 	root.PersistentFlags().StringVar(&a.serverFlag, "server", "", "control-plane server URL")
 	root.PersistentFlags().StringVar(&a.tokenFlag, "token", "", "user API JWT bearer token")
+	root.PersistentFlags().StringVarP(&a.namespaceFlag, "namespace", "n", "", "workload namespace")
 	root.PersistentFlags().StringVar(&a.output, "output", "table", "output format: table or json")
 	root.PersistentFlags().StringVar(&a.configPath, "config", a.configPath, "CLI config file")
 
@@ -119,7 +127,67 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.AddCommand(a.eventsCommand())
 	root.AddCommand(a.auditCommand())
 	root.AddCommand(a.logsCommand())
+	root.AddCommand(a.namespaceCommand())
 	return root
+}
+
+func (a *app) namespaceCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "namespace", Short: "Manage namespaces"}
+	cmd.AddCommand(&cobra.Command{
+		Use: "ls", Short: "List namespaces",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := a.client()
+			if err != nil {
+				return err
+			}
+			namespaceClient, ok := client.(NamespaceClient)
+			if !ok {
+				return fmt.Errorf("client does not support namespaces")
+			}
+			items, err := namespaceClient.ListNamespaces(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return writeNamespaces(a.out, a.output, items)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use: "create <name>", Short: "Create a namespace", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := a.client()
+			if err != nil {
+				return err
+			}
+			namespaceClient, ok := client.(NamespaceClient)
+			if !ok {
+				return fmt.Errorf("client does not support namespaces")
+			}
+			item, err := namespaceClient.CreateNamespace(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return writeNamespaces(a.out, a.output, []types.Namespace{item})
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use: "delete <name>", Short: "Delete an empty namespace", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := a.client()
+			if err != nil {
+				return err
+			}
+			namespaceClient, ok := client.(NamespaceClient)
+			if !ok {
+				return fmt.Errorf("client does not support namespaces")
+			}
+			if err := namespaceClient.DeleteNamespace(cmd.Context(), args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintf(a.out, "deleted namespace %s\n", args[0])
+			return nil
+		},
+	})
+	return cmd
 }
 
 func Execute(ctx context.Context, args []string, out io.Writer, errOut io.Writer) error {
@@ -633,6 +701,9 @@ func (a *app) client() (Client, error) {
 	if apiClient, ok := client.(*APIClient); ok {
 		apiClient.SetToken(a.token())
 	}
+	if setter, ok := client.(interface{ SetNamespace(string) }); ok {
+		setter.SetNamespace(a.namespace())
+	}
 	return client, nil
 }
 
@@ -653,6 +724,14 @@ func (a *app) token() string {
 		return ""
 	}
 	return strings.TrimSpace(cfg.Token)
+}
+
+func (a *app) namespace() string {
+	cfg, err := config.LoadCLI(a.configPath, config.CLIOverrides{Namespace: a.namespaceFlag})
+	if err != nil {
+		return "default"
+	}
+	return strings.TrimSpace(cfg.Namespace)
 }
 
 func defaultConfigPath() string {

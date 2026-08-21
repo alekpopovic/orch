@@ -5,12 +5,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/namespace"
 	"github.com/alekpopovic/orch/pkg/types"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -130,6 +133,28 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 	if _, err := store.CreateService(ctx, serviceSpecFixture()); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("expected duplicate service name, got %v", err)
+	}
+	if _, err := store.CreateNamespace(ctx, "team-b"); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	teamBCtx := namespace.WithContext(ctx, "team-b")
+	teamBService, err := store.CreateService(teamBCtx, serviceSpecFixture())
+	if err != nil {
+		t.Fatalf("create same service name in another namespace: %v", err)
+	}
+	if teamBService.Namespace != "team-b" {
+		t.Fatalf("expected team-b namespace, got %q", teamBService.Namespace)
+	}
+	defaultServices, err := store.ListServices(ctx)
+	if err != nil {
+		t.Fatalf("list default namespace services: %v", err)
+	}
+	teamBServices, err := store.ListServices(teamBCtx)
+	if err != nil {
+		t.Fatalf("list team-b namespace services: %v", err)
+	}
+	if len(defaultServices) != 1 || len(teamBServices) != 1 || defaultServices[0].ID == teamBServices[0].ID {
+		t.Fatalf("expected isolated service lists, got default=%#v team-b=%#v", defaultServices, teamBServices)
 	}
 
 	task, err := store.CreateTask(ctx, types.Task{
@@ -433,20 +458,29 @@ func serviceSpecFixture() types.ServiceSpec {
 
 func migrate(t *testing.T, ctx context.Context, pool execer) {
 	t.Helper()
+	var databaseName string
+	if err := pool.QueryRow(ctx, `SELECT current_database()`).Scan(&databaseName); err != nil {
+		t.Fatalf("read integration-test database name: %v", err)
+	}
+	if !strings.HasSuffix(databaseName, "_test") {
+		t.Fatalf("refusing to reset database %q: integration database name must end in _test", databaseName)
+	}
+	if _, err := pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
+		t.Fatalf("reset integration-test schema: %v", err)
+	}
 
 	for _, file := range []string{
-		"000006_task_conditions.down.sql",
-		"000005_registry_credentials.down.sql",
-		"000004_secrets.down.sql",
-		"000003_service_routes.down.sql",
-		"000002_task_ports.down.sql",
-		"000001_initial_schema.down.sql",
 		"000001_initial_schema.up.sql",
 		"000002_task_ports.up.sql",
 		"000003_service_routes.up.sql",
 		"000004_secrets.up.sql",
 		"000005_registry_credentials.up.sql",
 		"000006_task_conditions.up.sql",
+		"000007_event_details.up.sql",
+		"000008_audit_logs.up.sql",
+		"000009_service_security_context.up.sql",
+		"000010_service_autoscaling.up.sql",
+		"000011_namespaces.up.sql",
 	} {
 		sql, err := os.ReadFile(filepath.Join("..", "..", "migrations", file))
 		if err != nil {
@@ -472,4 +506,5 @@ func portsEqual(left, right []types.Port) bool {
 
 type execer interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }

@@ -10,8 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/admission"
 	"github.com/alekpopovic/orch/internal/audit"
+	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/namespace"
 	"github.com/alekpopovic/orch/internal/policy"
 	"github.com/alekpopovic/orch/internal/secrets"
 	"github.com/alekpopovic/orch/internal/store"
@@ -19,6 +22,9 @@ import (
 )
 
 type Service interface {
+	CreateNamespace(ctx context.Context, name string) (types.Namespace, error)
+	ListNamespaces(ctx context.Context) ([]types.Namespace, error)
+	DeleteNamespace(ctx context.Context, name string) error
 	RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error)
 	HeartbeatNode(ctx context.Context, heartbeat NodeHeartbeat) (NodeCommand, error)
 	MarkStaleNodesOffline(ctx context.Context, timeout time.Duration) ([]types.Node, error)
@@ -154,7 +160,9 @@ type MemoryService struct {
 	policy      policy.ClusterPolicy
 	events      []types.Event
 	auditLogs   []audit.Log
+	namespaces  map[string]types.Namespace
 	now         func() time.Time
+	admission   *admission.Controller
 }
 
 type Option func(*MemoryService)
@@ -184,6 +192,7 @@ func NewMemoryService(opts ...Option) *MemoryService {
 		deployments: make(map[types.DeploymentID]types.Deployment),
 		secrets:     make(map[string]types.Secret),
 		registries:  make(map[string]types.RegistryCredential),
+		namespaces:  make(map[string]types.Namespace),
 		envelope:    envelope,
 		policy:      policy.DefaultClusterPolicy(),
 		now:         now,
@@ -191,7 +200,93 @@ func NewMemoryService(opts ...Option) *MemoryService {
 	for _, opt := range opts {
 		opt(service)
 	}
+	service.namespaces[namespace.Default] = types.Namespace{Name: namespace.Default, CreatedAt: now()}
+	service.admission = admission.New(service)
 	return service
+}
+
+func (s *MemoryService) CreateNamespace(ctx context.Context, name string) (types.Namespace, error) {
+	if err := ctx.Err(); err != nil {
+		return types.Namespace{}, err
+	}
+	name = namespace.Normalize(name)
+	if err := namespace.Validate(name); err != nil {
+		return types.Namespace{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.namespaces[name]; exists {
+		return types.Namespace{}, store.ErrDuplicate
+	}
+	item := types.Namespace{Name: name, CreatedAt: s.now()}
+	s.namespaces[name] = item
+	return item, nil
+}
+
+func (s *MemoryService) ListNamespaces(ctx context.Context) ([]types.Namespace, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	items := make([]types.Namespace, 0, len(s.namespaces))
+	for _, item := range s.namespaces {
+		items = append(items, item)
+	}
+	slices.SortFunc(items, func(a, b types.Namespace) int { return strings.Compare(a.Name, b.Name) })
+	return items, nil
+}
+
+func (s *MemoryService) DeleteNamespace(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	name = namespace.Normalize(name)
+	if name == namespace.Default {
+		return fmt.Errorf("%w: default namespace cannot be deleted", store.ErrInvalidState)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.namespaces[name]; !exists {
+		return store.ErrNotFound
+	}
+	for _, service := range s.services {
+		if service.Namespace == name {
+			return fmt.Errorf("%w: namespace %q is not empty", store.ErrConflict, name)
+		}
+	}
+	for _, task := range s.tasks {
+		if task.Namespace == name {
+			return fmt.Errorf("%w: namespace %q is not empty", store.ErrConflict, name)
+		}
+	}
+	for _, deployment := range s.deployments {
+		if deployment.Namespace == name {
+			return fmt.Errorf("%w: namespace %q is not empty", store.ErrConflict, name)
+		}
+	}
+	for _, secret := range s.secrets {
+		if secret.Namespace == name {
+			return fmt.Errorf("%w: namespace %q is not empty", store.ErrConflict, name)
+		}
+	}
+	for _, credential := range s.registries {
+		if credential.Namespace == name {
+			return fmt.Errorf("%w: namespace %q is not empty", store.ErrConflict, name)
+		}
+	}
+	for _, event := range s.events {
+		if event.Namespace == name {
+			return fmt.Errorf("%w: namespace %q is not empty", store.ErrConflict, name)
+		}
+	}
+	for _, log := range s.auditLogs {
+		if log.Namespace == name {
+			return fmt.Errorf("%w: namespace %q is not empty", store.ErrConflict, name)
+		}
+	}
+	delete(s.namespaces, name)
+	return nil
 }
 
 func (s *MemoryService) RegisterNode(ctx context.Context, registration NodeRegistration) (NodeCommand, error) {
@@ -418,11 +513,11 @@ func (s *MemoryService) ListAssignedTasks(ctx context.Context, nodeID types.Node
 			continue
 		}
 		service := s.services[task.ServiceID]
-		env, err := s.resolveEnvLocked(ctx, service.Spec)
+		env, err := s.resolveEnvLocked(ctx, service.Namespace, service.Spec)
 		if err != nil {
 			return nil, err
 		}
-		auth, err := s.resolveRegistryAuthLocked(ctx, service.Spec.ImagePullSecret)
+		auth, err := s.resolveRegistryAuthLocked(ctx, service.Namespace, service.Spec.ImagePullSecret)
 		if err != nil {
 			return nil, err
 		}
@@ -454,10 +549,10 @@ func taskPortsForAgent(task types.Task, service types.Service) []types.Port {
 	return append([]types.Port(nil), service.Spec.Ports...)
 }
 
-func (s *MemoryService) resolveEnvLocked(ctx context.Context, spec types.ServiceSpec) (map[string]string, error) {
+func (s *MemoryService) resolveEnvLocked(ctx context.Context, namespaceName string, spec types.ServiceSpec) (map[string]string, error) {
 	env := cloneStringMap(spec.Env)
 	for _, ref := range spec.SecretRefs {
-		secret, ok := s.secrets[strings.TrimSpace(ref.Name)]
+		secret, ok := s.secrets[namespacedKey(namespaceName, ref.Name)]
 		if !ok {
 			return nil, fmt.Errorf("%w: referenced secret %q not found", store.ErrInvalidState, ref.Name)
 		}
@@ -487,12 +582,12 @@ func cloneStringMap(values map[string]string) map[string]string {
 	return cloned
 }
 
-func (s *MemoryService) resolveRegistryAuthLocked(ctx context.Context, id string) (*RegistryAuth, error) {
+func (s *MemoryService) resolveRegistryAuthLocked(ctx context.Context, namespaceName string, id string) (*RegistryAuth, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, nil
 	}
-	credential, ok := s.registries[id]
+	credential, ok := s.registries[namespacedKey(namespaceName, id)]
 	if !ok {
 		return nil, fmt.Errorf("%w: registry credential %q not found", store.ErrInvalidState, id)
 	}
@@ -680,23 +775,29 @@ func (s *MemoryService) CreateSecret(ctx context.Context, name string, plaintext
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	namespaceName := namespace.FromContext(ctx)
+	if _, ok := s.namespaces[namespaceName]; !ok {
+		return types.SecretMetadata{}, store.ErrNotFound
+	}
 	now := s.now()
-	if existing, ok := s.secrets[name]; ok {
+	key := namespacedKey(namespaceName, name)
+	if existing, ok := s.secrets[key]; ok {
 		existing.EncryptedValue = append([]byte(nil), ciphertext.Data...)
 		existing.KeyID = ciphertext.KeyID
 		existing.UpdatedAt = now
-		s.secrets[name] = existing
+		s.secrets[key] = existing
 		return existing.Metadata(), nil
 	}
 	secret := types.Secret{
 		Name:           name,
+		Namespace:      namespaceName,
 		EncryptedValue: append([]byte(nil), ciphertext.Data...),
 		KeyID:          ciphertext.KeyID,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	s.secrets[name] = secret
-	s.appendEventLocked(events.TypeSecretCreated, types.EventInfo, "controlplane", "secret created", "secret", "", now)
+	s.secrets[key] = secret
+	s.appendEventLocked(events.TypeSecretCreated, types.EventInfo, "controlplane", "secret created", "secret", key, now)
 	return secret.Metadata(), nil
 }
 
@@ -708,7 +809,11 @@ func (s *MemoryService) ListSecrets(ctx context.Context) ([]types.SecretMetadata
 	defer s.mu.RUnlock()
 
 	items := make([]types.SecretMetadata, 0, len(s.secrets))
+	namespaceName := namespace.FromContext(ctx)
 	for _, secret := range s.secrets {
+		if secret.Namespace != namespaceName {
+			continue
+		}
 		items = append(items, secret.Metadata())
 	}
 	slices.SortFunc(items, func(a, b types.SecretMetadata) int {
@@ -731,7 +836,7 @@ func (s *MemoryService) GetSecret(ctx context.Context, name string) (types.Secre
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	secret, ok := s.secrets[name]
+	secret, ok := s.secrets[namespacedKey(namespace.FromContext(ctx), name)]
 	if !ok {
 		return types.SecretMetadata{}, store.ErrNotFound
 	}
@@ -746,11 +851,12 @@ func (s *MemoryService) DeleteSecret(ctx context.Context, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.secrets[name]; !ok {
+	key := namespacedKey(namespace.FromContext(ctx), name)
+	if _, ok := s.secrets[key]; !ok {
 		return store.ErrNotFound
 	}
-	delete(s.secrets, name)
-	s.appendEventLocked(events.TypeSecretDeleted, types.EventInfo, "controlplane", "secret deleted", "secret", "", s.now())
+	delete(s.secrets, key)
+	s.appendEventLocked(events.TypeSecretDeleted, types.EventInfo, "controlplane", "secret deleted", "secret", key, s.now())
 	return nil
 }
 
@@ -782,17 +888,23 @@ func (s *MemoryService) CreateRegistryCredential(ctx context.Context, spec Regis
 	defer s.mu.Unlock()
 
 	now := s.now()
-	if existing, ok := s.registries[spec.ID]; ok {
+	namespaceName := namespace.FromContext(ctx)
+	if _, ok := s.namespaces[namespaceName]; !ok {
+		return types.RegistryCredentialMetadata{}, store.ErrNotFound
+	}
+	key := namespacedKey(namespaceName, spec.ID)
+	if existing, ok := s.registries[key]; ok {
 		existing.Registry = spec.Registry
 		existing.Username = spec.Username
 		existing.EncryptedPassword = append([]byte(nil), ciphertext.Data...)
 		existing.KeyID = ciphertext.KeyID
 		existing.UpdatedAt = now
-		s.registries[spec.ID] = existing
+		s.registries[key] = existing
 		return existing.Metadata(), nil
 	}
 	credential := types.RegistryCredential{
 		ID:                spec.ID,
+		Namespace:         namespaceName,
 		Registry:          spec.Registry,
 		Username:          spec.Username,
 		EncryptedPassword: append([]byte(nil), ciphertext.Data...),
@@ -800,8 +912,8 @@ func (s *MemoryService) CreateRegistryCredential(ctx context.Context, spec Regis
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
-	s.registries[spec.ID] = credential
-	s.appendEventLocked(events.TypeRegistryCredCreated, types.EventInfo, "controlplane", "registry credential created", "registry_credential", "", now)
+	s.registries[key] = credential
+	s.appendEventLocked(events.TypeRegistryCredCreated, types.EventInfo, "controlplane", "registry credential created", "registry_credential", key, now)
 	return credential.Metadata(), nil
 }
 
@@ -813,7 +925,11 @@ func (s *MemoryService) ListRegistryCredentials(ctx context.Context) ([]types.Re
 	defer s.mu.RUnlock()
 
 	items := make([]types.RegistryCredentialMetadata, 0, len(s.registries))
+	namespaceName := namespace.FromContext(ctx)
 	for _, credential := range s.registries {
+		if credential.Namespace != namespaceName {
+			continue
+		}
 		items = append(items, credential.Metadata())
 	}
 	slices.SortFunc(items, func(a, b types.RegistryCredentialMetadata) int {
@@ -836,16 +952,27 @@ func (s *MemoryService) DeleteRegistryCredential(ctx context.Context, id string)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.registries[id]; !ok {
+	key := namespacedKey(namespace.FromContext(ctx), id)
+	if _, ok := s.registries[key]; !ok {
 		return store.ErrNotFound
 	}
-	delete(s.registries, id)
-	s.appendEventLocked(events.TypeRegistryCredDeleted, types.EventInfo, "controlplane", "registry credential deleted", "registry_credential", "", s.now())
+	delete(s.registries, key)
+	s.appendEventLocked(events.TypeRegistryCredDeleted, types.EventInfo, "controlplane", "registry credential deleted", "registry_credential", key, s.now())
 	return nil
 }
 
 func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error) {
 	if err := ctx.Err(); err != nil {
+		return types.Service{}, err
+	}
+	if err := spec.Validate(); err != nil {
+		return types.Service{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
+	}
+	namespaceName := namespace.FromContext(ctx)
+	if err := s.admission.Admit(ctx, admission.Request{
+		Actor: admissionActor(ctx), Operation: admission.OperationCreate,
+		Namespace: namespaceName, Spec: spec, Policy: s.policy,
+	}); err != nil {
 		return types.Service{}, err
 	}
 	normalized, err := types.NormalizeServiceSpec(spec, types.DefaultResourceDefaults())
@@ -856,25 +983,24 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 	if err := spec.Validate(); err != nil {
 		return types.Service{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
 	}
-	if err := s.policy.ValidateServiceSpec(spec); err != nil {
-		return types.Service{}, fmt.Errorf("%w: %v", store.ErrInvalidState, err)
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.namespaces[namespaceName]; !ok {
+		return types.Service{}, store.ErrNotFound
+	}
 	for _, service := range s.services {
-		if service.Spec.Name == spec.Name {
+		if service.Namespace == namespaceName && service.Spec.Name == spec.Name {
 			return types.Service{}, store.ErrDuplicate
 		}
 	}
 	for _, ref := range spec.SecretRefs {
-		if _, ok := s.secrets[strings.TrimSpace(ref.Name)]; !ok {
+		if _, ok := s.secrets[namespacedKey(namespaceName, ref.Name)]; !ok {
 			return types.Service{}, fmt.Errorf("%w: referenced secret %q not found", store.ErrInvalidState, ref.Name)
 		}
 	}
 	if imagePullSecret := strings.TrimSpace(spec.ImagePullSecret); imagePullSecret != "" {
-		if _, ok := s.registries[imagePullSecret]; !ok {
+		if _, ok := s.registries[namespacedKey(namespaceName, imagePullSecret)]; !ok {
 			return types.Service{}, fmt.Errorf("%w: registry credential %q not found", store.ErrInvalidState, imagePullSecret)
 		}
 		spec.ImagePullSecret = imagePullSecret
@@ -883,6 +1009,7 @@ func (s *MemoryService) CreateService(ctx context.Context, spec types.ServiceSpe
 	now := s.now()
 	service := types.Service{
 		ID:                types.ServiceID(newUUID()),
+		Namespace:         namespaceName,
 		Spec:              spec,
 		Status:            types.ServiceActive,
 		DeploymentVersion: 1,
@@ -905,6 +1032,9 @@ func (s *MemoryService) ListServices(ctx context.Context) ([]types.Service, erro
 
 	services := make([]types.Service, 0, len(s.services))
 	for _, service := range s.services {
+		if !namespace.Matches(ctx, service.Namespace) {
+			continue
+		}
 		services = append(services, service)
 	}
 	slices.SortFunc(services, func(a, b types.Service) int {
@@ -927,7 +1057,7 @@ func (s *MemoryService) GetService(ctx context.Context, id types.ServiceID) (typ
 	defer s.mu.RUnlock()
 
 	service, ok := s.services[id]
-	if !ok {
+	if !ok || !namespace.Matches(ctx, service.Namespace) {
 		return types.Service{}, store.ErrNotFound
 	}
 	return service, nil
@@ -941,7 +1071,7 @@ func (s *MemoryService) DeleteService(ctx context.Context, id types.ServiceID) e
 	defer s.mu.Unlock()
 
 	service, ok := s.services[id]
-	if !ok {
+	if !ok || !namespace.Matches(ctx, service.Namespace) {
 		return store.ErrNotFound
 	}
 	if service.Status == types.ServiceDeleted || service.Status == types.ServiceDeleting {
@@ -980,11 +1110,26 @@ func (s *MemoryService) ScaleService(ctx context.Context, id types.ServiceID, re
 		return types.Service{}, fmt.Errorf("%w: replicas cannot be negative", store.ErrInvalidState)
 	}
 
+	s.mu.RLock()
+	service, ok := s.services[id]
+	if !ok || !namespace.Matches(ctx, service.Namespace) {
+		s.mu.RUnlock()
+		return types.Service{}, store.ErrNotFound
+	}
+	s.mu.RUnlock()
+	candidate := service.Spec
+	candidate.Replicas = replicas
+	if err := s.admission.Admit(ctx, admission.Request{
+		Actor: admissionActor(ctx), Operation: admission.OperationScale,
+		Namespace: service.Namespace, Spec: candidate, Policy: s.policy,
+	}); err != nil {
+		return types.Service{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	service, ok := s.services[id]
-	if !ok {
+	service, ok = s.services[id]
+	if !ok || !namespace.Matches(ctx, service.Namespace) {
 		return types.Service{}, store.ErrNotFound
 	}
 	if service.Status != "" && service.Status != types.ServiceActive {
@@ -993,7 +1138,9 @@ func (s *MemoryService) ScaleService(ctx context.Context, id types.ServiceID, re
 	if active := s.activeDeploymentLocked(id); active.ID != "" {
 		return types.Service{}, operationConflict(string(operationForDeployment(active)))
 	}
-	service.Spec.Replicas = replicas
+	candidate = service.Spec
+	candidate.Replicas = replicas
+	service.Spec = candidate
 	service.UpdatedAt = s.now()
 	s.services[id] = service
 	s.reconcileServiceTasksLocked(service, service.UpdatedAt)
@@ -1019,11 +1166,26 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 		return types.Deployment{}, fmt.Errorf("%w: maxUnavailable and maxSurge cannot both be zero", store.ErrInvalidState)
 	}
 
+	s.mu.RLock()
+	service, ok := s.services[id]
+	if !ok || !namespace.Matches(ctx, service.Namespace) {
+		s.mu.RUnlock()
+		return types.Deployment{}, store.ErrNotFound
+	}
+	s.mu.RUnlock()
+	candidate := service.Spec
+	candidate.Image = spec.Image
+	if err := s.admission.Admit(ctx, admission.Request{
+		Actor: admissionActor(ctx), Operation: admission.OperationRollout,
+		Namespace: service.Namespace, Spec: candidate, Policy: s.policy,
+	}); err != nil {
+		return types.Deployment{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	service, ok := s.services[id]
-	if !ok {
+	service, ok = s.services[id]
+	if !ok || !namespace.Matches(ctx, service.Namespace) {
 		return types.Deployment{}, store.ErrNotFound
 	}
 	if service.Status != "" && service.Status != types.ServiceActive {
@@ -1048,6 +1210,7 @@ func (s *MemoryService) RolloutService(ctx context.Context, id types.ServiceID, 
 
 	deployment := types.Deployment{
 		ID:             types.DeploymentID(newUUID()),
+		Namespace:      service.Namespace,
 		ServiceID:      id,
 		FromVersion:    fromVersion,
 		ToVersion:      service.DeploymentVersion,
@@ -1071,7 +1234,7 @@ func (s *MemoryService) GetDeployment(ctx context.Context, id types.DeploymentID
 	defer s.mu.RUnlock()
 
 	deployment, ok := s.deployments[id]
-	if !ok {
+	if !ok || !namespace.Matches(ctx, deployment.Namespace) {
 		return types.Deployment{}, store.ErrNotFound
 	}
 	return deployment, nil
@@ -1084,7 +1247,8 @@ func (s *MemoryService) GetServiceRollout(ctx context.Context, id types.ServiceI
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if _, ok := s.services[id]; !ok {
+	service, ok := s.services[id]
+	if !ok || !namespace.Matches(ctx, service.Namespace) {
 		return types.Deployment{}, store.ErrNotFound
 	}
 	var latest types.Deployment
@@ -1111,7 +1275,7 @@ func (s *MemoryService) RollbackService(ctx context.Context, id types.ServiceID)
 	defer s.mu.Unlock()
 
 	service, ok := s.services[id]
-	if !ok {
+	if !ok || !namespace.Matches(ctx, service.Namespace) {
 		return types.Deployment{}, store.ErrNotFound
 	}
 	if service.Status != "" && service.Status != types.ServiceActive {
@@ -1137,6 +1301,7 @@ func (s *MemoryService) RollbackService(ctx context.Context, id types.ServiceID)
 
 	deployment := types.Deployment{
 		ID:             types.DeploymentID(newUUID()),
+		Namespace:      service.Namespace,
 		ServiceID:      id,
 		FromVersion:    fromVersion,
 		ToVersion:      targetVersion,
@@ -1162,6 +1327,9 @@ func (s *MemoryService) ListTasks(ctx context.Context, filter TaskFilter) ([]typ
 
 	tasks := make([]types.Task, 0, len(s.tasks))
 	for _, task := range s.tasks {
+		if !namespace.Matches(ctx, task.Namespace) {
+			continue
+		}
 		if filter.ServiceID != "" && task.ServiceID != filter.ServiceID {
 			continue
 		}
@@ -1184,7 +1352,7 @@ func (s *MemoryService) GetTask(ctx context.Context, id types.TaskID) (types.Tas
 	defer s.mu.RUnlock()
 
 	task, ok := s.tasks[id]
-	if !ok {
+	if !ok || !namespace.Matches(ctx, task.Namespace) {
 		return types.Task{}, store.ErrNotFound
 	}
 	return task, nil
@@ -1212,6 +1380,9 @@ func (s *MemoryService) CreateTask(ctx context.Context, task types.Task) (types.
 
 	if _, ok := s.services[task.ServiceID]; !ok {
 		return types.Task{}, store.ErrNotFound
+	}
+	if task.Namespace == "" {
+		task.Namespace = s.services[task.ServiceID].Namespace
 	}
 	now := s.now()
 	if task.ID == "" {
@@ -1290,7 +1461,7 @@ func (s *MemoryService) ListDeploymentsByStatus(ctx context.Context, status type
 
 	deployments := make([]types.Deployment, 0)
 	for _, deployment := range s.deployments {
-		if deployment.Status == status {
+		if deployment.Status == status && namespace.Matches(ctx, deployment.Namespace) {
 			deployments = append(deployments, deployment)
 		}
 	}
@@ -1320,7 +1491,7 @@ func (s *MemoryService) UpdateDeploymentStatus(ctx context.Context, id types.Dep
 	defer s.mu.Unlock()
 
 	deployment, ok := s.deployments[id]
-	if !ok {
+	if !ok || !namespace.Matches(ctx, deployment.Namespace) {
 		return types.Deployment{}, store.ErrNotFound
 	}
 	if !expectedUpdatedAt.IsZero() && !deployment.UpdatedAt.Equal(expectedUpdatedAt) {
@@ -1354,6 +1525,9 @@ func (s *MemoryService) AppendEvent(ctx context.Context, event types.Event) (typ
 	if event.ID == "" {
 		event.ID = types.EventID(newUUID())
 	}
+	if event.Namespace == "" {
+		event.Namespace = namespace.FromContext(ctx)
+	}
 	if event.Timestamp.IsZero() {
 		event.Timestamp = s.now()
 	}
@@ -1380,6 +1554,9 @@ func (s *MemoryService) ListEvents(ctx context.Context, filter events.Filter) ([
 	events := make([]types.Event, 0, len(s.events))
 	for i := len(s.events) - 1; i >= 0; i-- {
 		event := s.events[i]
+		if !namespace.Matches(ctx, event.Namespace) || (filter.Namespace != "" && event.Namespace != namespace.Normalize(filter.Namespace)) {
+			continue
+		}
 		if filter.ServiceID != "" && (event.RelatedObjectType != "service" || event.RelatedObjectID != string(filter.ServiceID)) {
 			continue
 		}
@@ -1414,6 +1591,9 @@ func (s *MemoryService) AppendAuditLog(ctx context.Context, log audit.Log) (audi
 	defer s.mu.Unlock()
 
 	log = audit.Normalize(log, s.now())
+	if log.Namespace == "" {
+		log.Namespace = namespace.FromContext(ctx)
+	}
 	if log.ID == "" {
 		log.ID = newUUID()
 	}
@@ -1436,6 +1616,9 @@ func (s *MemoryService) ListAuditLogs(ctx context.Context, filter audit.Filter) 
 	logs := make([]audit.Log, 0, len(s.auditLogs))
 	for i := len(s.auditLogs) - 1; i >= 0; i-- {
 		log := s.auditLogs[i]
+		if !namespace.Matches(ctx, log.Namespace) || (filter.Namespace != "" && log.Namespace != namespace.Normalize(filter.Namespace)) {
+			continue
+		}
 		if filter.ActorType != "" && log.ActorType != filter.ActorType {
 			continue
 		}
@@ -1529,6 +1712,7 @@ func upsertTaskCondition(conditions []types.TaskCondition, condition types.TaskC
 func (s *MemoryService) appendEventLocked(eventType string, severity types.EventSeverity, source string, message string, objectType string, objectID string, timestamp time.Time) {
 	s.events = append(s.events, types.Event{
 		ID:                types.EventID(newUUID()),
+		Namespace:         s.namespaceForObjectLocked(objectType, objectID),
 		Type:              eventType,
 		Severity:          severity,
 		Source:            source,
@@ -1537,6 +1721,56 @@ func (s *MemoryService) appendEventLocked(eventType string, severity types.Event
 		RelatedObjectID:   objectID,
 		Timestamp:         timestamp.UTC(),
 	})
+}
+
+func (s *MemoryService) namespaceForObjectLocked(objectType string, objectID string) string {
+	switch objectType {
+	case "service":
+		return s.services[types.ServiceID(objectID)].Namespace
+	case "task":
+		return s.tasks[types.TaskID(objectID)].Namespace
+	case "deployment", "rollout":
+		return s.deployments[types.DeploymentID(objectID)].Namespace
+	case "secret", "registry_credential":
+		if namespaceName, _, ok := strings.Cut(objectID, "\x00"); ok {
+			return namespaceName
+		}
+	}
+	return namespace.Default
+}
+
+func namespacedKey(namespaceName string, name string) string {
+	return namespace.Normalize(namespaceName) + "\x00" + strings.TrimSpace(name)
+}
+
+func admissionActor(ctx context.Context) admission.Actor {
+	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return admission.Actor{ID: "system", Role: "system"}
+	}
+	role, _ := principal.RoleForNamespace(namespace.FromContext(ctx))
+	return admission.Actor{ID: principal.Subject, Role: string(role)}
+}
+
+func (s *MemoryService) RecordAdmissionRejection(_ context.Context, rejection admission.Rejection) {
+	rules := make([]string, 0, len(rejection.Violations))
+	for _, violation := range rejection.Violations {
+		rules = append(rules, violation.Rule)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	log := audit.Normalize(audit.Log{
+		Namespace:  rejection.Namespace,
+		ActorType:  audit.ActorUser,
+		ActorID:    rejection.Actor.ID,
+		Action:     "admission." + string(rejection.Operation),
+		TargetType: "service",
+		TargetID:   rejection.Service,
+		Outcome:    audit.OutcomeFailure,
+		Metadata:   map[string]string{"rules": strings.Join(rules, ",")},
+	}, s.now())
+	log.ID = newUUID()
+	s.auditLogs = append(s.auditLogs, log)
 }
 
 func directivesForNode(node types.Node) []AgentDirective {
@@ -1606,6 +1840,7 @@ func (s *MemoryService) reconcileServiceTasksLocked(service types.Service, times
 		node := nodes[len(active)%len(nodes)]
 		task := types.Task{
 			ID:            types.TaskID(newUUID()),
+			Namespace:     service.Namespace,
 			ServiceID:     service.ID,
 			NodeID:        node.ID,
 			DesiredStatus: types.TaskRunning,
@@ -1684,6 +1919,7 @@ func (s *MemoryService) reconcileNodeDrainLocked(nodeID types.NodeID, timestamp 
 			node := readyNodes[len(offNodeActive)%len(readyNodes)]
 			task := types.Task{
 				ID:            types.TaskID(newUUID()),
+				Namespace:     service.Namespace,
 				ServiceID:     service.ID,
 				NodeID:        node.ID,
 				DesiredStatus: types.TaskRunning,

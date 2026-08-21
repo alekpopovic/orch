@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: orch API
   version: v1
-  description: Public user-facing API for the orch control plane.
+  description: Public user-facing API for the orch control plane. Workload APIs use the optional X-Orch-Namespace header and default to `default`.
 servers:
   - url: http://localhost:8080
 security:
@@ -30,6 +30,53 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+  /v1/version:
+    get:
+      summary: Get stable API version metadata
+      responses:
+        "200":
+          description: API version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIVersionResponse"
+  /v1/namespaces:
+    get:
+      summary: List namespaces
+      responses:
+        "200":
+          description: Namespace list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListNamespacesResponse"
+    post:
+      summary: Create namespace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNamespaceRequest"
+      responses:
+        "201":
+          description: Created namespace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NamespaceResponse"
+  /v1/namespaces/{name}:
+    delete:
+      summary: Delete an empty namespace
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Namespace deleted
   /v1/nodes:
     get:
       summary: List nodes
@@ -450,6 +497,14 @@ components:
       required: true
       schema:
         type: string
+    Namespace:
+      name: X-Orch-Namespace
+      in: header
+      required: false
+      description: Workload namespace; defaults to `default`.
+      schema:
+        type: string
+        default: default
   schemas:
     HealthResponse:
       type: object
@@ -460,6 +515,43 @@ components:
         time:
           type: string
           format: date-time
+    APIVersionResponse:
+      type: object
+      required: [version, status]
+      properties:
+        version:
+          type: string
+          enum: [v1]
+        status:
+          type: string
+          enum: [stable]
+    Namespace:
+      type: object
+      required: [name, created_at]
+      properties:
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    CreateNamespaceRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+    NamespaceResponse:
+      type: object
+      properties:
+        namespace:
+          $ref: "#/components/schemas/Namespace"
+    ListNamespacesResponse:
+      type: object
+      properties:
+        namespaces:
+          type: array
+          items:
+            $ref: "#/components/schemas/Namespace"
     ErrorResponse:
       type: object
       required: [error]
@@ -626,6 +718,8 @@ components:
       properties:
         id:
           type: string
+        namespace:
+          type: string
         spec:
           $ref: "#/components/schemas/ServiceSpec"
         status:
@@ -642,6 +736,8 @@ components:
       type: object
       properties:
         id:
+          type: string
+        namespace:
           type: string
         service_id:
           type: string
@@ -688,6 +784,8 @@ components:
       properties:
         id:
           type: string
+        namespace:
+          type: string
         service_id:
           type: string
         from_version:
@@ -706,6 +804,8 @@ components:
       type: object
       properties:
         id:
+          type: string
+        namespace:
           type: string
         type:
           type: string
@@ -726,6 +826,8 @@ components:
       properties:
         name:
           type: string
+        namespace:
+          type: string
         key_id:
           type: string
         created_at:
@@ -738,6 +840,8 @@ components:
       type: object
       properties:
         id:
+          type: string
+        namespace:
           type: string
         registry:
           type: string

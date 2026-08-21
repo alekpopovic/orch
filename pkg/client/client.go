@@ -19,6 +19,7 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	token      string
+	namespace  string
 }
 
 type Option func(*Client)
@@ -34,6 +35,12 @@ func WithHTTPClient(httpClient *http.Client) Option {
 func WithBearerToken(token string) Option {
 	return func(client *Client) {
 		client.token = strings.TrimSpace(token)
+	}
+}
+
+func WithNamespace(namespace string) Option {
+	return func(client *Client) {
+		client.namespace = strings.TrimSpace(namespace)
 	}
 }
 
@@ -74,6 +81,30 @@ func NormalizeServerURL(serverURL string) (string, error) {
 
 func (c *Client) SetToken(token string) {
 	c.token = strings.TrimSpace(token)
+}
+
+func (c *Client) SetNamespace(namespace string) {
+	c.namespace = strings.TrimSpace(namespace)
+}
+
+func (c *Client) CreateNamespace(ctx context.Context, name string) (types.Namespace, error) {
+	var out namespaceResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/namespaces", createNamespaceRequest{Name: name}, &out); err != nil {
+		return types.Namespace{}, err
+	}
+	return out.Namespace, nil
+}
+
+func (c *Client) ListNamespaces(ctx context.Context) ([]types.Namespace, error) {
+	var out listNamespacesResponse
+	if err := c.do(ctx, http.MethodGet, "/v1/namespaces", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Namespaces, nil
+}
+
+func (c *Client) DeleteNamespace(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/namespaces/"+url.PathEscape(name), nil, nil)
 }
 
 func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
@@ -376,6 +407,9 @@ func (c *Client) doStream(ctx context.Context, method string, path string, out i
 func (c *Client) authorize(req *http.Request) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if c.namespace != "" {
+		req.Header.Set("X-Orch-Namespace", c.namespace)
 	}
 }
 

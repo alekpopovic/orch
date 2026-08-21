@@ -16,6 +16,8 @@ JWTs use HMAC SHA-256 (`HS256`) and should include:
 - `role`: `admin`, `operator`, or `viewer`.
 - `exp`: expiration timestamp.
 
+Tokens may use `namespace_roles` instead of a cluster-wide `role`. Each map entry grants `viewer`, `operator`, or `admin` only in that namespace. Namespace administration itself still requires a cluster-wide admin.
+
 Example claims:
 
 ```json
@@ -96,13 +98,25 @@ cluster_policy:
     - NET_BIND_SERVICE
   allowed_host_path_prefixes:
     - /var/lib/orch-volumes
+  allowed_image_registries:
+    - ghcr.io
+  block_latest_tag: true
+  require_healthcheck: true
+  require_resource_requests: true
+  require_resource_limits: true
+  max_replicas_per_service: 50
+  max_public_ports_per_service: 4
 ```
+
+The admission controller applies these rules on service creation, rollout, and scale. Rejections return structured rule violations and emit a redacted audit record. See `docs/POLICY_ENGINE_DESIGN.md`.
 
 Equivalent environment variables are `ORCH_POLICY_ALLOW_PRIVILEGED`, `ORCH_POLICY_ALLOW_HOST_NETWORK`, `ORCH_POLICY_ALLOW_HOST_PID`, `ORCH_POLICY_ALLOWED_CAPABILITIES`, and `ORCH_POLICY_ALLOWED_HOST_PATH_PREFIXES`.
 
 ## Secret Handling
 
 Service specs support secret references for environment variables. Secret values are encrypted at rest with the local envelope provider and are returned to agents only in assigned task payloads when needed to start containers. Do not put secret values in service names, labels, route hostnames, logs, or events.
+
+Secrets and registry credentials are namespace-scoped. Workloads cannot resolve a reference from another namespace.
 
 Roadmap:
 

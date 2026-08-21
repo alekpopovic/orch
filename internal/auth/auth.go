@@ -21,8 +21,9 @@ const (
 )
 
 type Principal struct {
-	Subject string
-	Role    Role
+	Subject        string
+	Role           Role
+	NamespaceRoles map[string]Role
 }
 
 type contextKey struct{}
@@ -33,10 +34,11 @@ var (
 )
 
 type Claims struct {
-	Subject   string `json:"sub"`
-	Role      Role   `json:"role"`
-	ExpiresAt int64  `json:"exp,omitempty"`
-	IssuedAt  int64  `json:"iat,omitempty"`
+	Subject        string          `json:"sub"`
+	Role           Role            `json:"role,omitempty"`
+	NamespaceRoles map[string]Role `json:"namespace_roles,omitempty"`
+	ExpiresAt      int64           `json:"exp,omitempty"`
+	IssuedAt       int64           `json:"iat,omitempty"`
 }
 
 func WithPrincipal(ctx context.Context, principal Principal) context.Context {
@@ -113,13 +115,26 @@ func ValidateJWT(token string, secret string, now time.Time) (Principal, error) 
 	if err := json.Unmarshal(claimsBytes, &claims); err != nil {
 		return Principal{}, ErrInvalidToken
 	}
-	if strings.TrimSpace(claims.Subject) == "" || !ValidRole(claims.Role) {
+	if strings.TrimSpace(claims.Subject) == "" || (!ValidRole(claims.Role) && len(claims.NamespaceRoles) == 0) {
 		return Principal{}, ErrInvalidToken
+	}
+	for namespace, role := range claims.NamespaceRoles {
+		if strings.TrimSpace(namespace) == "" || !ValidRole(role) {
+			return Principal{}, ErrInvalidToken
+		}
 	}
 	if claims.ExpiresAt > 0 && !now.Before(time.Unix(claims.ExpiresAt, 0)) {
 		return Principal{}, ErrInvalidToken
 	}
-	return Principal{Subject: claims.Subject, Role: claims.Role}, nil
+	return Principal{Subject: claims.Subject, Role: claims.Role, NamespaceRoles: claims.NamespaceRoles}, nil
+}
+
+func (principal Principal) RoleForNamespace(namespace string) (Role, bool) {
+	if ValidRole(principal.Role) {
+		return principal.Role, true
+	}
+	role, ok := principal.NamespaceRoles[strings.ToLower(strings.TrimSpace(namespace))]
+	return role, ok && ValidRole(role)
 }
 
 func ValidRole(role Role) bool {

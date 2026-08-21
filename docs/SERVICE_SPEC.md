@@ -4,6 +4,8 @@
 
 The canonical machine-readable schema is `schemas/service.schema.json`.
 
+The namespace is request metadata, not a field in the deployment YAML. Select it with `orch --namespace <name> deploy ...`, `ORCH_NAMESPACE`, CLI config, or the API `X-Orch-Namespace` header.
+
 ## Required Fields
 
 - `name`: stable service name.
@@ -84,4 +86,4 @@ orch validate deployments/examples/http-api.yaml
 
 Healthcheck `path` must start with a single `/` and must not be a full URL. Healthcheck `scheme` defaults to `http` and may be `http` or `https`.
 
-The CLI rejects unknown YAML fields, invalid ports, invalid resources, invalid healthcheck settings, invalid placement labels, invalid routes, invalid security context paths or capabilities, and malformed secret references. The server additionally applies the cluster container security policy before creating a service.
+The CLI rejects unknown YAML fields, invalid ports, invalid resources, invalid healthcheck settings, invalid placement labels, invalid routes, invalid security context paths or capabilities, and malformed secret references. The server additionally runs centralized admission for create, rollout, and scale. Depending on cluster policy it can require requests/limits and healthchecks, restrict registries and host paths, block `latest`, and cap replicas or public ports. Rejections include stable rule IDs in `error.details.violations`.

@@ -182,6 +182,7 @@ func (s *Scheduler) persistAssignment(ctx context.Context, task types.Task, assi
 			options = append(options, events.Strict())
 		}
 		if err := events.Emit(txCtx, tx, types.Event{
+			Namespace:         task.Namespace,
 			Type:              events.TypeTaskAssigned,
 			Severity:          types.EventInfo,
 			Source:            "scheduler",

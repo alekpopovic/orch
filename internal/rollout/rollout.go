@@ -166,6 +166,7 @@ func (c *Controller) reconcileDeployment(ctx context.Context, deployment types.D
 	state.totalActive -= stopped
 	if stopped > 0 || created > 0 {
 		_ = events.Emit(ctx, c.store, types.Event{
+			Namespace:         service.Namespace,
 			Type:              events.TypeRolloutAdvanced,
 			Severity:          types.EventInfo,
 			Source:            "rollout",
@@ -193,6 +194,7 @@ func (c *Controller) createNewTasks(ctx context.Context, deployment types.Deploy
 		var task types.Task
 		err := store.WithTx(ctx, c.store, func(txCtx context.Context, tx Store) error {
 			createdTask, err := tx.CreateTask(txCtx, types.Task{
+				Namespace:     service.Namespace,
 				ServiceID:     service.ID,
 				DesiredStatus: types.TaskRunning,
 				ActualStatus:  types.TaskPending,
@@ -203,6 +205,7 @@ func (c *Controller) createNewTasks(ctx context.Context, deployment types.Deploy
 				return err
 			}
 			if err := events.Emit(txCtx, tx, types.Event{
+				Namespace:         service.Namespace,
 				Type:              events.TypeRolloutTaskCreated,
 				Severity:          types.EventInfo,
 				Source:            "rollout",
@@ -249,6 +252,7 @@ func (c *Controller) stopOldTasks(ctx context.Context, deployment types.Deployme
 				return err
 			}
 			return events.Emit(txCtx, tx, types.Event{
+				Namespace:         task.Namespace,
 				Type:              events.TypeRolloutTaskStopped,
 				Severity:          types.EventInfo,
 				Source:            "rollout",
@@ -279,6 +283,7 @@ func (c *Controller) setStatus(ctx context.Context, deployment types.Deployment,
 			return err
 		}
 		return events.Emit(txCtx, tx, types.Event{
+			Namespace:         updated.Namespace,
 			Type:              events.TypeRolloutStatusChanged,
 			Severity:          severity,
 			Source:            "rollout",
@@ -319,6 +324,7 @@ func (c *Controller) emitControllerError(ctx context.Context, deployment types.D
 		"error", apperrors.MessageOf(err),
 	)
 	_ = events.Emit(ctx, c.store, types.Event{
+		Namespace:         deployment.Namespace,
 		Type:              events.TypeControllerError,
 		Severity:          types.EventError,
 		Source:            "rollout",

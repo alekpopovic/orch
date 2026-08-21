@@ -16,6 +16,12 @@ type NodeStore interface {
 	ListNodesByStatus(ctx context.Context, status types.NodeStatus) ([]types.Node, error)
 }
 
+type NamespaceStore interface {
+	CreateNamespace(ctx context.Context, name string) (types.Namespace, error)
+	ListNamespaces(ctx context.Context) ([]types.Namespace, error)
+	DeleteNamespace(ctx context.Context, name string) error
+}
+
 type ServiceStore interface {
 	CreateService(ctx context.Context, spec types.ServiceSpec) (types.Service, error)
 	GetService(ctx context.Context, id types.ServiceID) (types.Service, error)
@@ -62,6 +68,7 @@ type RegistryCredentialStore interface {
 }
 
 type Store interface {
+	NamespaceStore
 	NodeStore
 	ServiceStore
 	TaskStore

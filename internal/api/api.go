@@ -15,12 +15,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekpopovic/orch/internal/admission"
 	"github.com/alekpopovic/orch/internal/apperrors"
 	"github.com/alekpopovic/orch/internal/audit"
 	"github.com/alekpopovic/orch/internal/auth"
 	"github.com/alekpopovic/orch/internal/controlplane"
 	"github.com/alekpopovic/orch/internal/discovery"
 	"github.com/alekpopovic/orch/internal/events"
+	"github.com/alekpopovic/orch/internal/namespace"
 	"github.com/alekpopovic/orch/internal/store"
 	"github.com/alekpopovic/orch/internal/traefik"
 	"github.com/alekpopovic/orch/pkg/types"
@@ -145,47 +147,72 @@ func NewHandler(logger *slog.Logger, controlPlane controlplane.Service, opts ...
 	mux.Handle("GET /metrics", server.metricsHandler)
 	mux.HandleFunc("GET /healthz", server.healthz)
 	mux.HandleFunc("GET /readyz", server.readyz)
-	mux.HandleFunc("POST /v1/agent/register", server.agentRegister)
-	mux.HandleFunc("POST /v1/agent/heartbeat", server.agentHeartbeat)
-	mux.HandleFunc("GET /v1/agent/tasks", server.agentListTasks)
-	mux.HandleFunc("POST /v1/agent/tasks/{task_id}/status", server.agentTaskStatus)
-	mux.HandleFunc("GET /v1/nodes", server.listNodes)
-	mux.HandleFunc("GET /v1/nodes/{id}", server.getNode)
-	mux.HandleFunc("POST /v1/nodes/{id}/drain", server.drainNode)
-	mux.HandleFunc("POST /v1/nodes/{id}/uncordon", server.uncordonNode)
-	mux.HandleFunc("GET /v1/nodes/{id}/drain-status", server.getNodeDrainStatus)
-	mux.HandleFunc("POST /v1/secrets", server.createSecret)
-	mux.HandleFunc("GET /v1/secrets", server.listSecrets)
-	mux.HandleFunc("GET /v1/secrets/{name...}", server.getSecret)
-	mux.HandleFunc("DELETE /v1/secrets/{name...}", server.deleteSecret)
-	mux.HandleFunc("POST /v1/registry-credentials", server.createRegistryCredential)
-	mux.HandleFunc("GET /v1/registry-credentials", server.listRegistryCredentials)
-	mux.HandleFunc("DELETE /v1/registry-credentials/{id}", server.deleteRegistryCredential)
-	mux.HandleFunc("POST /v1/services", server.createService)
-	mux.HandleFunc("GET /v1/services", server.listServices)
-	mux.HandleFunc("GET /v1/services/{id}", server.getService)
-	mux.HandleFunc("GET /v1/services/{id}/endpoints", server.getServiceEndpoints)
-	mux.HandleFunc("DELETE /v1/services/{id}", server.deleteService)
-	mux.HandleFunc("POST /v1/services/{id}/scale", server.scaleService)
-	mux.HandleFunc("POST /v1/services/{id}/rollout", server.rolloutService)
-	mux.HandleFunc("GET /v1/services/{id}/rollout", server.getServiceRollout)
-	mux.HandleFunc("GET /v1/rollouts/{id}", server.getRollout)
-	mux.HandleFunc("POST /v1/services/{id}/rollback", server.rollbackService)
-	mux.HandleFunc("GET /v1/tasks", server.listTasks)
-	mux.HandleFunc("GET /v1/tasks/{id}", server.getTask)
-	mux.HandleFunc("GET /v1/discovery/services", server.discoveryServices)
-	mux.HandleFunc("GET /v1/discovery/services/{name}", server.discoveryServiceByName)
-	mux.HandleFunc("GET /v1/integrations/traefik/config", server.traefikConfig)
-	mux.HandleFunc("GET /v1/events", server.listEvents)
-	mux.HandleFunc("GET /v1/audit", server.listAuditLogs)
-	mux.HandleFunc("GET /v1/logs", server.streamLogs)
+	server.registerV1(mux)
 
 	return server.middleware(mux)
+}
+
+func (s *Server) registerV1(mux *http.ServeMux) {
+	mux.HandleFunc("GET /v1/version", s.apiVersion)
+	mux.HandleFunc("POST /v1/agent/register", s.agentRegister)
+	mux.HandleFunc("POST /v1/agent/heartbeat", s.agentHeartbeat)
+	mux.HandleFunc("GET /v1/agent/tasks", s.agentListTasks)
+	mux.HandleFunc("POST /v1/agent/tasks/{task_id}/status", s.agentTaskStatus)
+	mux.HandleFunc("GET /v1/nodes", s.listNodes)
+	mux.HandleFunc("GET /v1/nodes/{id}", s.getNode)
+	mux.HandleFunc("POST /v1/nodes/{id}/drain", s.drainNode)
+	mux.HandleFunc("POST /v1/nodes/{id}/uncordon", s.uncordonNode)
+	mux.HandleFunc("GET /v1/nodes/{id}/drain-status", s.getNodeDrainStatus)
+	mux.HandleFunc("POST /v1/secrets", s.createSecret)
+	mux.HandleFunc("GET /v1/secrets", s.listSecrets)
+	mux.HandleFunc("GET /v1/secrets/{name...}", s.getSecret)
+	mux.HandleFunc("DELETE /v1/secrets/{name...}", s.deleteSecret)
+	mux.HandleFunc("POST /v1/registry-credentials", s.createRegistryCredential)
+	mux.HandleFunc("GET /v1/registry-credentials", s.listRegistryCredentials)
+	mux.HandleFunc("DELETE /v1/registry-credentials/{id}", s.deleteRegistryCredential)
+	mux.HandleFunc("POST /v1/services", s.createService)
+	mux.HandleFunc("GET /v1/services", s.listServices)
+	mux.HandleFunc("GET /v1/services/{id}", s.getService)
+	mux.HandleFunc("GET /v1/services/{id}/endpoints", s.getServiceEndpoints)
+	mux.HandleFunc("DELETE /v1/services/{id}", s.deleteService)
+	mux.HandleFunc("POST /v1/services/{id}/scale", s.scaleService)
+	mux.HandleFunc("POST /v1/services/{id}/rollout", s.rolloutService)
+	mux.HandleFunc("GET /v1/services/{id}/rollout", s.getServiceRollout)
+	mux.HandleFunc("GET /v1/rollouts/{id}", s.getRollout)
+	mux.HandleFunc("POST /v1/services/{id}/rollback", s.rollbackService)
+	mux.HandleFunc("GET /v1/tasks", s.listTasks)
+	mux.HandleFunc("GET /v1/tasks/{id}", s.getTask)
+	mux.HandleFunc("GET /v1/discovery/services", s.discoveryServices)
+	mux.HandleFunc("GET /v1/discovery/services/{name}", s.discoveryServiceByName)
+	mux.HandleFunc("GET /v1/integrations/traefik/config", s.traefikConfig)
+	mux.HandleFunc("GET /v1/events", s.listEvents)
+	mux.HandleFunc("GET /v1/audit", s.listAuditLogs)
+	mux.HandleFunc("GET /v1/logs", s.streamLogs)
+	mux.HandleFunc("POST /v1/namespaces", s.createNamespace)
+	mux.HandleFunc("GET /v1/namespaces", s.listNamespaces)
+	mux.HandleFunc("DELETE /v1/namespaces/{name}", s.deleteNamespace)
 }
 
 type HealthResponse struct {
 	Status string    `json:"status"`
 	Time   time.Time `json:"time"`
+}
+
+type APIVersionResponse struct {
+	Version string `json:"version"`
+	Status  string `json:"status"`
+}
+
+type CreateNamespaceRequest struct {
+	Name string `json:"name"`
+}
+
+type NamespaceResponse struct {
+	Namespace types.Namespace `json:"namespace"`
+}
+
+type ListNamespacesResponse struct {
+	Namespaces []types.Namespace `json:"namespaces"`
 }
 
 type ErrorResponse struct {
@@ -334,6 +361,45 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, HealthResponse{Status: "ready", Time: time.Now().UTC()})
+}
+
+func (s *Server) apiVersion(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, APIVersionResponse{Version: "v1", Status: "stable"})
+}
+
+func (s *Server) createNamespace(w http.ResponseWriter, r *http.Request) {
+	var req CreateNamespaceRequest
+	if !s.decodeJSON(w, r, &req) {
+		return
+	}
+	item, err := s.controlPlane.CreateNamespace(r.Context(), req.Name)
+	if err != nil {
+		s.recordAudit(r, "namespace.create", "namespace", req.Name, audit.OutcomeFailure, nil)
+		s.writeError(w, r, err)
+		return
+	}
+	s.recordAudit(r, "namespace.create", "namespace", item.Name, audit.OutcomeSuccess, nil)
+	writeJSON(w, http.StatusCreated, NamespaceResponse{Namespace: item})
+}
+
+func (s *Server) listNamespaces(w http.ResponseWriter, r *http.Request) {
+	items, err := s.controlPlane.ListNamespaces(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ListNamespacesResponse{Namespaces: items})
+}
+
+func (s *Server) deleteNamespace(w http.ResponseWriter, r *http.Request) {
+	name := namespace.Normalize(r.PathValue("name"))
+	if err := s.controlPlane.DeleteNamespace(r.Context(), name); err != nil {
+		s.recordAudit(r, "namespace.delete", "namespace", name, audit.OutcomeFailure, nil)
+		s.writeError(w, r, err)
+		return
+	}
+	s.recordAudit(r, "namespace.delete", "namespace", name, audit.OutcomeSuccess, nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) agentRegister(w http.ResponseWriter, r *http.Request) {
@@ -647,12 +713,6 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeJSON(w, r, &req) {
 		return
 	}
-	normalized, err := types.NormalizeServiceSpec(req.Spec, types.DefaultResourceDefaults())
-	if err != nil {
-		s.writeError(w, r, fmt.Errorf("%w: %v", store.ErrInvalidState, err))
-		return
-	}
-	req.Spec = normalized
 	if err := req.Spec.Validate(); err != nil {
 		s.writeError(w, r, fmt.Errorf("%w: %v", store.ErrInvalidState, err))
 		return
@@ -1021,11 +1081,17 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) middleware(next http.Handler) http.Handler {
-	return requestIDMiddleware(s.accessLogMiddleware(s.recoveryMiddleware(s.timeoutMiddleware(s.userAuthMiddleware(next)))))
+	return requestIDMiddleware(apiVersionMiddleware(s.accessLogMiddleware(s.recoveryMiddleware(s.timeoutMiddleware(s.userAuthMiddleware(next))))))
 }
 
 func (s *Server) userAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		namespaceName := selectedNamespace(r)
+		if err := namespace.Validate(namespaceName); err != nil {
+			s.writeError(w, r, fmt.Errorf("%w: %v", store.ErrInvalidState, err))
+			return
+		}
+		r = r.WithContext(namespace.WithContext(r.Context(), namespaceName))
 		required, ok := requiredRole(r)
 		if !ok || s.jwtSecret == "" {
 			next.ServeHTTP(w, r)
@@ -1048,13 +1114,25 @@ func (s *Server) userAuthMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			principal.Role = role
+			principal.NamespaceRoles = nil
 		}
-		if !auth.HasRole(principal.Role, required) {
+		role, hasNamespaceRole := principal.RoleForNamespace(namespaceName)
+		if strings.HasPrefix(r.URL.Path, "/v1/namespaces") && !auth.ValidRole(principal.Role) {
+			hasNamespaceRole = false
+		}
+		if !hasNamespaceRole || !auth.HasRole(role, required) {
 			s.writeAuthError(w, r, http.StatusForbidden, "forbidden", "insufficient role")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), principal)))
 	})
+}
+
+func selectedNamespace(r *http.Request) string {
+	if value := strings.TrimSpace(r.Header.Get("X-Orch-Namespace")); value != "" {
+		return namespace.Normalize(value)
+	}
+	return namespace.Normalize(r.URL.Query().Get("namespace"))
 }
 
 func requiredRole(r *http.Request) (auth.Role, bool) {
@@ -1064,6 +1142,10 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 	}
 	if r.Method == http.MethodGet {
 		switch {
+		case path == "/v1/version":
+			return auth.RoleViewer, true
+		case path == "/v1/namespaces":
+			return auth.RoleAdmin, true
 		case path == "/v1/nodes" || strings.HasPrefix(path, "/v1/nodes/"):
 			return auth.RoleViewer, true
 		case path == "/v1/secrets" || strings.HasPrefix(path, "/v1/secrets/"):
@@ -1090,6 +1172,8 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 	}
 	if r.Method == http.MethodPost {
 		switch {
+		case path == "/v1/namespaces":
+			return auth.RoleAdmin, true
 		case strings.HasSuffix(path, "/drain") || strings.HasSuffix(path, "/uncordon"):
 			return auth.RoleAdmin, true
 		case path == "/v1/secrets":
@@ -1099,6 +1183,9 @@ func requiredRole(r *http.Request) (auth.Role, bool) {
 		case path == "/v1/services" || strings.Contains(path, "/scale") || strings.Contains(path, "/rollout") || strings.Contains(path, "/rollback"):
 			return auth.RoleOperator, true
 		}
+	}
+	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/namespaces/") {
+		return auth.RoleAdmin, true
 	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/v1/secrets/") {
 		return auth.RoleOperator, true
@@ -1181,6 +1268,12 @@ func metricRoute(method string, path string) (string, bool) {
 		return "/healthz", true
 	case path == "/readyz":
 		return "/readyz", true
+	case path == "/v1/version":
+		return "/v1/version", true
+	case path == "/v1/namespaces":
+		return "/v1/namespaces", true
+	case strings.HasPrefix(path, "/v1/namespaces/"):
+		return "/v1/namespaces/{name}", true
 	case path == "/v1/agent/register":
 		return "/v1/agent/register", true
 	case path == "/v1/agent/heartbeat":
@@ -1531,6 +1624,7 @@ func (s *Server) recordAuditAs(r *http.Request, actorType audit.ActorType, actor
 		return
 	}
 	log := audit.Log{
+		Namespace:  namespace.FromContext(r.Context()),
 		ActorType:  actorType,
 		ActorID:    actorID,
 		Action:     action,
@@ -1590,6 +1684,14 @@ func errorStatus(err error) (int, string) {
 }
 
 func errorAttributes(err error) (int, apperrors.Code, string, map[string]any) {
+	var admissionErr *admission.Error
+	if errors.As(err, &admissionErr) {
+		return http.StatusBadRequest, apperrors.CodeInvalidArgument, admissionErr.Error(), map[string]any{
+			"operation":  admissionErr.Operation,
+			"namespace":  admissionErr.Namespace,
+			"violations": admissionErr.Violations,
+		}
+	}
 	code := apperrors.CodeOf(err)
 	message := apperrors.MessageOf(err)
 	details := apperrors.DetailsOf(err)

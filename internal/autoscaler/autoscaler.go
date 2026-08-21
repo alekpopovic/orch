@@ -191,6 +191,7 @@ func (c *Controller) hasActiveRollout(ctx context.Context, serviceID types.Servi
 
 func (c *Controller) emit(ctx context.Context, service types.Service, eventType string, severity types.EventSeverity, message string, details map[string]string) {
 	_ = events.Emit(ctx, c.eventStore, types.Event{
+		Namespace:         service.Namespace,
 		Type:              eventType,
 		Severity:          severity,
 		Source:            "autoscaler",

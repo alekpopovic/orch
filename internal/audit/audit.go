@@ -24,6 +24,7 @@ const (
 
 type Log struct {
 	ID         string            `json:"id"`
+	Namespace  string            `json:"namespace"`
 	ActorType  ActorType         `json:"actor_type"`
 	ActorID    string            `json:"actor_id"`
 	Action     string            `json:"action"`
@@ -37,6 +38,7 @@ type Log struct {
 }
 
 type Filter struct {
+	Namespace  string
 	ActorType  ActorType
 	ActorID    string
 	Action     string

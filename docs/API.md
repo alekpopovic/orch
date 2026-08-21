@@ -4,6 +4,8 @@
 
 All responses use UTC timestamps.
 
+Workload routes select a namespace with `X-Orch-Namespace` and default to `default`. See [MULTI_TENANCY.md](https://alekpopovic.github.io/orch/#MULTI_TENANCY.md). API compatibility and deprecation rules are defined in [API_VERSIONING.md](https://alekpopovic.github.io/orch/#API_VERSIONING.md).
+
 The canonical public API contract is `api/openapi.yaml`. It is also published in the GitHub Pages documentation portal as `openapi.yaml`. It documents the user-facing health, node, service, task, event, log, rollout, secret, registry credential, and audit log endpoints. Agent-only routes are intentionally excluded from that public spec.
 
 Validate the OpenAPI document with:

@@ -270,6 +270,7 @@ func (r *Reconciler) reconcileDeletingService(ctx context.Context, service types
 				return err
 			}
 			return events.Emit(txCtx, tx, types.Event{
+				Namespace:         updated.Namespace,
 				Type:              events.TypeServiceDeleted,
 				Severity:          types.EventInfo,
 				Source:            "reconciler",
@@ -396,6 +397,7 @@ func (r *Reconciler) reconcileDeletedServices(ctx context.Context, activeService
 
 func (r *Reconciler) createTask(ctx context.Context, service types.Service, reason string) error {
 	task := types.Task{
+		Namespace:     service.Namespace,
 		ServiceID:     service.ID,
 		DesiredStatus: types.TaskRunning,
 		ActualStatus:  types.TaskPending,
@@ -409,6 +411,7 @@ func (r *Reconciler) createTask(ctx context.Context, service types.Service, reas
 			return err
 		}
 		return events.Emit(txCtx, tx, types.Event{
+			Namespace:         service.Namespace,
 			Type:              events.TypeReconcilerTaskCreated,
 			Severity:          types.EventInfo,
 			Source:            "reconciler",
@@ -436,6 +439,7 @@ func (r *Reconciler) stopTask(ctx context.Context, task types.Task, reason strin
 			return err
 		}
 		if err := events.Emit(txCtx, tx, types.Event{
+			Namespace:         task.Namespace,
 			Type:              events.TypeReconcilerTaskStopped,
 			Severity:          types.EventInfo,
 			Source:            "reconciler",
