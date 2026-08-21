@@ -8,6 +8,8 @@ orch cluster check-upgrade
 orch-server migrate status --database-url "$DATABASE_URL"
 ```
 
+Release downloads and checksum verification are documented in [Installation](https://alekpopovic.github.io/orch/#INSTALLATION.md). Pin `ORCH_VERSION=0.3.0` in automated CLI installations so an unrelated future release cannot enter the same change window.
+
 The v0.3.0 server supports agents from `0.2.0` through `0.3.0`. Older agents are rejected at registration and heartbeat. A newer agent may connect, but receives a `version_warning` directive because the combination has not been tested. The supported database schema range is 15–16.
 
 ## Upgrade Order
@@ -23,4 +25,3 @@ The v0.3.0 server supports agents from `0.2.0` through `0.3.0`. Older agents are
 ## Rollback
 
 Prefer rolling the server binary back while leaving an additive schema in place. Run a down migration only when its release notes explicitly call it safe, after a backup, and with `orch-server migrate down --allow-down`. If an agent rollback falls below the advertised minimum, restore a compatible server first. A failed server startup caused by an old or future schema must be resolved by applying a supported migration or restoring the matching release; never bypass the compatibility check in production.
-

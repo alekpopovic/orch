@@ -82,6 +82,8 @@ Unit files:
 - `deployments/production/systemd/orch-server.service`
 - `deployments/production/systemd/orch-agent.service`
 
+Download the pinned archive for the host from the [v0.3.0 release](https://github.com/alekpopovic/orch/releases/tag/0.3.0), verify it against the published `checksums.txt`, and extract it. The archive includes the server, agent, and CLI; the automated install script intentionally installs only the CLI. See [Installation](https://alekpopovic.github.io/orch/#INSTALLATION.md) for platform-specific commands.
+
 Install binaries:
 
 ```sh

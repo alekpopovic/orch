@@ -9,13 +9,16 @@
 <p align="center">
   <a href="https://github.com/alekpopovic/orch/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/alekpopovic/orch/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="https://github.com/alekpopovic/orch/actions/workflows/pages.yml"><img alt="Docs Pages" src="https://github.com/alekpopovic/orch/actions/workflows/pages.yml/badge.svg" /></a>
+  <a href="https://github.com/alekpopovic/orch/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/alekpopovic/orch?display_name=release&sort=semver" /></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white" />
   <img alt="Docker" src="https://img.shields.io/badge/runtime-Docker-2496ED?logo=docker&logoColor=white" />
   <img alt="OpenAPI" src="https://img.shields.io/badge/API-OpenAPI-6BA539?logo=openapiinitiative&logoColor=white" />
 </p>
 
 <p align="center">
-  <a href="https://alekpopovic.github.io/orch/#GITHUB_PAGES.md">📚 Docs site</a> ·
+  <a href="https://alekpopovic.github.io/orch/#INSTALLATION.md">⬇️ Install</a> ·
+  <a href="https://alekpopovic.github.io/orch/#CLI.md">🖥️ CLI</a> ·
+  <a href="https://alekpopovic.github.io/orch/#GITHUB_PAGES.md">📚 Docs</a> ·
   <a href="https://alekpopovic.github.io/orch/#API.md">🔌 API</a> ·
   <a href="https://alekpopovic.github.io/orch/#PRODUCTION_DEPLOYMENT.md">🚢 Deploy</a> ·
   <a href="https://alekpopovic.github.io/orch/#SECURITY.md">🛡️ Security</a> ·
@@ -61,22 +64,41 @@ flowchart LR
     api --> metrics["📈 Metrics / Events / Audit"]
 ```
 
-## 📊 Release signal
+## 🎉 Latest release: v0.3.0
 
-```mermaid
-pie showData
-    title v0.2.0 hardening focus
-    "Security + policy" : 24
-    "Observability" : 18
-    "Backup + operations" : 16
-    "Autoscaling" : 15
-    "HA design" : 14
-    "Load + chaos testing" : 13
+Released on 21 August 2026, v0.3.0 adds the stable v1 API, namespace isolation, admission policy and quotas, GitOps, jobs and cron jobs, maintenance windows, compatibility preflights, safe migrations, retention pruning, and usage exports.
+
+- Server and CLI: `0.3.0`
+- API: `v1`
+- Supported agents: `0.2.0` through `0.3.0`
+- Database schema: `16`; supported startup range `15` through `16`
+
+Read the [release notes](https://alekpopovic.github.io/orch/#RELEASE_NOTES.md), [upgrade guide](https://alekpopovic.github.io/orch/#UPGRADES.md), or [GitHub release](https://github.com/alekpopovic/orch/releases/tag/0.3.0).
+
+## ⬇️ Install the CLI
+
+Linux and macOS (`amd64` and `arm64`):
+
+```sh
+curl -fsSL https://github.com/alekpopovic/orch/releases/latest/download/install.sh | sh
+orch version
 ```
+
+The installer downloads the matching archive, verifies its SHA-256 checksum, and installs `orch` to `/usr/local/bin` (using `sudo` only when needed). To pin v0.3.0 and install without elevated privileges:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+curl -fsSL https://github.com/alekpopovic/orch/releases/download/0.3.0/install.sh | \
+  ORCH_VERSION=0.3.0 ORCH_INSTALL_DIR="$HOME/.local/bin" sh
+export PATH="$HOME/.local/bin:$PATH"
+orch version
+```
+
+Windows ZIPs and manual archives for all supported platforms are available on the [v0.3.0 release page](https://github.com/alekpopovic/orch/releases/tag/0.3.0). See the [complete installation guide](https://alekpopovic.github.io/orch/#INSTALLATION.md) for checksum verification, manual installation, upgrades, and uninstalling.
 
 ## 🚀 Quickstart
 
-Prerequisites:
+Source quickstart prerequisites:
 
 - Go 1.25 or newer.
 - Docker Engine and permission to access `/var/run/docker.sock`.
@@ -99,20 +121,21 @@ Point the CLI at the server:
 
 ```sh
 export ORCH_SERVER_URL=http://localhost:8080
-go run ./cmd/orch node ls
+orch node ls
 ```
 
 Deploy and operate the demo service:
 
 ```sh
-./scripts/demo-deploy.sh
-go run ./cmd/orch service ls
-go run ./cmd/orch service ps http-api
-go run ./cmd/orch scale http-api --replicas 2
-go run ./cmd/orch rollout http-api --image nginx:1.28-alpine
-go run ./cmd/orch events --service http-api
-go run ./cmd/orch logs http-api --tail 100
-go run ./cmd/orch delete http-api
+orch validate deployments/examples/http-api.yaml
+orch deploy deployments/examples/http-api.yaml
+orch service ls
+orch service ps http-api
+orch scale http-api --replicas 2
+orch rollout http-api --image nginx:1.28-alpine
+orch events --service http-api
+orch logs http-api --tail 100
+orch delete http-api
 ```
 
 Stop local services:
@@ -129,6 +152,8 @@ Stop local services:
 | `orch-agent` | Worker node process that talks to Docker and the server. |
 | `orch` | Cobra CLI for operators and automation scripts. |
 | `orch-loadtest` | Fake multi-agent load test runner for scheduler/control-plane pressure. |
+
+Each v0.3.0 platform archive includes `orch`, `orch-server`, and `orch-agent`. The install script installs only the operator CLI; follow the [production deployment guide](https://alekpopovic.github.io/orch/#PRODUCTION_DEPLOYMENT.md) to place and configure server/agent binaries.
 
 ## 🔌 Go API client
 
@@ -154,7 +179,7 @@ make test
 make lint
 ```
 
-`make lint` requires `golangci-lint` on your `PATH`.
+When `golangci-lint` is unavailable, `make lint` falls back to a formatting check and `go vet ./...`.
 
 Useful direct commands:
 
@@ -166,16 +191,20 @@ go build ./...
 
 ## ⚙️ CLI configuration
 
-The CLI resolves the server URL in this order:
+The CLI resolves every configurable value in this order: command flag, environment variable, YAML config, then default. For the server URL that means:
 
 1. `--server`
 2. `ORCH_SERVER_URL`
 3. `server_url` in `~/.config/orch/config.yaml`
 
+There is no implicit server URL; configure one of these sources before a command that contacts the API.
+
 Example:
 
 ```yaml
 server_url: http://localhost:8080
+token: eyJ...
+namespace: default
 ```
 
 Output formats:
@@ -184,6 +213,8 @@ Output formats:
 orch service ls --output table
 orch service inspect api --output json
 ```
+
+Use `--token`/`ORCH_TOKEN` for the user JWT and `--namespace`/`ORCH_NAMESPACE` to select a namespace. See the [CLI reference](https://alekpopovic.github.io/orch/#CLI.md) for every v0.3.0 command and global option.
 
 Example deploy file:
 
@@ -219,16 +250,17 @@ placement:
 | PostgreSQL migrations and store implementation. | Restart-safe production server state wiring. |
 | Agent registration, heartbeat, task polling, and Docker reconciliation. | mTLS node identity. |
 | Scheduler, reconciler, rollouts, logs, events, metrics, auth, and CLI. | Overlay networking and containerd runtime support. |
-| Security context policy, registry credentials, secret references, audit logs. | Full multi-tenant isolation model. |
+| Namespace-scoped policy, quotas, GitOps, jobs, cron jobs, volumes, DNS, notifications, and audit logs. | Full multi-tenant isolation and external plugin execution. |
 
 ## 📚 Documentation
 
 | Area | Docs |
 | --- | --- |
+| ⬇️ Get started | [Installation](https://alekpopovic.github.io/orch/#INSTALLATION.md), [CLI reference](https://alekpopovic.github.io/orch/#CLI.md), [v0.3.0 release notes](https://alekpopovic.github.io/orch/#RELEASE_NOTES.md) |
 | 🌈 Brand + site | [GitHub Pages documentation site](https://alekpopovic.github.io/orch/#GITHUB_PAGES.md), [Brand kit](https://alekpopovic.github.io/orch/#BRAND.md), [Charts](https://alekpopovic.github.io/orch/#CHARTS.md) |
 | 🏗️ Architecture | [Architecture](https://alekpopovic.github.io/orch/#ARCHITECTURE.md), [State machines](https://alekpopovic.github.io/orch/#STATE_MACHINES.md) |
 | 🔌 API | [API](https://alekpopovic.github.io/orch/#API.md), [API versioning](https://alekpopovic.github.io/orch/#API_VERSIONING.md), [OpenAPI](https://alekpopovic.github.io/orch/#openapi.yaml) |
-| 🐳 Runtime | [Agent](https://alekpopovic.github.io/orch/#AGENT.md), [Service spec](https://alekpopovic.github.io/orch/#SERVICE_SPEC.md), [Resources](https://alekpopovic.github.io/orch/#RESOURCES.md) |
+| 🐳 Runtime | [Agent](https://alekpopovic.github.io/orch/#AGENT.md), [Service spec](https://alekpopovic.github.io/orch/#SERVICE_SPEC.md), [Jobs](https://alekpopovic.github.io/orch/#JOBS.md), [Storage](https://alekpopovic.github.io/orch/#STORAGE.md), [Resources](https://alekpopovic.github.io/orch/#RESOURCES.md) |
 | 🧭 Control loops | [Scheduler](https://alekpopovic.github.io/orch/#SCHEDULER.md), [Reconciler](https://alekpopovic.github.io/orch/#RECONCILER.md), [Rollouts](https://alekpopovic.github.io/orch/#ROLLOUTS.md) |
 | 🛡️ Security | [Security](https://alekpopovic.github.io/orch/#SECURITY.md), [Policy engine](https://alekpopovic.github.io/orch/#POLICY_ENGINE_DESIGN.md), [Multi-tenancy](https://alekpopovic.github.io/orch/#MULTI_TENANCY.md), [Image signing](https://alekpopovic.github.io/orch/#IMAGE_SIGNING_DESIGN.md), [Supply chain](https://alekpopovic.github.io/orch/#SUPPLY_CHAIN_SECURITY_DESIGN.md) |
 | 🔄 GitOps | [GitOps sources and reconciliation](https://alekpopovic.github.io/orch/#GITOPS.md) |

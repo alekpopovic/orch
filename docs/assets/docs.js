@@ -3,6 +3,8 @@ const docsNav = [
     group: 'Release',
     items: [
       { title: 'Overview', path: 'README.md', icon: '🌈', fallbacks: ['../README.md'] },
+      { title: 'Installation', path: 'INSTALLATION.md', icon: '⬇️' },
+      { title: 'CLI reference', path: 'CLI.md', icon: '🖥️' },
       { title: 'Brand kit', path: 'BRAND.md', icon: '🎨' },
       { title: 'Charts', path: 'CHARTS.md', icon: '📊' },
       { title: 'Release notes', path: 'RELEASE_NOTES.md', icon: '🎉', fallbacks: ['../RELEASE_NOTES.md'] },
@@ -34,7 +36,11 @@ const docsNav = [
       { title: 'Rollouts', path: 'ROLLOUTS.md', icon: '🚀' },
       { title: 'HA control plane', path: 'HA_CONTROL_PLANE_DESIGN.md', icon: '👑' },
       { title: 'Policy engine', path: 'POLICY_ENGINE_DESIGN.md', icon: '📜' },
-      { title: 'GitOps', path: 'GITOPS.md', icon: '🔄' }
+      { title: 'GitOps', path: 'GITOPS.md', icon: '🔄' },
+      { title: 'Networking design', path: 'NETWORKING_DESIGN.md', icon: '🧩' },
+      { title: 'Stateful workloads design', path: 'STATEFUL_WORKLOADS_DESIGN.md', icon: '💿' },
+      { title: 'Jobs design', path: 'JOBS_DESIGN.md', icon: '🧱' },
+      { title: 'Plugin system design', path: 'PLUGIN_SYSTEM_DESIGN.md', icon: '🧩' }
     ]
   },
   {
@@ -43,6 +49,9 @@ const docsNav = [
       { title: 'Agent', path: 'AGENT.md', icon: '🤖' },
       { title: 'Service spec', path: 'SERVICE_SPEC.md', icon: '📦' },
       { title: 'Resources', path: 'RESOURCES.md', icon: '🧮' },
+      { title: 'Jobs', path: 'JOBS.md', icon: '⚙️' },
+      { title: 'Storage', path: 'STORAGE.md', icon: '💾' },
+      { title: 'Notifications', path: 'NOTIFICATIONS.md', icon: '🔔' },
       { title: 'Health checks', path: 'HEALTHCHECKS.md', icon: '🫀' },
       { title: 'Logs', path: 'LOGS.md', icon: '📜' },
       { title: 'Events', path: 'EVENTS.md', icon: '⚡' }
